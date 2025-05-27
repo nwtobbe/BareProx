@@ -1,5 +1,12 @@
 ﻿@model BareProx.Models.CleanupPageViewModel
 
+@if (ViewBag.Warning is string warningMessage)
+{
+    <div class="alert alert-warning">
+        <strong>⚠ Warning:</strong> @warningMessage
+    </div>
+}
+
 <h2>Cleanup Flex-Clones</h2>
 
 <h4>In-Use Clones</h4>
@@ -80,17 +87,21 @@ else
                 button.disabled = true;
                 button.textContent = "⏳ Working...";
 
-                const response = await fetch('@Url.Action("Cleanup", "Cleanup")', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        'RequestVerificationToken': token
-                    },
-                    body: new URLSearchParams({
-                        volumeName: volumeName,
-                        mountIp: mountIp
-                    })
-                });
+                        const response = await fetch('@Url.Action("Cleanup", "Cleanup")', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'RequestVerificationToken': token
+            },
+            body: new URLSearchParams({
+                volumeName: volumeName,
+                mountIp: mountIp
+            })
+        }).catch(err => {
+            alert("Network error: " + err.message);
+            button.disabled = false;
+            button.textContent = "💣 Delete";
+        });
 
                 if (response.ok) {
                     row.remove();

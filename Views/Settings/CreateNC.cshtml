@@ -8,12 +8,12 @@
 
 <form asp-action="Create" method="post">
     <div class="mb-3">
-        <label asp-for="Hostname" class="form-label"></label>
+        <label asp-for="Hostname" class="form-label">Displayname</label>
         <input asp-for="Hostname" class="form-control" />
         <span asp-validation-for="Hostname" class="text-danger"></span>
     </div>
     <div class="mb-3">
-        <label asp-for="IpAddress" class="form-label"></label>
+        <label asp-for="IpAddress" class="form-label">IP / FQDN - Cluster Management</label>
         <input asp-for="IpAddress" class="form-control" />
         <span asp-validation-for="IpAddress" class="text-danger"></span>
     </div>

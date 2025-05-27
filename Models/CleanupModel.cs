@@ -12,7 +12,7 @@ namespace BareProx.Models
 
     public class CleanupPageViewModel
     {
-        public List<CleanupItem> InUse { get; set; }
-        public List<CleanupItem> Orphaned { get; set; }
+        public List<CleanupItem> InUse { get; set; } = new();
+        public List<CleanupItem> Orphaned { get; set; } = new();
     }
 }

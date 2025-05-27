@@ -96,7 +96,38 @@ if (isConfigured)
     builder.Services.AddDefaultIdentity<IdentityUser>(opts =>
         opts.SignIn.RequireConfirmedAccount = true)
         .AddEntityFrameworkStores<ApplicationDbContext>();
-    // ... other scoped & hosted services ...
+
+    // --- Repositories & Domain Services ----------------------------------------
+    builder.Services.AddScoped<IBackupRepository, BackupRepository>();
+    builder.Services.AddScoped<IBackupService, BackupService>();
+    builder.Services.AddScoped<INetappService, NetappService>();
+    builder.Services.AddScoped<ProxmoxService>();
+    builder.Services.AddScoped<IRestoreService, RestoreService>();
+
+    // --- Remote API Client -----------------------------------------------------
+    builder.Services.AddSingleton<IRemoteApiClient, RemoteApiClient>();
+
+    // --- HTTP Clients ----------------------------------------------------------
+    builder.Services.AddHttpClient("ProxmoxClient")
+        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback =
+                HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+        });
+
+    builder.Services.AddHttpClient("NetappClient")
+        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback =
+                HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+        });
+
+    // --- Background Processing -------------------------------------------------
+    builder.Services.AddSingleton<IBackgroundServiceQueue, BackgroundServiceQueue>();
+    builder.Services.AddHostedService<QueuedBackgroundService>();
+    builder.Services.AddHostedService<ScheduledBackupService>();
+    builder.Services.AddHostedService<JanitorService>();
+
 }
 
 // MVC & Pages

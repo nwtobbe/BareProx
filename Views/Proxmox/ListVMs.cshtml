@@ -1,5 +1,10 @@
 ﻿@model List<StorageWithVMsDto>
-
+@if (ViewBag.Warning is string warningMessage)
+{
+    <div class="alert alert-warning">
+        <strong>⚠ Warning:</strong> @warningMessage
+    </div>
+}
 <h2>Proxmox Storage</h2>
 
 @foreach (var storage in Model)

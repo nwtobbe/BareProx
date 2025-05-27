@@ -1,5 +1,12 @@
 ﻿@model List<VolumeSnapshotTreeDto>
 
+@if (ViewBag.Warning is string warningMessage)
+{
+    <div class="alert alert-warning mt-3">
+        <strong>⚠ Warning:</strong> @warningMessage
+    </div>
+}
+
 <h2>Snapshots</h2>
 
 <div id="snapshot-tree">

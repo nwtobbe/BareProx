@@ -1,4 +1,6 @@
 # BareProx 2025, What Netapp did not want to give you
+SQL-lite
+Docker compose
 
 Authentication failed error page?
 Timezones under settings

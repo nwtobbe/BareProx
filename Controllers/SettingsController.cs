@@ -141,6 +141,47 @@ namespace BareProx.Controllers
 
             return RedirectToAction("Proxmox");
         }
+        [HttpGet]
+        public async Task<IActionResult> ClusterStorage(int clusterId)
+        {
+            var cluster = await _context.ProxmoxClusters
+                .Include(c => c.Hosts)
+                .FirstOrDefaultAsync(c => c.Id == clusterId);
+
+            if (cluster == null)
+            {
+                ViewBag.Warning = "Proxmox cluster not found.";
+                return View(new SelectStorageViewModel { ClusterId = clusterId });
+            }
+
+            var allNfsStorage = await _proxmoxService.GetNfsStorageAsync(cluster);
+
+            var selectedIds = await _context.Set<ProxSelectedStorage>()
+                .Where(s => s.ClusterId == clusterId)
+                .Select(s => s.StorageIdentifier)
+                .ToHashSetAsync(StringComparer.OrdinalIgnoreCase);
+
+            var storageList = allNfsStorage
+                .Select(s => new ProxmoxStorageDto
+                {
+                    Id = s.Storage, // use storage name as ID
+                    Storage = s.Storage,
+                    Type = s.Type,
+                    Path = s.Path,
+                    Node = s.Node,
+                    IsSelected = selectedIds.Contains(s.Storage)
+                }).ToList();
+
+            var model = new SelectStorageViewModel
+            {
+                ClusterId = clusterId,
+                StorageList = storageList
+            };
+
+            return View(model);
+        }
+
+
 
         [HttpGet]
         public async Task<IActionResult> EditCluster(int id)

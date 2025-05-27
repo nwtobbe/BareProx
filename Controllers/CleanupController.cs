@@ -26,30 +26,37 @@ namespace BareProx.Controllers
         {
             // 1) pick the (first) cluster
             var cluster = await _context.ProxmoxClusters
-                                       .Include(c => c.Hosts)
-                                       .FirstOrDefaultAsync();
+                                        .Include(c => c.Hosts)
+                                        .FirstOrDefaultAsync();
+
             if (cluster == null)
-                return NotFound("Proxmox cluster not configured.");
+            {
+                ViewBag.Warning = "No Proxmox cluster is configured.";
+                return View(new CleanupPageViewModel()); // return empty view model
+            }
 
             // 2) find your NetApp controller
             var controllerId = await _context.NetappControllers
                                              .Select(c => c.Id)
                                              .FirstOrDefaultAsync();
 
+            if (controllerId == 0)
+            {
+                ViewBag.Warning = "No NetApp controller is configured.";
+                return View(new CleanupPageViewModel());
+            }
+
             // 3) list *all* FlexClones (even if no longer exported)
             var clones = await _netappService.ListFlexClonesAsync(controllerId);
-
             var allItems = new List<CleanupItem>();
 
             foreach (var clone in clones)
             {
-                // see if we can still fetch mount‐info for it (optional)
                 var mountInfo = (await _netappService.GetVolumesWithMountInfoAsync(controllerId))
                                     .FirstOrDefault(m => m.VolumeName == clone);
 
                 var mountIp = mountInfo?.MountIp;
 
-                // 4) for *each* host, collect any VMs pointing at this clone
                 var inUse = new List<ProxmoxVM>();
                 foreach (var host in cluster.Hosts)
                 {
@@ -62,13 +69,12 @@ namespace BareProx.Controllers
                 allItems.Add(new CleanupItem
                 {
                     VolumeName = clone,
-                    MountIp = mountIp,           // null if unmounted
+                    MountIp = mountIp,
                     IsInUse = inUse.Any(),
                     AttachedVms = inUse
                 });
             }
 
-            // 5) split
             var vm = new CleanupPageViewModel
             {
                 InUse = allItems.Where(i => i.IsInUse).ToList(),
@@ -77,6 +83,7 @@ namespace BareProx.Controllers
 
             return View(vm);
         }
+
 
 
 

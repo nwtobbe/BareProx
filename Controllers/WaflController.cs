@@ -26,14 +26,20 @@ namespace BareProx.Controllers
             var cluster = await _context.ProxmoxClusters
                 .Include(c => c.Hosts)
                 .FirstOrDefaultAsync();
+
             if (cluster == null)
-                return NotFound("No Proxmox clusters configured.");
+            {
+                ViewBag.Warning = "No Proxmox clusters are configured.";
+                return View(new List<VolumeSnapshotTreeDto>());
+            }
 
             var netappController = await _context.NetappControllers.FirstOrDefaultAsync();
             if (netappController == null)
-                return NotFound("No NetApp controllers configured.");
+            {
+                ViewBag.Warning = "No NetApp controllers are configured.";
+                return View(new List<VolumeSnapshotTreeDto>());
+            }
 
-            // 🔁 You already have this service
             var storageVmMap = await _proxmoxService.GetFilteredStorageWithVMsAsync(cluster.Id, netappController.Id);
 
             var storageNames = storageVmMap.Keys
@@ -42,11 +48,11 @@ namespace BareProx.Controllers
                     !name.Contains("restore_", StringComparison.OrdinalIgnoreCase))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-            // 🔁 Use new helper in NetappService
             var result = await _netappService.GetSnapshotsForVolumesAsync(storageNames);
 
-            return View(result);
+            return View(result ?? new List<VolumeSnapshotTreeDto>());
         }
+
 
         [HttpGet]
         public async Task<IActionResult> GetSnapshotsForVolume(string volume, string vserver)

@@ -30,23 +30,31 @@ namespace BareProx.Controllers
                 .FirstOrDefaultAsync();
 
             if (cluster == null)
-                return NotFound("No Proxmox clusters configured.");
+            {
+                ViewBag.Warning = "No Proxmox clusters are configured.";
+                return View(new List<StorageWithVMsDto>());
+            }
 
             var netappController = await _context.NetappControllers.FirstOrDefaultAsync();
             if (netappController == null)
-                return NotFound("No NetApp controllers configured.");
+            {
+                ViewBag.Warning = "No NetApp controllers are configured.";
+                return View(new List<StorageWithVMsDto>());
+            }
 
             var selectedStorageNames = await _context.SelectedStorages
                 .Select(s => s.StorageIdentifier)
                 .ToListAsync();
-            if (selectedStorageNames == null)
-                return NotFound("No Selected Storageconfigured.");
+
+            if (selectedStorageNames == null || !selectedStorageNames.Any())
+            {
+                ViewBag.Warning = "No storage has been selected for backup.";
+                return View(new List<StorageWithVMsDto>());
+            }
 
             var storageVmMap = await _proxmoxService.GetVmsByStorageListAsync(cluster, selectedStorageNames);
 
-
             var model = storageVmMap
-                // exclude any storage whose name contains “backup” or “_restore” (case-insensitive)
                 .Where(kvp =>
                     !kvp.Key.Contains("backup", StringComparison.OrdinalIgnoreCase) &&
                     !kvp.Key.Contains("restore_", StringComparison.OrdinalIgnoreCase))
@@ -54,21 +62,22 @@ namespace BareProx.Controllers
                 {
                     StorageName = kvp.Key,
                     VMs = kvp.Value
-                                             .Select(vm => new ProxmoxVM
-                                             {
-                                                 Id = vm.Id,
-                                                 Name = vm.Name,
-                                                 HostName = vm.HostName,
-                                                 HostAddress = vm.HostAddress
-                                             })
-                                             .ToList(),
+                        .Select(vm => new ProxmoxVM
+                        {
+                            Id = vm.Id,
+                            Name = vm.Name,
+                            HostName = vm.HostName,
+                            HostAddress = vm.HostAddress
+                        })
+                        .ToList(),
                     ClusterId = cluster.Id,
                     NetappControllerId = netappController.Id
                 })
                 .ToList();
 
-            return View(model); // Now matches @model List<StorageWithVMsDto> in the view
+            return View(model);
         }
+
 
     }
 }
