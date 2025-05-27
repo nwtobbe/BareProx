@@ -10,6 +10,9 @@
 <form asp-action="Config" asp-controller="Setup" method="post">
     @Html.AntiForgeryToken()
 
+    <!-- Validation summary for ModelState errors -->
+    <div asp-validation-summary="All" class="text-danger mb-3"></div>
+
     <div class="form-group">
         <label asp-for="DbServer" class="control-label">Database Server Address</label>
         <input asp-for="DbServer" class="form-control" />
@@ -37,11 +40,13 @@
     <button type="submit" class="btn btn-primary">Save Configuration</button>
 </form>
 
-@if (TempData["SuccessMessage"] != null)
+@if (TempData["ErrorMessage"] is string errMsg)
 {
-    <div class="alert alert-success mt-3">
-        @TempData["SuccessMessage"]
-    </div>
+    <div class="alert alert-danger mt-3">@errMsg</div>
+}
+@if (TempData["SuccessMessage"] is string successMsg)
+{
+    <div class="alert alert-success mt-3">@successMsg</div>
 }
 
 @section Scripts {

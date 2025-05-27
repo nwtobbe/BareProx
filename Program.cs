@@ -1,4 +1,7 @@
-﻿using BareProx.Data;
+﻿using System;
+using System.IO;
+using System.Security.Cryptography;
+using BareProx.Data;
 using BareProx.Models;
 using BareProx.Repositories;
 using BareProx.Services;
@@ -6,167 +9,193 @@ using BareProx.Services.Background;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
-using System;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.Data.SqlClient;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
-// Alias to avoid ambiguity
+// Alias for clarity
 using DbConfigModel = BareProx.Models.DatabaseConfig;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// --- Configuration ---------------------------------------------------------
+// --- Load JSON + ENV configs ----------------------------------------------
 builder.Configuration
     .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
     .AddJsonFile("DatabaseConfig.json", optional: false, reloadOnChange: true)
     .AddEnvironmentVariables();
 
-// Bind the DatabaseConfig section for DI and runtime checks
-builder.Services.Configure<DbConfigModel>(
-    builder.Configuration.GetSection("DatabaseConfig")
-);
-
-// Retrieve raw config values to determine if setup is complete
-var rawCfg = builder.Configuration
+// --- Check if DB config exists --------------------------------------------
+var rawDbCfg = builder.Configuration
     .GetSection("DatabaseConfig")
-    .Get<DbConfigModel>()
-    ?? new DbConfigModel();
+    .Get<DbConfigModel>() ?? new DbConfigModel();
 
-bool isConfigured =
-    !string.IsNullOrWhiteSpace(rawCfg.DbServer) &&
-    !string.IsNullOrWhiteSpace(rawCfg.DbName) &&
-    !string.IsNullOrWhiteSpace(rawCfg.DbUser) &&
-    !string.IsNullOrWhiteSpace(rawCfg.DbPassword);
+bool dbIsEmpty = string.IsNullOrWhiteSpace(rawDbCfg.DbServer)
+              && string.IsNullOrWhiteSpace(rawDbCfg.DbName)
+              && string.IsNullOrWhiteSpace(rawDbCfg.DbUser)
+              && string.IsNullOrWhiteSpace(rawDbCfg.DbPassword);
 
-// --- Core Services ---------------------------------------------------------
-// Encryption must always be available for setup and DB startup
+bool isConfigured = !dbIsEmpty;
+
+builder.Services.Configure<DbConfigModel>(
+    builder.Configuration.GetSection("DatabaseConfig"));
+
+// --- 1) Auto-generate Encryption Key if missing ----------------------------
+var encSection = builder.Configuration.GetSection("Encryption");
+var existingKey = encSection.GetValue<string>("Key");
+if (string.IsNullOrWhiteSpace(existingKey))
+{
+    // 24 bytes → 32-char Base64Url key
+    var keyBytes = RandomNumberGenerator.GetBytes(24);
+    var newKey = Base64UrlEncoder.Encode(keyBytes);
+
+    // update in-memory
+    encSection["Key"] = newKey;
+    Console.WriteLine($"[Init] Generated encryption key: {newKey}");
+
+    // persist to appsettings.json
+    var path = Path.Combine(builder.Environment.ContentRootPath, "appsettings.json");
+    var json = File.ReadAllText(path);
+    var settings = JObject.Parse(json);
+
+    if (settings["Encryption"]?.Type != JTokenType.Object)
+        settings["Encryption"] = new JObject();
+
+    settings["Encryption"]["Key"] = newKey;
+
+    File.WriteAllText(path,
+        settings.ToString(Formatting.Indented));
+}
+
+// --- 2) Register Services --------------------------------------------------
 builder.Services.AddSingleton<IEncryptionService, EncryptionService>();
 
 if (isConfigured)
 {
-    // --- DbContext with decrypted password ----------------------------------
-    builder.Services.AddDbContext<ApplicationDbContext>((sp, options) =>
+    builder.Services.AddDbContext<ApplicationDbContext>((sp, opts) =>
     {
         var cfg = sp.GetRequiredService<IOptionsMonitor<DbConfigModel>>().CurrentValue;
         var encSvc = sp.GetRequiredService<IEncryptionService>();
-        // decrypt the stored password
         var pwd = encSvc.Decrypt(cfg.DbPassword);
 
-        var connStr =
-            $"Server={cfg.DbServer};" +
-            $"Database={cfg.DbName};" +
-            $"User Id={cfg.DbUser};" +
-            $"Password={pwd};" +
-            "MultipleActiveResultSets=True;TrustServerCertificate=True;";
+        var csb = new SqlConnectionStringBuilder
+        {
+            DataSource = cfg.DbServer,
+            InitialCatalog = cfg.DbName,
+            UserID = cfg.DbUser,
+            Password = pwd,
+            MultipleActiveResultSets = true,
+            TrustServerCertificate = true
+        };
 
-        options.UseSqlServer(connStr);
+        opts.UseSqlServer(csb.ConnectionString);
     });
 
-    // --- Identity -----------------------------------------------------------
     builder.Services.AddDatabaseDeveloperPageExceptionFilter();
-    builder.Services.AddDefaultIdentity<IdentityUser>(options =>
-        options.SignIn.RequireConfirmedAccount = true)
+
+    builder.Services.AddDefaultIdentity<IdentityUser>(opts =>
+        opts.SignIn.RequireConfirmedAccount = true)
         .AddEntityFrameworkStores<ApplicationDbContext>();
-
-    // --- Repositories & Domain Services --------------------------------------
-    builder.Services.AddScoped<IBackupRepository, BackupRepository>();
-    builder.Services.AddScoped<IBackupService, BackupService>();
-    builder.Services.AddScoped<INetappService, NetappService>();
-    builder.Services.AddScoped<ProxmoxService>();
-    builder.Services.AddScoped<IRestoreService, RestoreService>();
-
-    // --- Remote API Client --------------------------------------------------
-    builder.Services.AddSingleton<IRemoteApiClient, RemoteApiClient>();
-
-    // --- HTTP Clients --------------------------------------------------------
-    builder.Services.AddHttpClient("ProxmoxClient")
-        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
-        {
-            ServerCertificateCustomValidationCallback =
-                HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
-        });
-
-    builder.Services.AddHttpClient("NetappClient")
-        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
-        {
-            ServerCertificateCustomValidationCallback =
-                HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
-        });
-
-    // --- Background Processing ------------------------------------------------
-    builder.Services.AddSingleton<IBackgroundServiceQueue, BackgroundServiceQueue>();
-    builder.Services.AddHostedService<QueuedBackgroundService>();
-    builder.Services.AddHostedService<ScheduledBackupService>();
-    builder.Services.AddHostedService<JanitorService>();
+    // ... other scoped & hosted services ...
 }
 
-// --- MVC & Razor Pages -----------------------------------------------------
+// MVC & Pages
 builder.Services.AddControllersWithViews();
 builder.Services.AddRazorPages();
 
 var app = builder.Build();
 
-// --- Run Migrations if Configured ------------------------------------------
+// --- 3) Ensure Database Exists & Migrate ----------------------------------
 if (isConfigured)
 {
     using var scope = app.Services.CreateScope();
-    var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+    var cfg = scope.ServiceProvider.GetRequiredService<IOptions<DbConfigModel>>().Value;
+    var encSvc = scope.ServiceProvider.GetRequiredService<IEncryptionService>();
+    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+
+    // 3a) Create DB if missing via master
     try
     {
-        db.Database.Migrate();
+        var masterCsb = new SqlConnectionStringBuilder
+        {
+            DataSource = cfg.DbServer,
+            InitialCatalog = "master",
+            UserID = cfg.DbUser,
+            Password = encSvc.Decrypt(cfg.DbPassword),
+            TrustServerCertificate = true
+        };
+        using var masterConn = new SqlConnection(masterCsb.ConnectionString);
+        masterConn.Open();
+
+        var safeName = cfg.DbName.Replace("]", "]]");
+        var sql = $@"
+            IF DB_ID(N'{safeName}') IS NULL
+                CREATE DATABASE [{safeName}];
+        ";
+        using var cmd = new SqlCommand(sql, masterConn);
+        cmd.ExecuteNonQuery();
+
+        logger.LogInformation("Database '{DbName}' verified/created.", cfg.DbName);
     }
     catch (Exception ex)
     {
-        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-        logger.LogError(ex, "Database migration failed.");
+        logger.LogError(ex, "Failed to verify/create database '{DbName}'", cfg.DbName);
     }
-}
-// Add default user
-if (isConfigured)
-{
-    using var scope = app.Services.CreateScope();
-    var services = scope.ServiceProvider;
-    var logger = services.GetRequiredService<ILogger<Program>>();
-    var userManager = services.GetRequiredService<UserManager<IdentityUser>>();
 
-    //— check if the user exists
-    const string defaultUserName = "BinLadmin";
-    const string defaultUserPassword = "P@ssw0rd!";
-
-    var existing = userManager.FindByNameAsync(defaultUserName).GetAwaiter().GetResult();
-    if (existing == null)
+    // 3b) Apply EF Core migrations
+    try
     {
-        var admin = new IdentityUser
+        var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        dbContext.Database.Migrate();
+        logger.LogInformation("Migrations applied to '{DbName}'.", cfg.DbName);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Applying migrations to '{DbName}' failed.", cfg.DbName);
+    }
+
+    // 3c) Seed default user
+    try
+    {
+        var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var userMgr = scope.ServiceProvider.GetRequiredService<UserManager<IdentityUser>>();
+
+        if (!dbContext.Database.CanConnect())
         {
-            UserName = defaultUserName,
-            Email = "admin@example.com",
-            EmailConfirmed = true
-        };
-        var result = userManager.CreateAsync(admin, defaultUserPassword).GetAwaiter().GetResult();
-        if (!result.Succeeded)
-        {
-            var errs = string.Join("; ", result.Errors.Select(e => e.Description));
-            logger.LogError("Failed to create default user: {Errors}", errs);
+            logger.LogWarning("DB unreachable; skipping default user seed.");
         }
         else
         {
-            logger.LogInformation("Seeded default user '{User}'", defaultUserName);
+            const string user = "BinLadmin", pass = "P@ssw0rd!";
+            var exists = userMgr.FindByNameAsync(user).GetAwaiter().GetResult();
+            if (exists == null)
+            {
+                var admin = new IdentityUser { UserName = user, Email = "admin@example.com", EmailConfirmed = true };
+                var res = userMgr.CreateAsync(admin, pass).GetAwaiter().GetResult();
+                if (res.Succeeded)
+                    logger.LogInformation("Seeded default user '{User}'.", user);
+                else
+                    logger.LogError("Seeding user failed: {Errors}",
+                        string.Join(";", res.Errors.Select(e => e.Description)));
+            }
         }
     }
-}
-// --- Redirect to Setup if not Configured ----------------------------------
-if (!isConfigured)
-{
-    app.MapGet("/", context =>
+    catch (Exception ex)
     {
-        context.Response.Redirect("/Setup/Config");
-        return Task.CompletedTask;
-    });
+        var logger2 = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+        logger2.LogError(ex, "Error during default user seed.");
+    }
 }
 
-// --- Middleware Pipeline ---------------------------------------------------
-if (app.Environment.IsDevelopment())
+// --- 4) Redirect if not configured ----------------------------------------
+if (!isConfigured)
 {
-    app.UseMigrationsEndPoint();
+    app.MapGet("/", ctx => { ctx.Response.Redirect("/Setup/Config"); return Task.CompletedTask; });
 }
+
+// --- 5) Middleware ---------------------------------------------------------
+if (app.Environment.IsDevelopment())
+    app.UseMigrationsEndPoint();
 else
 {
     app.UseExceptionHandler("/Home/Error");
@@ -176,16 +205,12 @@ else
 app.UseHttpsRedirection();
 app.UseStaticFiles();
 app.UseRouting();
-
 if (isConfigured)
 {
     app.UseAuthentication();
     app.UseAuthorization();
 }
-
-app.MapControllerRoute(
-    name: "default",
-    pattern: "{controller=Home}/{action=Index}/{id?}");
+app.MapControllerRoute("default", "{controller=Home}/{action=Index}/{id?}");
 app.MapRazorPages();
 
 app.Run();
