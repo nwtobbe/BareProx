@@ -17,9 +17,6 @@ Fix add cluster
 	Add scheduled task to check access
 
 Add lock for snapshots / clones
-
-Add Users / lock page
-
 fix install db / first run
 secondary...
 tps...
@@ -36,6 +33,7 @@ Missing snapshots?
 
 
 Done.
+Added UserManagement
 Added paths for first run creation
 	volumes:
   - ./bareprox-config:/config

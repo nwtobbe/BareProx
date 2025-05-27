@@ -1,4 +1,7 @@
-﻿<!DOCTYPE html>
+﻿@using Microsoft.AspNetCore.Identity
+@inject SignInManager<IdentityUser> SignInManager
+
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8" />
@@ -17,114 +20,117 @@
                     <span>BareProx</span>
                 </a>
                 <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"
-                        aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+                aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
                     <span class="navbar-toggler-icon"></span>
                 </button>
 
                 <div class="collapse navbar-collapse" id="navbarNav">
-                    <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+                    @* only show the main menus when logged in *@
+                    @if (!SignInManager.IsSignedIn(User))
+                    {
+                        <ul class="navbar-nav me-auto mb-2 mb-lg-0">
 
-                        <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Home" asp-action="Index">Home</a>
-                        </li>
+                            <li class="nav-item">
+                                <a class="nav-link text-dark" asp-area="" asp-controller="Home" asp-action="Index">Home</a>
+                            </li>
 
-                        <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Jobs" asp-action="Index">Jobs</a>
-                        </li>
+                            <li class="nav-item">
+                                <a class="nav-link text-dark" asp-area="" asp-controller="Jobs" asp-action="Index">Jobs</a>
+                            </li>
 
-                        <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Proxmox" asp-action="ListVMs">
-                                Proxmox Storage
-                            </a>
-                        </li>
+                            <li class="nav-item">
+                                <a class="nav-link text-dark" asp-area="" asp-controller="Proxmox" asp-action="ListVMs">
+                                    Proxmox Storage
+                                </a>
+                            </li>
 
-                        <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Backup" asp-action="Backup">
-                                Backup
-                            </a>
-                        </li>
+                            <li class="nav-item">
+                                <a class="nav-link text-dark" asp-area="" asp-controller="Backup" asp-action="Backup">
+                                    Backup
+                                </a>
+                            </li>
 
-                        <!-- Restore dropdown -->
-                        <li class="nav-item dropdown">
-                            <a class="nav-link dropdown-toggle text-dark"
-                               href="#"
-                               id="restoreDropdown"
-                               role="button"
-                               data-bs-toggle="dropdown"
-                               aria-expanded="false">
-                                Restore
-                            </a>
-                            <ul class="dropdown-menu" aria-labelledby="restoreDropdown">
-                                <li>
-                                    <a class="dropdown-item"
-                                       asp-area=""
-                                       asp-controller="Restore"
-                                       asp-action="Index">
-                                        Restore VM
-                                    </a>
-                                </li>
-                                <li>
-                                    <a class="dropdown-item"
-                                       asp-area=""
-                                       asp-controller="Cleanup"
-                                       asp-action="Index">
-                                        Cleanup
-                                    </a>
-                                </li>
-                            </ul>
-                        </li>
+                            <!-- Restore dropdown -->
+                            <li class="nav-item dropdown">
+                                <a class="nav-link dropdown-toggle text-dark"
+                                href="#"
+                                id="restoreDropdown"
+                                role="button"
+                                data-bs-toggle="dropdown"
+                                aria-expanded="false">
+                                    Restore
+                                </a>
+                                <ul class="dropdown-menu" aria-labelledby="restoreDropdown">
+                                    <li>
+                                        <a class="dropdown-item"
+                                        asp-area=""
+                                        asp-controller="Restore"
+                                        asp-action="Index">
+                                            Restore VM
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <a class="dropdown-item"
+                                        asp-area=""
+                                        asp-controller="Cleanup"
+                                        asp-action="Index">
+                                            Cleanup
+                                        </a>
+                                    </li>
+                                </ul>
+                            </li>
 
-                        <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Wafl" asp-action="Snapshots">
-                                Snapshots
-                            </a>
-                        </li>
+                            <li class="nav-item">
+                                <a class="nav-link text-dark" asp-area="" asp-controller="Wafl" asp-action="Snapshots">
+                                    Snapshots
+                                </a>
+                            </li>
 
-                        <!-- Settings Dropdown -->
-                        <li class="nav-item dropdown">
-                            <a class="nav-link dropdown-toggle text-dark" href="#" id="settingsDropdown" role="button"
-                               data-bs-toggle="dropdown" aria-expanded="false">
-                                Settings
-                            </a>
-                            <ul class="dropdown-menu" aria-labelledby="settingsDropdown">
-                                <li>
-                                    <a class="dropdown-item"
-                                       asp-controller="Settings"
-                                       asp-action="Config">
-                                        System
-                                    </a>
-                                </li>
-                                <li>
-                                    <a class="dropdown-item"
-                                       asp-controller="Users"
-                                       asp-action="Index">
-                                        Users
-                                    </a>
-                                </li>
-                                <li>
-                                    <a class="dropdown-item"
-                                       asp-controller="Settings"
-                                       asp-action="Index">
-                                        Netapp Controllers
-                                    </a>
-                                </li>
-                                <li>
-                                    <a class="dropdown-item"
-                                       asp-controller="Settings"
-                                       asp-action="Proxmox">
-                                        Proxmox
-                                    </a>
-                                </li>
-                            </ul>
-                        </li>
+                            <!-- Settings Dropdown -->
+                            <li class="nav-item dropdown">
+                                <a class="nav-link dropdown-toggle text-dark" href="#" id="settingsDropdown" role="button"
+                                data-bs-toggle="dropdown" aria-expanded="false">
+                                    Settings
+                                </a>
+                                <ul class="dropdown-menu" aria-labelledby="settingsDropdown">
+                                    <li>
+                                        <a class="dropdown-item"
+                                        asp-controller="Settings"
+                                        asp-action="Config">
+                                            System
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <a class="dropdown-item"
+                                        asp-controller="Users"
+                                        asp-action="Index">
+                                            Users
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <a class="dropdown-item"
+                                        asp-controller="Settings"
+                                        asp-action="Index">
+                                            Netapp Controllers
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <a class="dropdown-item"
+                                        asp-controller="Settings"
+                                        asp-action="Proxmox">
+                                            Proxmox
+                                        </a>
+                                    </li>
+                                </ul>
+                            </li>
 
-                        <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Home" asp-action="Privacy">
-                                Privacy
-                            </a>
-                        </li>
-                    </ul>
-
+                            <li class="nav-item">
+                                <a class="nav-link text-dark" asp-area="" asp-controller="Home" asp-action="Privacy">
+                                    Privacy
+                                </a>
+                            </li>
+                        </ul>
+                    }
                     <!-- Login partial -->
                     <partial name="_LoginPartial" />
                 </div>

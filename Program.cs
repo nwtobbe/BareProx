@@ -16,8 +16,10 @@ using Newtonsoft.Json.Linq;
 
 // Alias for clarity
 using DbConfigModel = BareProx.Models.DatabaseConfigModels;
+using Microsoft.AspNetCore.Authorization;
 
 var builder = WebApplication.CreateBuilder(args);
+
 //var connectionString = builder.Configuration.GetConnectionString("ApplicationDbContextConnection") ?? throw new InvalidOperationException("Connection string 'ApplicationDbContextConnection' not found.");;
 
 // --- Set paths for persistent and data storage -----------------------------
@@ -214,6 +216,18 @@ builder.Services.AddSingleton<IAppTimeZoneService, AppTimeZoneService>();
 builder.Services.AddControllersWithViews();
 builder.Services.AddRazorPages();
 
+// --- Lock down ---
+//if (isConfigured)
+//{
+
+//    builder.Services.AddAuthorization(options =>
+//    {
+//        options.FallbackPolicy = new AuthorizationPolicyBuilder()
+//            .RequireAuthenticatedUser()
+//            .Build();
+//    });
+//}
+
 var app = builder.Build();
 
 // --- 3) Ensure Database Exists & Migrate ----------------------------------
@@ -310,6 +324,7 @@ if (!isConfigured)
 {
     app.MapGet("/", ctx => { ctx.Response.Redirect("/Setup/Config"); return Task.CompletedTask; });
 }
+
 
 // --- 5) Middleware ---------------------------------------------------------
 if (app.Environment.IsDevelopment())
