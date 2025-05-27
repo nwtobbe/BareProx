@@ -1,0 +1,40 @@
+﻿@model BareProx.Models.NetappController
+
+@{
+    ViewData["Title"] = "Add Netapp Controller";
+}
+
+<h2>Add Netapp Controller</h2>
+
+<form asp-action="Create" method="post">
+    <div class="mb-3">
+        <label asp-for="Hostname" class="form-label">Displayname</label>
+        <input asp-for="Hostname" class="form-control" />
+        <span asp-validation-for="Hostname" class="text-danger"></span>
+    </div>
+    <div class="mb-3">
+        <label asp-for="IpAddress" class="form-label">IP / FQDN - Cluster Management</label>
+        <input asp-for="IpAddress" class="form-control" />
+        <span asp-validation-for="IpAddress" class="text-danger"></span>
+    </div>
+    <div class="mb-3 form-check">
+        <input asp-for="IsPrimary" class="form-check-input" />
+        <label asp-for="IsPrimary" class="form-check-label">Is Primary Controller?</label>
+    </div>
+    <div class="mb-3">
+        <label asp-for="Username" class="form-label"></label>
+        <input asp-for="Username" class="form-control" />
+        <span asp-validation-for="Username" class="text-danger"></span>
+    </div>
+    <div class="mb-3">
+        <label asp-for="PasswordHash" class="form-label">Password</label>
+        <input asp-for="PasswordHash" type="password" class="form-control" />
+        <span asp-validation-for="PasswordHash" class="text-danger"></span>
+    </div>
+    <button type="submit" class="btn btn-primary">Add</button>
+    <a asp-action="Index" class="btn btn-secondary">Cancel</a>
+</form>
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+}

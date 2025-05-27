@@ -1,0 +1,49 @@
+﻿@page
+@model BareProx.Areas.Identity.Pages.Account.LoginModel
+
+@{
+    ViewData["Title"] = "Log in";
+}
+
+<div class="d-flex justify-content-center align-items-center vh-100 bg-light">
+    <div class="card shadow-sm p-4" style="max-width: 400px; width: 100%;">
+        <h3 class="card-title text-center mb-4">Log in</h3>
+
+        <form method="post" novalidate>
+            <div asp-validation-summary="ModelOnly" class="text-danger mb-3"></div>
+
+            <div class="form-floating mb-3">
+                <input asp-for="Input.Email"
+                       type="text"
+                       class="form-control"
+                       placeholder="Username"
+                       autocomplete="username" />
+                <label asp-for="Input.Email">Username</label>
+                <span asp-validation-for="Input.Email" class="text-danger small"></span>
+            </div>
+
+            <div class="form-floating mb-3">
+                <input asp-for="Input.Password"
+                       type="password"
+                       class="form-control"
+                       placeholder="Password"
+                       autocomplete="current-password" />
+                <label asp-for="Input.Password">Password</label>
+                <span asp-validation-for="Input.Password" class="text-danger small"></span>
+            </div>
+
+            <div class="form-check mb-4">
+                <input asp-for="Input.RememberMe" class="form-check-input" />
+                <label asp-for="Input.RememberMe" class="form-check-label">
+                    Remember me
+                </label>
+            </div>
+
+            <button type="submit" class="btn btn-primary w-100 mb-2">Log in</button>
+        </form>
+    </div>
+</div>
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+}

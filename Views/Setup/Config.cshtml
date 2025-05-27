@@ -1,0 +1,54 @@
+﻿@model BareProx.Models.DatabaseConfigModels
+
+@{
+    ViewData["Title"] = "Database Configuration Setup";
+    Layout = "_SetupLayout";
+}
+
+<h1>@ViewData["Title"]</h1>
+
+<form asp-action="Config" asp-controller="Setup" method="post">
+    @Html.AntiForgeryToken()
+
+    <!-- Hidden inputs for fixed config -->
+    <input type="hidden" name="DbType" value="Sqlite" />
+    <input type="hidden" name="DbName" value="BareProxDB" />
+
+    <!-- Optional: Visible info -->
+    <div class="alert alert-info">
+        This app is configured to use <strong>SQLite</strong> with database file <code>BareProxDB.db</code>.
+    </div>
+
+    <button type="submit" class="btn btn-primary">Save Configuration</button>
+</form>
+
+
+@if (TempData["ErrorMessage"] is string errMsg)
+{
+    <div class="alert alert-danger mt-3">@errMsg</div>
+}
+@if (TempData["SuccessMessage"] is string successMsg)
+{
+    <div class="alert alert-success mt-3">@successMsg</div>
+}
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+    <script>
+        function updateVisibility() {
+            const isSql = document.getElementById("dbTypeSelector").value === "SqlServer";
+            document.querySelectorAll(".sql-only").forEach(div => {
+                div.style.display = isSql ? "block" : "none";
+
+                if (!isSql) {
+                    // clear values and validation messages
+                    div.querySelectorAll("input").forEach(i => i.value = "");
+                    div.querySelectorAll(".text-danger").forEach(e => e.textContent = "");
+                }
+            });
+        }
+
+        document.getElementById("dbTypeSelector").addEventListener("change", updateVisibility);
+        updateVisibility(); // run on initial load
+    </script>
+}

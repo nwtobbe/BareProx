@@ -1,0 +1,177 @@
+﻿@using System.Linq
+@{
+    var netappEnabled = false;
+}
+@{
+    ViewData["Title"] = "System Status";
+    var recentJobs = ViewBag.RecentJobs as IEnumerable<dynamic>;
+    var proxmoxClusters = (ViewBag.ProxmoxClusters as IEnumerable<dynamic> ?? Enumerable.Empty<dynamic>())
+                          .OrderBy(c => (string)c.Name) // sort clusters by Name
+                          .ToList();
+
+    var primaryNetapps = new List<dynamic> {
+        new { Name = "NetApp Primary 1", Status = "Healthy", Alerts = new List<string>() },
+        new { Name = "NetApp Primary 2", Status = "Warning", Alerts = new List<string> { "Disk usage 92%" } }
+    };
+
+    var secondaryNetapps = new List<dynamic> {
+        new { Name = "NetApp Secondary 1", Status = "Healthy", Alerts = new List<string>() },
+        new { Name = "NetApp Secondary 2", Status = "Error", Alerts = new List<string> { "Replication failed: SnapMirror", "Sync overdue 1h" } }
+    };
+}
+
+<div class="container mt-4">
+    <h1 class="mb-4">BareProx System Status</h1>
+
+    <!-- Job Status (Last 24h) -->
+    <div class="card mb-4 shadow-sm">
+        <div class="card-header bg-dark text-white">
+            <strong>Job Status (Last 24 hours)</strong>
+        </div>
+        <div class="card-body">
+            <table class="table table-sm">
+                <thead>
+                    <tr>
+                        <th>Started</th>
+                        <th>Type</th>
+                        <th>VM</th>
+                        <th>Status</th>
+                        <th>Error</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (recentJobs != null && recentJobs.Any())
+                    {
+                        foreach (var job in recentJobs)
+                        {
+                            <tr class="@(job.Status == "Failed" ? "table-danger" : "table-warning")">
+                                <td>@job.StartedAt.ToString("yyyy-MM-dd HH:mm")</td>
+                                <td>@job.Type</td>
+                                <td>@job.RelatedVm</td>
+                                <td>
+                                    <span class="badge @(job.Status == "Failed" ? "bg-danger" : "bg-warning text-dark")">
+                                        @job.Status
+                                    </span>
+                                </td>
+                                <td class="text-truncate" style="max-width:200px;">
+                                    @job.ErrorMessage
+                                </td>
+                            </tr>
+                        }
+                    }
+                    else
+                    {
+                        <tr>
+                            <td colspan="5" class="text-muted text-center">No failed or cancelled jobs in the last 24 hours.</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Proxmox Clusters -->
+    @foreach (var cluster in proxmoxClusters)
+    {
+        // Sort this cluster’s hosts by Name
+        var hosts = ((IEnumerable<dynamic>)cluster.Hosts)
+        .OrderBy(h => (string)h.Name)
+        .ToList();
+
+        // Compute cluster badge based on how many are running
+        var total = hosts.Count;
+        var onlineCount = hosts.Count(h => (string)h.Status == "Running");
+        var allOnline = onlineCount == total;
+        var anyOnline = onlineCount > 0;
+        var badgeClass = allOnline
+        ? "bg-success"
+        : anyOnline
+        ? "bg-warning text-dark"
+        : "bg-danger";
+
+        <div class="card mb-4 shadow-sm">
+            <div class="card-header bg-primary text-white">
+                <strong>@cluster.Name</strong>
+                <span class="ms-2 badge @badgeClass">
+                    @cluster.Status
+                </span>
+            </div>
+            <div class="card-body">
+                <ul class="list-group">
+                    @foreach (var host in hosts)
+                    {
+                        var hostBadge = (string)host.Status == "Running"
+                        ? "bg-success"
+                        : "bg-danger";
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            @host.Name
+                            <span class="badge @hostBadge">
+                                @host.Status
+                            </span>
+                        </li>
+                    }
+                </ul>
+            </div>
+        </div>
+    }
+    @if (netappEnabled)
+    {
+    <!-- Primary NetApp Systems -->
+    @foreach (var netapp in primaryNetapps)
+    {
+        <div class="card mb-4 shadow-sm">
+            <div class="card-header bg-info text-white">
+                <strong>@netapp.Name</strong>
+                <span class="ms-2 badge bg-@(netapp.Status == "Healthy" ? "success" : netapp.Status == "Warning" ? "warning text-dark" : "danger")">@netapp.Status</span>
+            </div>
+            <div class="card-body">
+                <div>
+                    <strong>System Health Alerts:</strong>
+                    <ul>
+                        @if (netapp.Alerts.Count == 0)
+                        {
+                            <li>No alerts.</li>
+                        }
+                        else
+                        {
+                            foreach (var alert in netapp.Alerts)
+                            {
+                                <li>@alert</li>
+                            }
+                        }
+                    </ul>
+                </div>
+            </div>
+        </div>
+    }
+
+    <!-- Secondary NetApp Systems -->
+    @foreach (var netapp in secondaryNetapps)
+    {
+        <div class="card mb-4 shadow-sm">
+            <div class="card-header bg-secondary text-white">
+                <strong>@netapp.Name</strong>
+                <span class="ms-2 badge bg-@(netapp.Status == "Healthy" ? "success" : netapp.Status == "Warning" ? "warning text-dark" : "danger")">@netapp.Status</span>
+            </div>
+            <div class="card-body">
+                <div>
+                    <strong>System Health Alerts:</strong>
+                    <ul>
+                        @if (netapp.Alerts.Count == 0)
+                        {
+                            <li>No alerts.</li>
+                        }
+                        else
+                        {
+                            foreach (var alert in netapp.Alerts)
+                            {
+                                <li>@alert</li>
+                            }
+                        }
+                    </ul>
+                </div>
+            </div>
+        </div>
+    }
+    }
+</div>

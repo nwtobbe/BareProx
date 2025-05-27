@@ -1,0 +1,150 @@
+﻿@model List<RestoreVmGroupViewModel>
+
+
+@{
+    ViewData["Title"] = "Restore VMs";
+}
+
+<h2>Restore Backups</h2>
+
+<link rel="stylesheet" href="~/lib/datatables/media/css/jquery.dataTables.min.css" />
+
+<table id="restoreTable" class="table table-bordered table-striped">
+    <thead>
+        <tr>
+            <th>VM Name (ID)</th>
+            <th>Snapshot</th>
+            <th>Volume</th>
+            <th>Storage</th>
+            <th>Cluster</th>
+            <th>Last Backup</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var vm in Model)
+        {
+            var latest = vm.RestorePoints.First(); // Already sorted by descending TimeStamp above
+                                                   <tr data-vm-id="@vm.VmId"
+                                                       data-vm-name="@vm.VmName"
+                                                       data-cluster-id="@vm.ClusterId"
+                                                       data-restore-points='@Html.Raw(System.Text.Json.JsonSerializer.Serialize(vm.RestorePoints))'>
+                                                       <td>@vm.VmName (ID: @vm.VmId)</td>
+                                                       <td>@latest.SnapshotName</td>
+                                                       <td>@latest.VolumeName</td>
+                                                       <td>@latest.StorageName</td>
+                                                       <td>@vm.ClusterName</td>
+                                                       <td>@latest.TimeStamp.ToString("yyyy-MM-dd HH:mm")</td>
+                                                   </tr>
+        }
+    </tbody>
+</table>
+
+<!-- Modal -->
+<div class="modal fade" id="restoreModal" tabindex="-1" aria-labelledby="restoreModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form asp-controller="Restore" asp-action="Restore" method="get">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="restoreModalLabel">Restore VM</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="modalVmId" name="vmId" />
+                    <input type="hidden" id="modalClusterId" name="clusterId" />
+
+                    <div class="mb-3">
+                        <label class="form-label">VM Name:</label>
+                        <p id="modalVmName" class="fw-bold"></p>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="modalControllerSelect" class="form-label">Source Controller:</label>
+                        <select id="modalControllerSelect" class="form-select" name="controllerId" required>
+                            <option value="" disabled selected>Choose source...</option>
+                            <option data-target="Primary">Primary</option>
+                            <option data-target="Secondary">Secondary</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="modalSnapshotSelect" class="form-label">Snapshots (by date):</label>
+                        <select id="modalSnapshotSelect" class="form-select" name="backupId" required disabled>
+                            <!-- options injected after controller pick -->
+                        </select>
+                    </div>
+
+                    <input type="hidden" name="target" id="modalTarget" />
+                </div>
+                <div class="modal-footer">
+                    <button type="submit" class="btn btn-primary">Next</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+    @* <script src="~/lib/jquery/dist/jquery.min.js"></script> *@
+    <script src="~/lib/datatables/media/js/jquery.dataTables.min.js"></script>
+    @* <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script> *@
+    <script>
+        $(function () {
+            var table = $('#restoreTable').DataTable({
+                order: [[0, 'asc'], [5, 'desc']],
+                rowGroup: { dataSrc: 0 },
+                pageLength: 25
+            });
+
+            $('#restoreTable tbody').on('click', 'tr', function () {
+                var $row      = $(this);
+                var vmId      = $row.data('vm-id');
+                var vmName    = $row.data('vm-name');
+                var clusterId = $row.data('cluster-id');
+                var restorePoints = JSON.parse($row.attr('data-restore-points'));
+
+                // Use PascalCase (matches your data)
+                var primaryCtrl   = restorePoints.find(rp => rp.IsOnPrimary)?.PrimaryControllerId || '';
+                var secondaryCtrl = restorePoints.find(rp => rp.IsOnSecondary)?.SecondaryControllerId || '';
+
+                $('#modalVmId').val(vmId);
+                $('#modalClusterId').val(clusterId);
+                $('#modalVmName').text(vmName);
+
+                var $ctrl = $('#modalControllerSelect');
+                $ctrl.find('option[data-target="Primary"]')
+                    .val(primaryCtrl)
+                    .toggle(!!primaryCtrl);
+                $ctrl.find('option[data-target="Secondary"]')
+                    .val(secondaryCtrl)
+                    .toggle(!!secondaryCtrl);
+
+                $ctrl.val('');
+                $('#modalSnapshotSelect').empty().prop('disabled', true);
+                $('#modalTarget').val('');
+
+                $ctrl.off('change').on('change', function () {
+                    var tgt = $(this).find('option:selected').data('target'); // 'Primary' or 'Secondary'
+                    $('#modalTarget').val(tgt);
+
+                    var filtered = restorePoints.filter(function (rp) {
+                        return tgt === 'Primary' ? rp.IsOnPrimary : rp.IsOnSecondary;
+                    });
+
+                    var opts = filtered.map(function (rp) {
+                        var dt = rp.TimeStamp.replace('T', ' ').slice(0, 16);
+                        return '<option value="' + rp.BackupId + '">' + dt + '</option>';
+                    }).join('');
+
+                    $('#modalSnapshotSelect')
+                        .html(opts)
+                        .prop('disabled', filtered.length === 0);
+                });
+
+                var modal = new bootstrap.Modal(document.getElementById('restoreModal'));
+                modal.show();
+            });
+        });
+    </script>
+}
+

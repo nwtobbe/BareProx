@@ -1,0 +1,91 @@
+﻿@using BareProx.Models
+@model ProxmoxCluster
+
+@{
+    ViewData["Title"] = "Edit Proxmox Cluster";
+}
+
+<h2>Edit Proxmox Cluster</h2>
+
+<form asp-action="EditCluster" method="post" class="mb-4">
+    @* anti-forgery token *@
+    @Html.AntiForgeryToken()
+    <input type="hidden" asp-for="Id" />
+
+    <div class="mb-3">
+        <label asp-for="Name" class="form-label">Cluster Name</label>
+        <input asp-for="Name" class="form-control" />
+        <span asp-validation-for="Name" class="text-danger"></span>
+    </div>
+
+    <div class="mb-3">
+        <label asp-for="Username" class="form-label">API Username</label>
+        <input asp-for="Username" class="form-control" />
+        <span asp-validation-for="Username" class="text-danger"></span>
+    </div>
+
+    <div class="mb-3">
+        <label asp-for="PasswordHash" class="form-label">API Password</label>
+        <input asp-for="PasswordHash"
+               type="password"
+               class="form-control"
+               autocomplete="new-password" />
+        <span asp-validation-for="PasswordHash" class="text-danger"></span>
+    </div>
+
+    <button type="submit" class="btn btn-primary">Save Cluster</button>
+    <a asp-action="Proxmox" class="btn btn-secondary">Cancel</a>
+</form>
+
+<hr />
+
+<h3>Hosts in this Cluster (@Model.Hosts?.Count() ?? 0)</h3>
+
+<table class="table table-sm">
+    <thead>
+        <tr>
+            <th>Management IP / FQDN</th>
+            <th>Hostname as seen in Poxmox Gui</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var host in Model.Hosts)
+        {
+            <tr>
+                <td>@host.HostAddress</td>
+                <td>@host.Hostname</td>
+                <td>
+                    <form asp-action="DeleteHost"
+                          asp-controller="Settings"
+                          method="post"
+                          style="display:inline;"
+                          onsubmit="return confirm('Remove host @host.Hostname?');">
+                        <input type="hidden" name="id" value="@host.Id" />
+                        <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+                    </form>
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+<form asp-action="AddHost" asp-controller="Settings" method="post" class="row g-3 mb-4">
+    <input type="hidden" name="clusterId" value="@Model.Id" />
+    <div class="col-md-5">
+        <label for="hostAddress" class="form-label">Management IP / FQDN</label>
+        <input type="text" name="hostAddress" class="form-control" required />
+    </div>
+    <div class="col-md-5">
+        <label for="hostname" class="form-label">Hostname as seen in Poxmox Gui</label>
+        <input type="text" name="hostname" class="form-control" required />
+    </div>
+    <div class="col-md-2 align-self-end">
+        <button type="submit" class="btn btn-success">Add Host</button>
+    </div>
+</form>
+
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+}

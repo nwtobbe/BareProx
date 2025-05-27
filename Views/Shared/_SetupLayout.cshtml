@@ -1,0 +1,16 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>@ViewData["Title"]</title>
+    <link rel="stylesheet" href="~/css/site.css" />
+</head>
+<body>
+    <div class="container mt-5">
+        @RenderBody()            <!-- ← this is where your Config.cshtml will appear -->
+    </div>
+
+    @RenderSection("Scripts", required: false)
+</body>
+</html>

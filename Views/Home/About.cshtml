@@ -1,0 +1,31 @@
+﻿@{
+    ViewData["Title"] = "About";
+    var version = ViewData["Version"] as string;
+}
+
+<div class="container mt-5">
+    <div class="card shadow rounded-3">
+        <div class="card-body">
+            <h2 class="card-title">About BareProx</h2>
+            <p class="card-text">
+                This application manages backups and restores for Proxmox using NetApp integration.
+            </p>
+
+            <hr />
+
+            <div class="text-muted mb-2">
+                <strong>Application Version:</strong>
+                <span class="badge bg-info text-dark">@version</span>
+            </div>
+
+            <div class="text-muted">
+                <strong>License:</strong>
+                <span class="badge bg-success text-light">GPLv3</span><br />
+                This software is licensed under the
+                <a href="https://www.gnu.org/licenses/gpl-3.0.en.html" target="_blank" rel="noopener noreferrer">
+                    GNU General Public License v3.0
+                </a>.
+            </div>
+        </div>
+    </div>
+</div>

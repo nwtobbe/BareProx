@@ -1,0 +1,21 @@
+# Ignore Visual Studio/IDE folders
+.vs/
+.vscode/
+
+# Ignore build output
+bin/
+obj/
+
+# Ignore user-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Ignore Git metadata
+.git/
+.gitignore
+
+# Other
+*.md
+docker-compose*.yml

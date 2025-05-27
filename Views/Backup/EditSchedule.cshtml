@@ -1,0 +1,534 @@
+﻿@model CreateScheduleRequest
+@using System.Text.Json
+@using System.Linq
+
+@{
+    ViewData["Title"] = "Edit Backup Schedule";
+}
+
+<div class="mb-3 d-flex justify-content-between align-items-center">
+    <h4 class="mb-0">Edit Backup Schedule</h4>
+    <a asp-action="Backup" asp-controller="Backup" class="btn btn-secondary">← Back to Schedules</a>
+</div>
+
+<form asp-action="EditSchedule"
+      method="post"
+      class="needs-validation"
+      novalidate="novalidate">
+    <input type="hidden" asp-for="Id" />
+
+    <!-- Name -->
+    <div class="mb-3">
+        <label asp-for="Name" class="form-label">Backup Schedule Name</label>
+        <input asp-for="Name"
+               class="form-control"
+               maxlength="20"
+               pattern="^[A-Za-z0-9_\-]+$"
+               title="Only letters, numbers, hyphens and underscores (max 20 chars)."
+               oninput="validateScheduleName(this)"
+               required />
+        <div class="invalid-feedback">
+            Only letters, numbers, hyphens and underscores are allowed (max 20 characters).
+        </div>
+    </div>
+
+    <!-- Enabled -->
+    <div class="mb-3 form-check">
+        <input class="form-check-input" asp-for="IsEnabled" />
+        <label class="form-check-label" asp-for="IsEnabled">Schedule Enabled</label>
+    </div>
+
+    <!-- Storage -->
+    <div class="mb-3">
+        <label class="form-label">Storage</label>
+        <select asp-for="StorageName"
+                class="form-select"
+                asp-items="Model.StorageOptions"
+                disabled
+                required>
+            <option value="">-- Select Storage --</option>
+        </select>
+        <input type="hidden" name="StorageName" value="@Model.StorageName" />
+        <div class="invalid-feedback">Please select a storage.</div>
+    </div>
+    <input type="hidden" asp-for="ClusterId" id="ClusterId" />
+    <input type="hidden" asp-for="ControllerId" id="ControllerId" />
+
+    <!-- Backup Type -->
+    <div class="mb-3">
+        <label class="form-label">Backup Type</label><br />
+        <div class="form-check form-check-inline">
+            <input asp-for="IsApplicationAware"
+                   class="form-check-input"
+                   type="radio"
+                   id="ccRadio"
+                   value="false" />
+            <label class="form-check-label" for="ccRadio">Crash-Consistent</label>
+        </div>
+        <div class="form-check form-check-inline">
+            <input asp-for="IsApplicationAware"
+                   class="form-check-input"
+                   type="radio"
+                   id="aaRadio"
+                   value="true" />
+            <label class="form-check-label" for="aaRadio">With Proxmox options</label>
+        </div>
+    </div>
+
+    <!-- App-Aware Options -->
+    <div id="appAwareOptions" class="border rounded p-3 bg-light d-none">
+        <div class="form-check">
+            <input class="form-check-input"
+                   type="checkbox"
+                   asp-for="EnableIoFreeze"
+                   id="EnableIoFreeze" />
+            <label class="form-check-label" for="EnableIoFreeze">Enable IO-Freeze</label>
+        </div>
+        <div class="form-check">
+            <input class="form-check-input"
+                   type="checkbox"
+                   asp-for="UseProxmoxSnapshot"
+                   id="UseProxmoxSnapshot" />
+            <label class="form-check-label" for="UseProxmoxSnapshot">Create Proxmox Snapshot</label>
+        </div>
+        <div id="appAwareError" class="text-danger mt-2" style="display:none;">
+            You must choose either IO-Freeze OR Proxmox Snapshot.
+        </div>
+        <div id="proxmoxSnapshotOptions" class="mt-2 ms-3 d-none">
+            <div class="form-check">
+                <input class="form-check-input"
+                       type="checkbox"
+                       asp-for="WithMemory"
+                       id="WithMemory" />
+                <label class="form-check-label" for="WithMemory">Include RAM (With Memory)</label>
+            </div>
+        </div>
+    </div>
+
+    <hr />
+
+    <!-- Schedule Type -->
+    <div class="mb-3">
+        <label class="form-label">Schedule Type</label>
+        <select asp-for="SingleSchedule.Type"
+                id="scheduleTypeSelect"
+                class="form-select"
+                required>
+            <option value="">-- Select Type --</option>
+            <option value="Hourly">Hourly</option>
+            <option value="Daily">Daily</option>
+            <option value="Weekly">Weekly</option>
+        </select>
+        <div class="invalid-feedback">Please select a schedule type.</div>
+    </div>
+
+    <!-- Dynamic schedule fields -->
+    <div id="single-schedule-fields"></div>
+    <input type="hidden" asp-for="SingleSchedule.Label" id="snapmirrorLabel" />
+
+    <!-- Retention -->
+    <div class="mb-3">
+        <label class="form-label">Retention</label>
+        <div class="input-group">
+            <select asp-for="SingleSchedule.RetentionUnit" class="form-select" required>
+                <option value="Hours">Hours</option>
+                <option value="Days">Days</option>
+                <option value="Weeks">Weeks</option>
+            </select>
+            <input asp-for="SingleSchedule.RetentionCount"
+                   type="number"
+                   min="1" max="256"
+                   class="form-control"
+                   id="RetentionCount"
+                   required />
+            <div class="invalid-feedback">
+                Enter a number between 1 and 256.
+            </div>
+        </div>
+    </div>
+
+    <input type="hidden"
+           id="replicableVolumes"
+           value="@string.Join(',', Model.ReplicableVolumes ?? new HashSet<string>())" />
+
+    <!-- Locking -->
+    <div class="mb-3 form-check d-none" id="lockingCheckbox">
+        <input class="form-check-input"
+               type="checkbox"
+               asp-for="EnableLocking"
+               id="EnableLocking"
+               value="true" />
+        <label class="form-check-label" for="EnableLocking">
+            Enable Locking
+        </label>
+    </div>
+    <div class="mb-3 d-none" id="lockingRetention">
+        <label class="form-label">Locked for:</label>
+        <div class="input-group">
+            <input type="number"
+                   class="form-control"
+                   asp-for="LockRetentionCount"
+                   id="LockRetentionCount"
+                   min="1" max="30"
+                   value="@Model.LockRetentionCount" />
+            <select class="form-select"
+                    asp-for="LockRetentionUnit"
+                    id="LockRetentionUnit">
+                <option value="Hours">Hours</option>
+                <option value="Days">Days</option>
+                <option value="Weeks">Weeks</option>
+            </select>
+        </div>
+        <small class="form-text text-muted">
+            Must be strictly less than the standard retention (and ≤ 30).
+        </small>
+    </div>
+
+    <!-- Replicate to Secondary -->
+    <div class="mb-3 form-check d-none" id="replicateCheckbox">
+        <input class="form-check-input" asp-for="ReplicateToSecondary" id="ReplicateToSecondary" />
+        <label class="form-check-label" asp-for="ReplicateToSecondary">Replicate to Secondary</label>
+    </div>
+
+    <!-- Exclude VMs -->
+    <div class="mb-3">
+        <label asp-for="ExcludedVmIds" class="form-label">Exclude VMs</label>
+        <select asp-for="ExcludedVmIds"
+                class="form-select"
+                asp-items="Model.AllVms"
+                multiple></select>
+    </div>
+
+    <div class="mb-3 text-end">
+        <button type="submit" class="btn btn-primary">Update Schedule</button>
+        <a asp-action="Backup" asp-controller="Backup" class="btn btn-secondary">Cancel</a>
+    </div>
+</form>
+
+
+
+@section Scripts {
+    <script>
+        // Expose server-side values for locking fields
+        const volumeMeta = @Html.Raw(JsonSerializer.Serialize(Model.VolumeMeta));
+        var initialLockRetentionCount = @(Model.LockRetentionCount ?? 1);
+        var initialLockRetentionUnit  = "@(Model.LockRetentionUnit ?? "Hours")";
+        var enableLockingInitially    = @(Model.EnableLocking.ToString().ToLower());
+    </script>
+    <script>
+        function validateScheduleName(input) {
+            input.value = input.value
+                .replace(/[^A-Za-z0-9_\-]/g, '')
+                .slice(0, input.maxLength || 20);
+        }
+
+        document.addEventListener('DOMContentLoaded', function () {
+            var form = document.querySelector('form.needs-validation');
+            var nameInput = form?.querySelector('input[asp-for="Name"]');
+            var retentionEl = document.getElementById('RetentionCount');
+            var selectType = document.getElementById('scheduleTypeSelect');
+            var ccRadio = document.getElementById('ccRadio');
+            var aaRadio = document.getElementById('aaRadio');
+            var appOpts = document.getElementById('appAwareOptions');
+            var ioFreezeCb = document.getElementById('EnableIoFreeze');
+            var proxSnapCb = document.getElementById('UseProxmoxSnapshot');
+            var appErr = document.getElementById('appAwareError');
+            var proxOpts = document.getElementById('proxmoxSnapshotOptions');
+            var lockingCheckboxContainer = document.getElementById("lockingCheckbox");
+            var lockingCheckbox = document.getElementById("EnableLocking");
+            var lockingRetentionContainer = document.getElementById("lockingRetention");
+            var lockCountInput = document.getElementById("LockRetentionCount");
+            var lockUnitSelect = document.getElementById("LockRetentionUnit");
+            var replicateBox = document.getElementById('replicateCheckbox');
+            var replicable = (document.getElementById('replicableVolumes') || { value: '' }).value.split(',');
+            var storageSel = form?.querySelector('select[name="StorageName"]');
+            var snapLabel = document.getElementById('snapmirrorLabel');
+
+            // --- Locking UI helpers ---
+            function supportsLocking(volumeName) {
+                if (!volumeMeta[volumeName]) return false;
+                return !!volumeMeta[volumeName].SnapshotLockingEnabled;
+            }
+            function retentionInHours(count, unit) {
+                const c = parseInt(count, 10);
+                if (isNaN(c) || c < 1) return 0;
+                switch (unit) {
+                    case "Hours": return c;
+                    case "Days": return c * 24;
+                    case "Weeks": return c * 168;
+                }
+                return 0;
+            }
+            function recalcLockingOptions() {
+                if (!lockCountInput || !lockUnitSelect) return;
+                const totalHours = retentionInHours(
+                    retentionEl.value,
+                    (document.getElementById('SingleSchedule_RetentionUnit') || document.querySelector('select[name="SingleSchedule.RetentionUnit"]')).value
+                );
+                if (totalHours <= 1) {
+                    lockingCheckbox.checked = false;
+                    lockingCheckbox.disabled = true;
+                    lockingRetentionContainer.classList.add("d-none");
+                    return;
+                }
+                lockingCheckbox.disabled = false;
+                Array.from(lockUnitSelect.options).forEach(opt => {
+                    const unit = opt.value;
+                    const mul = unit === "Days" ? 24 : unit === "Weeks" ? 168 : 1;
+                    let maxCnt = Math.floor((totalHours - 1) / mul);
+                    maxCnt = Math.min(maxCnt, 30);
+                    opt.disabled = maxCnt < 1;
+                    if (unit === lockUnitSelect.value) {
+                        lockCountInput.max = maxCnt;
+                        if (+lockCountInput.value > maxCnt) lockCountInput.value = maxCnt;
+                    }
+                });
+            }
+
+            function setLockingInputsFromModel() {
+                if (lockCountInput) lockCountInput.value = initialLockRetentionCount;
+                if (lockUnitSelect) lockUnitSelect.value = initialLockRetentionUnit;
+            }
+
+            function updateLockingUI(isFirstLoad) {
+                var val = storageSel?.value;
+                if (!lockingCheckboxContainer || !lockingCheckbox || !lockingRetentionContainer) return;
+                if (supportsLocking(val)) {
+                    lockingCheckboxContainer.classList.remove("d-none");
+                    lockingCheckbox.disabled = false;
+
+                    // Restore checkbox state if already set in the model
+                    if (isFirstLoad && enableLockingInitially) {
+                        lockingCheckbox.checked = true;
+                        lockingRetentionContainer.classList.remove("d-none");
+                        setLockingInputsFromModel();
+                    }
+                    // If user switches to another lockable volume, preserve checkbox state
+                    if (lockingCheckbox.checked) {
+                        lockingRetentionContainer.classList.remove("d-none");
+                        setLockingInputsFromModel();
+                    }
+                } else {
+                    lockingCheckboxContainer.classList.add("d-none");
+                    lockingCheckbox.checked = false;
+                    lockingCheckbox.disabled = true;
+                    lockingRetentionContainer.classList.add("d-none");
+                }
+                recalcLockingOptions();
+            }
+
+            // On storage change, update locking/replicate UI and controller/cluster
+            if (storageSel) {
+                storageSel.addEventListener('change', function () {
+                    updateLockingUI(false);
+                    toggleReplicateBox();
+
+                    var val = storageSel.value;
+                    var clusterInput = document.getElementById('ClusterId');
+                    var controllerInput = document.getElementById('ControllerId');
+                    if (volumeMeta[val]) {
+                        clusterInput.value = volumeMeta[val].ClusterId;
+                        controllerInput.value = volumeMeta[val].ControllerId;
+                    } else {
+                        clusterInput.value = "";
+                        controllerInput.value = "";
+                    }
+                });
+                // Run once on page load (true: is first load)
+                updateLockingUI(true);
+            }
+
+            if (lockingCheckbox) {
+                lockingCheckbox.addEventListener("change", function () {
+                    if (lockingCheckbox.checked) {
+                        lockingRetentionContainer.classList.remove("d-none");
+                        setLockingInputsFromModel();
+                        recalcLockingOptions();
+                    } else {
+                        lockingRetentionContainer.classList.add("d-none");
+                    }
+                });
+                // On page load, show inputs if checked
+                if (lockingCheckbox.checked) {
+                    lockingRetentionContainer.classList.remove("d-none");
+                    setLockingInputsFromModel();
+                    recalcLockingOptions();
+                }
+            }
+            if (retentionEl) retentionEl.addEventListener("input", recalcLockingOptions);
+            if (lockUnitSelect) lockUnitSelect.addEventListener("change", recalcLockingOptions);
+            if (lockCountInput) lockCountInput.addEventListener("input", recalcLockingOptions);
+
+            // Replicate to secondary logic
+            function toggleReplicateBox() {
+                if (!storageSel || !replicateBox) return;
+                var val = storageSel.value;
+                if (replicable.indexOf(val) !== -1) {
+                    replicateBox.classList.remove('d-none');
+                } else {
+                    replicateBox.classList.add('d-none');
+                    var cb = replicateBox.querySelector('input');
+                    if (cb) cb.checked = false;
+                }
+            }
+            if (storageSel) {
+                storageSel.addEventListener('change', toggleReplicateBox);
+            }
+            toggleReplicateBox();
+
+            // Name field validation
+            if (nameInput) {
+                nameInput.addEventListener('keypress', function (e) {
+                    if (!/^[A-Za-z0-9_-]$/.test(e.key)) e.preventDefault();
+                });
+                nameInput.addEventListener('paste', function (e) {
+                    e.preventDefault();
+                    var text = (e.clipboardData || window.clipboardData)
+                        .getData('text/plain')
+                        .replace(/[^A-Za-z0-9_-]/g, '')
+                        .slice(0, this.maxLength || 20);
+                    document.execCommand('insertText', false, text);
+                });
+                nameInput.addEventListener('input', function () {
+                    validateScheduleName(this);
+                });
+            }
+
+            // Numeric-only + clamp helper functions
+            function blockNonNumeric(e) {
+                if (['e', 'E', '+', '-', '.'].indexOf(e.key) !== -1) e.preventDefault();
+            }
+            function clampInput(el) {
+                if (!el) return;
+                el.addEventListener('keydown', blockNonNumeric);
+                el.addEventListener('input', function () {
+                    var min = parseInt(el.min, 10),
+                        max = parseInt(el.max, 10),
+                        v = parseInt(el.value, 10);
+                    if (isNaN(v)) return;
+                    if (v < min) el.value = min;
+                    if (v > max) el.value = max;
+                });
+            }
+
+            // Initial model values for dynamic fields
+            var initialType = '@Model.SingleSchedule.Type';
+            var initialStartHour = '@Model.SingleSchedule.StartHour';
+            var initialEndHour = '@Model.SingleSchedule.EndHour';
+            var initialTime = '@Model.SingleSchedule.Time';
+            var initialDays = @Html.Raw(JsonSerializer.Serialize(Model.SingleSchedule.DaysOfWeek ?? Enumerable.Empty<string>()));
+
+            // Render dynamic hour/day fields
+            function renderFields(type) {
+                var c = document.getElementById('single-schedule-fields');
+                if (!c) return;
+                var html = '';
+                if (type === 'Hourly') {
+                    html += '<div class="mb-3"><label>Start Hour</label>' +
+                        '<input type="number" min="0" max="23" step="1" ' +
+                        'name="SingleSchedule.StartHour" value="' + initialStartHour + '" ' +
+                        'class="form-control" required />' +
+                        '<div class="invalid-feedback">Required</div></div>' +
+                        '<div class="mb-3"><label>End Hour</label>' +
+                        '<input type="number" min="0" max="23" step="1" ' +
+                        'name="SingleSchedule.EndHour" value="' + initialEndHour + '" ' +
+                        'class="form-control" required />' +
+                        '<div class="invalid-feedback">Required</div></div>';
+                } else {
+                    html += '<div class="mb-3"><label>Days</label><div>';
+                    ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].forEach(function (d) {
+                        var chk = initialDays.indexOf(d) !== -1 ? 'checked' : '';
+                        html += '<label class="me-2">' +
+                            '<input type="checkbox" name="SingleSchedule.DaysOfWeek" value="' + d + '" ' + chk + ' /> ' + d +
+                            '</label>';
+                    });
+                    html += '</div><div class="invalid-feedback d-block">Select at least one day.</div></div>' +
+                        '<div class="mb-3"><label>Time</label>' +
+                        '<input type="time" name="SingleSchedule.Time" value="' + initialTime + '" ' +
+                        'class="form-control" required />' +
+                        '<div class="invalid-feedback">Required</div></div>';
+                }
+                c.innerHTML = html;
+                if (snapLabel) snapLabel.value = type.toLowerCase();
+                c.querySelectorAll('input[type=number]').forEach(clampInput);
+            }
+
+            // App-Aware toggling
+            function toggleAppAware() {
+                if (!appOpts) return;
+                var show = aaRadio?.checked;
+                appOpts.classList.toggle('d-none', !show);
+                if (!show && ioFreezeCb && proxSnapCb && proxOpts && appErr) {
+                    ioFreezeCb.checked = false;
+                    proxSnapCb.checked = false;
+                    proxOpts.classList.add('d-none');
+                    appErr.style.display = 'none';
+                }
+            }
+            if (ccRadio) ccRadio.addEventListener('change', toggleAppAware);
+            if (aaRadio) aaRadio.addEventListener('change', toggleAppAware);
+            toggleAppAware();
+            // Show 'Include RAM' on initial load if UseProxmoxSnapshot is checked
+            if (proxSnapCb && proxSnapCb.checked && proxOpts) {
+                proxOpts.classList.remove('d-none');
+            }
+            if (ioFreezeCb) {
+                ioFreezeCb.addEventListener('change', function () {
+                    if (ioFreezeCb.checked && proxSnapCb && proxOpts) {
+                        proxSnapCb.checked = false;
+                        proxOpts.classList.add('d-none');
+                    }
+                });
+            }
+            if (proxSnapCb) {
+                proxSnapCb.addEventListener('change', function () {
+                    if (proxSnapCb.checked && ioFreezeCb && proxOpts) {
+                        ioFreezeCb.checked = false;
+                        proxOpts.classList.remove('d-none');
+                    } else if (proxOpts) {
+                        proxOpts.classList.add('d-none');
+                        var withMem = document.getElementById('WithMemory');
+                        if (withMem) withMem.checked = false;
+                    }
+                });
+            }
+
+            if (form) {
+                form.addEventListener('submit', function (e) {
+                    if (!form.checkValidity()) {
+                        e.preventDefault(); e.stopPropagation();
+                    }
+                    if (aaRadio?.checked && ioFreezeCb && proxSnapCb && appErr) {
+                        if (!ioFreezeCb.checked && !proxSnapCb.checked) {
+                            appErr.style.display = 'block';
+                            e.preventDefault(); e.stopPropagation();
+                        }
+                    }
+                    form.classList.add('was-validated');
+                });
+            }
+
+            clampInput(retentionEl);
+
+            // Initial schedule-type render
+            if (initialType && selectType) {
+                selectType.value = initialType;
+                renderFields(initialType);
+                selectType.addEventListener('change', function (e) {
+                    renderFields(e.target.value);
+                });
+            }
+
+            // Cluster/Controller ID update on storage change
+            if (storageSel) {
+                storageSel.addEventListener('change', function () {
+                    var m = volumeMeta[storageSel.value] || {};
+                    var cId = document.getElementById('ClusterId');
+                    var ctrl = document.getElementById('ControllerId');
+                    if (cId) cId.value = m.ClusterId || '';
+                    if (ctrl) ctrl.value = m.ControllerId || '';
+                });
+            }
+        });
+    </script>
+}

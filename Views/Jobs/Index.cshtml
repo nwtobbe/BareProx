@@ -1,0 +1,67 @@
+﻿@model List<BareProx.Models.JobViewModel>
+@{
+    ViewData["Title"] = "Job Status";
+}
+
+<h2>Running & Recent Jobs</h2>
+
+<div class="row mb-3">
+  <div class="col-auto">
+    <select id="statusFilter" class="form-select form-select-sm">
+      <option value="">All Statuses</option>
+      <option>Running</option>
+      <option>Completed</option>
+      <option>Failed</option>
+      <option>Cancelled</option>
+    </select>
+  </div>
+  <div class="col-auto">
+    <input id="searchBox"
+           type="text"
+           class="form-control form-control-sm"
+           placeholder="Search type or VM…" />
+  </div>
+</div>
+
+<div id="jobsContainer">
+  @await Html.PartialAsync("_JobsTable", Model)
+</div>
+
+@section Scripts {
+  <script src="~/lib/jquery/dist/jquery.min.js"></script>
+  <script>
+    (function() {
+      let currentSort = { col: 'StartedAt', asc: false };
+
+      function loadTable() {
+        $.get('@Url.Action("Table")', {
+            status: $('#statusFilter').val(),
+            search: $('#searchBox').val().trim(),
+            sortColumn: currentSort.col,
+            asc: currentSort.asc
+          },
+          html => { $('#jobsContainer').html(html); }
+        );
+      }
+
+      // Filter & search
+      $('#statusFilter, #searchBox').on('change keyup', loadTable);
+
+      // Sorting by header click
+      $('#jobsContainer').on('click', 'th[data-column]', function() {
+        const col = $(this).data('column');
+        currentSort.asc = (currentSort.col === col) ? !currentSort.asc : true;
+        currentSort.col = col;
+        loadTable();
+      });
+
+      // Auto-refresh every 15 seconds
+      setInterval(loadTable, 15000);
+
+      // Initial load
+      loadTable();
+    })();
+  </script>
+}
+
+

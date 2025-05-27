@@ -1,0 +1,187 @@
+﻿@model List<BareProx.Models.UserListItemVm>
+@{
+    ViewData["Title"] = "User Management";
+    // No need for createVm/editVm/pwdVm via ViewBag anymore
+}
+
+<h2>User Management</h2>
+
+@if (TempData["Msg"] != null)
+{
+    <div class="alert alert-success">@TempData["Msg"]</div>
+}
+
+@if (TempData["Error"] != null)
+{
+    <div class="alert alert-danger">@TempData["Error"]</div>
+}
+<button class="btn btn-primary mb-3" data-bs-toggle="modal" data-bs-target="#createModal">
+    Create New User
+</button>
+
+<table class="table table-bordered">
+    <thead>
+        <tr>
+            <th>UserName</th>
+            <th>Email</th>
+            <th>Locked?</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var u in Model)
+        {
+            <tr>
+                <td>@u.UserName</td>
+                <td>@u.Email</td>
+                <td>@(u.IsLocked ? "Yes" : "No")</td>
+                <td>
+                    <button class="btn btn-sm btn-info"
+                            data-bs-toggle="modal" data-bs-target="#editModal"
+                            data-userid="@u.Id" data-email="@u.Email"
+                            data-locked="@u.IsLocked">
+                        Edit
+                    </button>
+                    <button class="btn btn-sm btn-warning"
+                            data-bs-toggle="modal" data-bs-target="#pwdModal"
+                            data-userid="@u.Id">
+                        Change Password
+                    </button>
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+<!-- Create Modal -->
+<div class="modal fade" id="createModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form asp-action="Create" method="post">
+                <div class="modal-header">
+                    <h5 class="modal-title">Create User</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    @Html.AntiForgeryToken()
+                    <div class="mb-2">
+                        <label for="Create_UserName" class="form-label">Username</label>
+                        <input type="text" class="form-control" id="Create_UserName" name="UserName" required />
+                    </div>
+                    <div class="mb-2">
+                        <label for="Create_Email" class="form-label">Email</label>
+                        <input type="email" class="form-control" id="Create_Email" name="Email" required />
+                    </div>
+                    <div class="mb-2">
+                        <label for="Create_Password" class="form-label">Password</label>
+                        <input type="password" class="form-control" id="Create_Password" name="Password" required />
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" data-bs-dismiss="modal" type="button">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Create</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Modal -->
+<!-- Edit Modal -->
+<div class="modal fade" id="editModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form asp-action="Edit" method="post" id="editUserForm">
+                <div class="modal-header">
+                    <h5 class="modal-title">Edit User</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    @Html.AntiForgeryToken()
+                    <input type="hidden" name="Id" />
+                    <div class="mb-2">
+                        <label for="Edit_Email" class="form-label">Email</label>
+                        <input type="email" class="form-control" id="Edit_Email" name="Email" required />
+                    </div>
+                    <div class="form-check">
+                        <input type="checkbox" class="form-check-input" id="Edit_Lock" name="Lock" value="true" />
+                        <label for="Edit_Lock" class="form-check-label">Lock User</label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" data-bs-dismiss="modal" type="button">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save</button>
+                    <!-- We move the Delete button's form outside of the Edit form, but style it inline -->
+                </div>
+            </form>
+            <!-- Delete form: outside the edit form, but visually next to other footer buttons -->
+            <form asp-action="Delete" method="post" class="d-inline" id="deleteUserForm" style="margin: 0 1rem 1rem auto;">
+                @Html.AntiForgeryToken()
+                <input type="hidden" name="Id" />
+                <button type="submit" class="btn btn-danger"
+                        onclick="return confirm('Are you sure you want to delete this user? This cannot be undone.');">
+                    Delete
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+
+
+<!-- Change Password Modal -->
+<div class="modal fade" id="pwdModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form asp-action="ChangePassword" method="post">
+                <div class="modal-header">
+                    <h5 class="modal-title">Change Password</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    @Html.AntiForgeryToken()
+                    <input type="hidden" name="Id" />
+                    <div class="mb-2">
+                        <label for="Pwd_NewPassword" class="form-label">New Password</label>
+                        <input type="password" class="form-control" id="Pwd_NewPassword" name="NewPassword" required />
+                    </div>
+                    <div class="mb-2">
+                        <label for="Pwd_ConfirmPassword" class="form-label">Confirm Password</label>
+                        <input type="password" class="form-control" id="Pwd_ConfirmPassword" name="ConfirmPassword" required />
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" data-bs-dismiss="modal" type="button">Cancel</button>
+                    <button type="submit" class="btn btn-warning">Change</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        // fill edit form when modal opens
+        var editModal = document.getElementById('editModal');
+        editModal.addEventListener('show.bs.modal', function (e) {
+          var btn = e.relatedTarget;
+          var id    = btn.getAttribute('data-userid');
+          var email = btn.getAttribute('data-email');
+          var locked= btn.getAttribute('data-locked') === 'True';
+          this.querySelector('input[name="Id"]').value    = id;
+          this.querySelector('input[name="Email"]').value = email;
+          var locked = btn.getAttribute('data-locked');
+          locked = locked && locked.toLowerCase() === 'true';
+          this.querySelector('input[name="Lock"]').checked = locked;
+
+          var delForm = this.querySelector('#deleteUserForm input[name="Id"]');
+          if (delForm) delForm.value = id;
+        });
+
+        // fill pwd form
+        var pwdModal = document.getElementById('pwdModal');
+        pwdModal.addEventListener('show.bs.modal', function(e) {
+          var id = e.relatedTarget.getAttribute('data-userid');
+          this.querySelector('input[name="Id"]').value = id;
+        });
+    </script>
+}

@@ -1,0 +1,57 @@
+﻿@model BareProx.Models.NetappControllerTreeDto
+
+@if (Model == null || Model.Svms == null || !Model.Svms.Any())
+{
+    <div class="alert alert-warning">No volumes found for this controller.</div>
+}
+else
+{
+    <ul class="list-group">
+        <li class="list-group-item active fw-bold">
+            @Model.ControllerName
+        </li>
+
+        @for (int i = 0; i < Model.Svms.Count; i++)
+        {
+            var svm = Model.Svms[i];
+            var collapseId = $"collapse-svm-{i}";
+
+            <li class="list-group-item">
+                <div class="d-flex justify-content-between align-items-center">
+                    <strong>@svm.Name</strong>
+                    <button class="btn btn-sm btn-outline-secondary"
+                            type="button"
+                            data-bs-toggle="collapse"
+                            data-bs-target="#@collapseId"
+                            aria-expanded="false"
+                            aria-controls="@collapseId">
+                        Toggle Volumes
+                    </button>
+                </div>
+
+                <div class="collapse mt-2" id="@collapseId">
+                    <ul class="list-group">
+                        @foreach (var vol in svm.Volumes)
+                        {
+                            <li class="list-group-item">
+                                <input type="checkbox"
+                                       class="volume-checkbox form-check-input me-1"
+                                       data-vserver="@svm.Name"
+                                       data-volume="@vol.VolumeName"
+                                       data-uuid="@vol.Uuid"
+                                       data-mountip="@vol.MountIp"
+                                       data-clusterid="@vol.ClusterId"
+                                       @(vol.IsSelected ? "checked" : "") />
+                                @vol.VolumeName
+                                <small class="text-muted">(@vol.MountIp)</small>
+                            </li>
+                        }
+                    </ul>
+                </div>
+            </li>
+        }
+    </ul>
+}
+@section Scripts {
+    <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
+}
