@@ -1,0 +1,93 @@
+﻿@model List<VolumeSnapshotTreeDto>
+
+<h2>Snapshots</h2>
+
+<div id="snapshot-tree">
+    @foreach (var volume in Model)
+    {
+        <div class="card mb-2">
+            <div class="card-header d-flex justify-content-between">
+                <strong>@volume.VolumeName</strong>
+                <button class="btn btn-sm btn-outline-primary"
+                        onclick="openMountWizard('@volume.VolumeName', '@volume.Vserver')">
+                    Mount
+                </button>
+            </div>
+            <ul class="list-group list-group-flush">
+                @foreach (var snap in volume.Snapshots)
+                {
+                    <li class="list-group-item">@snap</li>
+                }
+            </ul>
+        </div>
+    }
+</div>
+
+<!-- Mount Modal -->
+<div class="modal fade" id="mountModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form id="mountForm" method="post" asp-action="MountSnapshot">
+                <div class="modal-header">
+                    <h5 class="modal-title">Mount Snapshot</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="volumeName" name="VolumeName" />
+                    <input type="hidden" id="vserver" name="Vserver" />
+
+                    <div class="mb-2">
+                        <label>Snapshot</label>
+                        <select name="SnapshotName" id="snapshotSelect" class="form-control"></select>
+                    </div>
+
+                    <div class="mb-2">
+                        <label>Access Mode</label>
+                        <select name="ReadWrite" class="form-control">
+                            <option value="ro">Read-Only</option>
+                            <option value="rw">Read-Write</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-2">
+                        <label>SVM NFS IP</label>
+                        <select name="MountIp" id="nfsIpSelect" class="form-control"></select>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="submit" class="btn btn-primary">Mount</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        function openMountWizard(volumeName, vserver) {
+            $("#volumeName").val(volumeName);
+            $("#vserver").val(vserver);
+
+            // Clear previous data
+            $("#snapshotSelect").empty();
+            $("#nfsIpSelect").empty();
+
+            // Fetch snapshots
+            $.get(`/Wafl/GetSnapshotsForVolume?volume=${volumeName}&vserver=${vserver}`, function(data) {
+                data.snapshots.forEach(snap =>
+                    $("#snapshotSelect").append(`<option value="${snap}">${snap}</option>`)
+                );
+            });
+
+            // Fetch NFS-enabled LIFs
+            $.get(`/Wafl/GetNfsIps?vserver=${vserver}`, function(data) {
+                data.ips.forEach(ip =>
+                    $("#nfsIpSelect").append(`<option value="${ip}">${ip}</option>`)
+                );
+            });
+
+            new bootstrap.Modal(document.getElementById("mountModal")).show();
+        }
+    </script>
+}
+

@@ -1,0 +1,95 @@
+﻿@model BareProx.Models.NetappController
+
+@{
+    ViewData["Title"] = "Edit Netapp Controller";
+}
+
+<h2>Edit Netapp Controller</h2>
+
+<!-- 🔧 Controller Edit Form -->
+<form asp-action="Edit" method="post">
+    <input type="hidden" asp-for="Id" />
+
+    <div class="mb-3">
+        <label asp-for="Hostname" class="form-label"></label>
+        <input asp-for="Hostname" class="form-control" />
+        <span asp-validation-for="Hostname" class="text-danger"></span>
+    </div>
+
+    <div class="mb-3">
+        <label asp-for="IpAddress" class="form-label"></label>
+        <input asp-for="IpAddress" class="form-control" />
+        <span asp-validation-for="IpAddress" class="text-danger"></span>
+    </div>
+
+    <div class="mb-3">
+        <label asp-for="Username" class="form-label"></label>
+        <input asp-for="Username" class="form-control" />
+        <span asp-validation-for="Username" class="text-danger"></span>
+    </div>
+
+    <div class="mb-3">
+        <label asp-for="PasswordHash" class="form-label">New Password (or old to save)</label>
+        <input asp-for="PasswordHash" class="form-control" type="password" />
+        <span asp-validation-for="PasswordHash" class="text-danger"></span>
+    </div>
+
+    <div class="mb-3 form-check">
+        <input asp-for="IsPrimary" class="form-check-input" />
+        <label asp-for="IsPrimary" class="form-check-label">Is Primary Controller?</label>
+    </div>
+
+    <button type="submit" class="btn btn-primary">Save</button>
+    <a asp-action="Index" class="btn btn-secondary">Cancel</a>
+</form>
+
+<hr />
+
+<!-- 📦 NetApp Volume Tree Selection -->
+<h4>Select Exported NetApp Volumes</h4>
+
+<div id="volume-list-container">
+    <p>Loading available volumes...</p>
+</div>
+
+<input type="hidden" id="netappControllerId" value="@Model.Id" />
+<button type="button" id="saveVolumes" class="btn btn-success mt-2">Save Selected Volumes</button>
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+    <script>
+        async function loadVolumeTree() {
+            const id = document.getElementById("netappControllerId").value;
+            const res = await fetch(`/Settings/GetVolumesTree?storageId=${id}`);
+            const html = await res.text();
+            document.getElementById("volume-list-container").innerHTML = html;
+        }
+
+        async function saveSelectedVolumes() {
+            const checkboxes = document.querySelectorAll(".volume-checkbox:checked");
+
+        const volumes = Array.from(checkboxes).map(cb => ({
+            Vserver: cb.dataset.vserver,
+            VolumeName: cb.dataset.volume,
+            Uuid: cb.dataset.uuid,
+            MountIp: cb.dataset.mountip,
+            ClusterId: parseInt(cb.dataset.clusterid)
+        }));
+
+        const response = await fetch("/Settings/SaveNetappSelectedVolumes", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(volumes)
+        });
+
+            if (response.ok) {
+                alert("Volumes saved.");
+            } else {
+                alert("Failed to save volumes.");
+            }
+        }
+
+        document.getElementById("saveVolumes").addEventListener("click", saveSelectedVolumes);
+        loadVolumeTree();
+    </script>
+}

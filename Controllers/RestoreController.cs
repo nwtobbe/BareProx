@@ -1,0 +1,134 @@
+﻿using BareProx.Data;
+using BareProx.Models;
+using BareProx.Services;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Rendering;
+using Microsoft.EntityFrameworkCore;
+using System.Threading.Tasks;
+using System.Linq;
+using System;
+
+namespace BareProx.Controllers
+{
+    public class RestoreController : Controller
+    {
+        private readonly ApplicationDbContext _context;
+        private readonly IBackupService _backupService;
+        private readonly INetappService _netappService;
+        private readonly ProxmoxService _proxmoxService;
+        private readonly IRestoreService _restoreService;
+
+        public RestoreController(
+            ApplicationDbContext context,
+            IBackupService backupService,
+            INetappService netappService,
+            ProxmoxService proxmoxService,
+            IRestoreService restoreService)
+        {
+            _context = context;
+            _backupService = backupService;
+            _netappService = netappService;
+            _proxmoxService = proxmoxService;
+            _restoreService = restoreService;
+        }
+
+        public async Task<IActionResult> Index()
+        {
+            var backups = await _context.BackupRecords
+                .Select(r => new RestoreViewModel
+                {
+                    BackupId = r.Id,
+                    VmName = r.VmName.ToString(),
+                    VmId = r.VMID.ToString(),
+                    SnapshotName = r.SnapshotName,
+                    VolumeName = r.StorageName,
+                    StorageName = r.StorageName,
+                    ClusterName = "ProxMox",
+                    TimeStamp = r.TimeStamp
+                })
+                .ToListAsync();
+            return View(backups);
+        }
+
+        public async Task<IActionResult> Restore(int backupId)
+        {
+            var record = await _context.BackupRecords.FindAsync(backupId);
+            if (record == null) return NotFound();
+
+            var cluster = await _context.ProxmoxClusters
+                .Include(c => c.Hosts)
+                .FirstOrDefaultAsync();
+            if (cluster == null) return StatusCode(500, "Cluster not configured");
+
+            var originalHost = cluster.Hosts.FirstOrDefault(h => h.Hostname == record.HostName);
+
+            var vm = new RestoreFormViewModel
+            {
+                BackupId = record.Id,
+                VmId = record.VMID.ToString(),
+                VmName = record.VmName.ToString(),
+                SnapshotName = record.SnapshotName,
+                VolumeName = record.StorageName,
+                OriginalConfig = record.ConfigurationJson,
+                CloneVolumeName = $"clone_{record.VMID}_{DateTime.UtcNow:yyyyMMddHHmm}",
+                StartDisconnected = false,
+                OriginalHostAddress = originalHost?.HostAddress,
+                OriginalHostName = originalHost?.Hostname
+            };
+
+            vm.HostOptions = cluster.Hosts
+                .Select(h => new SelectListItem { Value = h.HostAddress, Text = $"{h.Hostname} ({h.HostAddress})" })
+                .ToList();
+
+            return View(vm);
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> PerformRestore(RestoreFormViewModel model)
+        {
+            var backup = await _context.BackupRecords.FindAsync(model.BackupId);
+            if (backup == null) return RedirectToAction(nameof(Index));
+
+            var cluster = await _context.ProxmoxClusters
+                .Include(c => c.Hosts)
+                .FirstOrDefaultAsync();
+            if (cluster == null)
+            {
+                TempData["Error"] = "Cluster not configured";
+                return RedirectToAction(nameof(Index));
+            }
+
+            var origHost = cluster.Hosts.FirstOrDefault(h => h.HostAddress == model.OriginalHostAddress);
+            bool origExists = origHost != null &&
+                await _proxmoxService.CheckIfVmExistsAsync(cluster, origHost, int.Parse(model.VmId));
+
+            if (model.RestoreType == RestoreType.ReplaceOriginal && !origExists)
+                model.RestoreType = RestoreType.CreateNew;
+
+            var targetHost = cluster.Hosts.FirstOrDefault(h => h.HostAddress == model.HostAddress);
+            if (targetHost == null)
+            {
+                ModelState.AddModelError(nameof(model.HostAddress), "Select a valid host");
+                model.HostOptions = cluster.Hosts
+                    .Select(h => new SelectListItem { Value = h.HostAddress, Text = $"{h.Hostname} ({h.HostAddress})" })
+                    .ToList();
+                return View("Restore", model);
+            }
+
+            if (model.RestoreType == RestoreType.CreateNew && string.IsNullOrWhiteSpace(model.NewVmName))
+            {
+                ModelState.AddModelError(nameof(model.NewVmName), "Enter a name for the new VM");
+                model.HostOptions = cluster.Hosts
+                    .Select(h => new SelectListItem { Value = h.HostAddress, Text = $"{h.Hostname} ({h.HostAddress})" })
+                    .ToList();
+                return View("Restore", model);
+            }
+
+            model.ControllerId = backup.ControllerId;
+
+            var success = await _restoreService.RunRestoreAsync(model);
+            TempData["Message"] = success ? "Restore queued" : "Restore failed";
+            return RedirectToAction(nameof(Index));
+        }
+    }
+}

@@ -1,0 +1,63 @@
+﻿@model List<BareProx.Models.Job>
+
+@{
+    ViewData["Title"] = "Job Status";
+
+    string GetRowClass(string status)
+    {
+        return status switch
+        {
+            "Completed" => "table-success",
+            "Failed" => "table-danger",
+            "Cancelled" => "table-warning",
+            "Running" => "table-info",
+            _ => ""
+        };
+    }
+}
+
+<h2>Running & Recent Jobs</h2>
+
+@if (Model.Any())
+{
+    <table class="table table-striped">
+        <thead>
+            <tr>
+                <th>Type</th>
+                <th>VM</th>
+                <th>Status</th>
+                <th>Started</th>
+                <th>Completed</th>
+                <th>Error</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var job in Model)
+            {
+                <tr class="@GetRowClass(job.Status)">
+                    <td>@job.Type</td>
+                    <td>@job.RelatedVm</td>
+                    <td>@job.Status</td>
+                    <td>@job.StartedAt.ToString("yyyy-MM-dd HH:mm")</td>
+                    <td>@(job.CompletedAt?.ToString("yyyy-MM-dd HH:mm") ?? "-")</td>
+                    <td>@(string.IsNullOrEmpty(job.ErrorMessage) ? "-" : job.ErrorMessage)</td>
+                    <td>
+                        @if (job.Status == "Running")
+                        {
+                            <a asp-controller="Jobs" asp-action="Cancel" asp-route-id="@job.Id" class="btn btn-sm btn-danger">Cancel</a>
+                        }
+                        else
+                        {
+                            <span class="text-muted">-</span>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+else
+{
+    <p>No jobs found.</p>
+}

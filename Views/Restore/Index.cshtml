@@ -1,0 +1,57 @@
+﻿@model List<BareProx.Models.RestoreViewModel>
+
+@{
+    ViewData["Title"] = "Restore VMs";
+}
+
+<h2>Restore Backups</h2>
+
+<!-- Use local DataTables CSS -->
+<link rel="stylesheet" href="~/lib/datatables/media/css/jquery.dataTables.min.css" />
+
+<table id="restoreTable" class="table table-bordered table-striped">
+    <thead>
+        <tr>
+            <th>VM Name</th>
+            <th>Snapshot</th>
+            <th>Volume</th>
+            <th>Storage</th>
+            <th>Cluster</th>
+            <th>Date</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var item in Model)
+        {
+            <tr>
+                <td>@item.VmName (ID: @item.VmId)</td>
+                <td>@item.SnapshotName</td>
+                <td>@item.VolumeName</td>
+                <td>@item.StorageName</td>
+                <td>@item.ClusterName</td>
+                <td>@item.TimeStamp.ToString("yyyy-MM-dd HH:mm")</td>
+                <td>
+                    <form asp-controller="Restore" asp-action="Restore" method="get">
+                        <input type="hidden" name="backupId" value="@item.BackupId" />
+                        <button type="submit" class="btn btn-sm btn-primary">Restore</button>
+                    </form>
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+<!-- Use local jQuery and DataTables JS -->
+@section Scripts {
+    <script src="~/lib/jquery/dist/jquery.min.js"></script>
+    <script src="~/lib/datatables/media/js/jquery.dataTables.min.js"></script>
+    <script>
+        $(document).ready(function () {
+            $('#restoreTable').DataTable({
+                order: [[5, 'desc']],
+                pageLength: 25
+            });
+        });
+    </script>
+}

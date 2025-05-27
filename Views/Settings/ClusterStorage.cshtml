@@ -1,0 +1,39 @@
+﻿@model BareProx.Models.SelectStorageViewModel
+
+<h3>Select Shared NFS Storage</h3>
+
+<form asp-controller="Settings" asp-action="SaveSelectedStorage" method="post">
+    @Html.HiddenFor(m => m.ClusterId)
+
+    <table class="table table-striped">
+        <thead>
+            <tr>
+                <th>Select</th>
+                <th>Storage</th>
+                <th>Type</th>
+                <th>Path</th>
+                <th>Node</th>
+            </tr>
+        </thead>
+        <tbody>
+            @for (int i = 0; i < Model.StorageList.Count; i++)
+            {
+                var storage = Model.StorageList[i];
+                <tr>
+                    <td>
+                        <input type="checkbox"
+                               name="SelectedStorageIds"
+                               value="@storage.Id"
+                        @(storage.IsSelected ? "checked" : "") />
+                    </td>
+                    <td>@storage.Storage</td>
+                    <td>@storage.Type</td>
+                    <td>@storage.Path</td>
+                    <td>@storage.Node</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <button type="submit" class="btn btn-success">Save Selected</button>
+</form>

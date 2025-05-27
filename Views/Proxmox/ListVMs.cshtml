@@ -1,0 +1,208 @@
+﻿@model List<StorageWithVMsDto>
+
+<h2>Proxmox Storage</h2>
+
+@foreach (var storage in Model)
+{
+    <div class="card mb-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <strong>@storage.StorageName</strong>
+
+            <!-- Button opens the modal -->
+            <button type="button"
+                    class="btn btn-sm btn-primary"
+                    data-bs-toggle="modal"
+                    data-bs-target="#backupModal"
+                    data-storage="@storage.StorageName"
+                    data-cluster="@storage.ClusterId"
+                    data-controllerid="@storage.NetappControllerId">
+                Backup Now
+            </button>
+        </div>
+        <div class="card-body">
+            @if (storage.VMs.Any())
+            {
+                <ul class="list-group">
+                    @foreach (var vm in storage.VMs)
+                    {
+                        <li class="list-group-item">
+                            VM ID: @vm.Id – @vm.Name
+                        </li>
+                    }
+                </ul>
+            }
+            else
+            {
+                <p class="text-muted">No VMs in this storage.</p>
+            }
+        </div>
+    </div>
+}
+
+<!-- Modal (single shared modal for all storage cards) -->
+<div class="modal fade" id="backupModal" tabindex="-1" aria-labelledby="backupModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <!-- NOTE: tag-helpers here -->
+        <form asp-controller="Backup" asp-action="StartBackupNow" method="post" id="backupNowForm">
+            <input type="hidden" name="StorageName" id="modalStorageName" />
+            <input type="hidden" name="ClusterId" id="modalClusterId" />
+            <input type="hidden" name="NetappControllerId" id="modalControllerId" />
+            <input type="hidden" name="ScheduleId" value="999" />
+
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="backupModalLabel">Run Backup Now</h5>
+                    <!-- now simply navigates back if you hit × -->
+                    <button type="button"
+                            class="btn-close"
+                            data-bs-dismiss="modal"
+                            aria-label="Close">
+                    </button>
+                </div>
+
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Backup Type</label><br />
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input"
+                                   type="radio"
+                                   name="IsApplicationAware"
+                                   value="false"
+                                   checked />
+                            <label class="form-check-label">Crash-Consistent</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input"
+                                   type="radio"
+                                   name="IsApplicationAware"
+                                   value="true"
+                                   id="appAwareRadio" />
+                            <label class="form-check-label" for="appAwareRadio">Application-Aware</label>
+                        </div>
+
+                        <div id="appAwareOptions" class="border rounded p-3 mt-3 bg-light d-none">
+                            <label class="form-label">App-Aware Options</label>
+                            <div class="form-check">
+                                <input class="form-check-input"
+                                       type="checkbox"
+                                       name="EnableIoFreeze"
+                                       id="EnableIoFreeze"
+                                       value="true" />
+                                <label class="form-check-label" for="EnableIoFreeze">Enable IO-Freeze</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input"
+                                       type="checkbox"
+                                       name="UseProxmoxSnapshot"
+                                       id="UseProxmoxSnapshot"
+                                       value="true" />
+                                <label class="form-check-label" for="UseProxmoxSnapshot">Create Proxmox Snapshot</label>
+                            </div>
+                            <div id="proxmoxSnapshotOptions" class="mt-2 ms-3 d-none">
+                                <div class="form-check">
+                                    <input class="form-check-input"
+                                           type="checkbox"
+                                           name="WithMemory"
+                                           id="WithMemory"
+                                           value="true" />
+                                    <label class="form-check-label" for="WithMemory">Include RAM (With Memory)</label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="Label" class="form-label">Label</label>
+                        <select name="Label" class="form-select">
+                            <option value="Manual">Manual</option>
+                            <option value="Hourly">Hourly</option>
+                            <option value="Daily">Daily</option>
+                            <option value="Weekly">Weekly</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Retention</label>
+                        <div class="input-group">
+                            <input type="number"
+                                   name="RetentionCount"
+                                   class="form-control"
+                                   min="1"
+                                   max="999"
+                                   value="7" />
+                            <select name="RetentionUnit" class="form-select">
+                                <option value="Hours">Hours</option>
+                                <option value="Days" selected>Days</option>
+                                <option value="Weeks">Weeks</option>
+                            </select>
+                        </div>
+                        <small class="form-text text-muted">
+                            How long to keep this snapshot before cleanup.
+                        </small>
+                    </div>
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button"
+                            class="btn btn-secondary"
+                            data-bs-dismiss="modal">
+                        Cancel
+                    </button>
+                    <!-- this will now do a full POST and follow the controller's redirect -->
+                    <button type="submit" class="btn btn-success">
+                        Run Now
+                    </button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        document.addEventListener("DOMContentLoaded", function () {
+          const appAwareRadios   = document.querySelectorAll("input[name='IsApplicationAware']");
+          const optionsContainer = document.getElementById("appAwareOptions");
+          const proxmoxCheckbox  = document.getElementById("UseProxmoxSnapshot");
+          const proxmoxOptions   = document.getElementById("proxmoxSnapshotOptions");
+          const freezeCheckbox   = document.getElementById("EnableIoFreeze");
+
+          function updateVisibility() {
+            const selected = [...appAwareRadios].find(r => r.checked);
+            optionsContainer.classList.toggle("d-none", selected?.value !== "true");
+          }
+
+          function updateSnapshotOptions() {
+            const useSnapshot = proxmoxCheckbox.checked;
+            proxmoxOptions.classList.toggle("d-none", !useSnapshot);
+            if (useSnapshot && freezeCheckbox.checked) {
+              freezeCheckbox.checked = false;
+            }
+          }
+
+          function handleFreezeToggle() {
+            if (freezeCheckbox.checked && proxmoxCheckbox.checked) {
+              proxmoxCheckbox.checked = false;
+              proxmoxOptions.classList.add("d-none");
+            }
+          }
+
+          // Populate hidden fields when modal opens
+          const backupModal = document.getElementById('backupModal');
+          backupModal.addEventListener('show.bs.modal', function (event) {
+            const btn = event.relatedTarget;
+            document.getElementById('modalStorageName').value    = btn.getAttribute('data-storage');
+            document.getElementById('modalClusterId').value      = btn.getAttribute('data-cluster');
+            document.getElementById('modalControllerId').value   = btn.getAttribute('data-controllerid');
+          });
+
+          appAwareRadios.forEach(r => r.addEventListener("change", updateVisibility));
+          proxmoxCheckbox.addEventListener("change", updateSnapshotOptions);
+          freezeCheckbox.addEventListener("change", handleFreezeToggle);
+
+          // init on page load
+          updateVisibility();
+          updateSnapshotOptions();
+        });
+    </script>
+}

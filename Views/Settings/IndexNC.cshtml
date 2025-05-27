@@ -1,0 +1,62 @@
+@model IEnumerable<BareProx.Models.NetappController>
+
+@{
+    ViewData["Title"] = "Netapp Controllers";
+}
+
+<h2>Netapp Controllers</h2>
+
+<p>
+    <a asp-action="Create" class="btn btn-primary">Add New Controller</a>
+</p>
+
+<table class="table table-striped">
+    <thead>
+        <tr>
+            <th>Hostname</th>
+            <th>IP Address</th>
+            <th>Type</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var controller in Model)
+        {
+            <tr>
+                <td>@controller.Hostname</td>
+                <td>@controller.IpAddress</td>
+                <td>@(controller.IsPrimary == true ? "Primary" : "Secondary")</td>
+                <td>
+                    <a asp-action="Edit" asp-route-id="@controller.Id" class="btn btn-sm btn-secondary">Edit</a>
+                    <a asp-action="Delete" asp-route-id="@controller.Id" class="btn btn-sm btn-danger">Delete</a>
+                    @* <button class="btn btn-sm btn-primary select-volumes-btn" data-storageid="@controller.Id">Select Volumes</button> *@
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+<!-- Container where the volumes tree partial will be injected -->
+<div id="volumes-tree-container" style="margin-top:20px;"></div>
+
+@* @section Scripts {
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script>
+        $(function () {
+            $(".select-volumes-btn").click(function () {
+                var storageId = $(this).data("storageid");
+
+                $.ajax({
+                    url: '@Url.Action("GetVolumesTree", "Settings")',
+                    data: { storageId: storageId },
+                    success: function (partialViewResult) {
+                        $("#volumes-tree-container").html(partialViewResult);
+                    },
+                    error: function () {
+                        alert("Failed to load volumes tree.");
+                    }
+                });
+            });
+        });
+    </script>
+} *@

@@ -1,0 +1,42 @@
+Authentication failed error page?
+Timezones under settings
+
+Add schedules + run
+Add select storage svm:s for primary, volumes to use
+	and use it in functions
+Add select storage svms: for secondary, volumes to use
+	and user it in functions
+Fix create backup so you only can select volumes that have nfs and are in use by proxmox
+
+Fix add cluster
+	Automatically add all nodes to the cluster by one ip
+	Add scheduled task to check access
+
+Add lock for snapshots / clones
+
+Add Users / lock page
+
+fix install db / first run
+secondary...
+tps...
+mail
+logging
+More logging add categories and sorting, scavange with janitor
+extra verifications
+
+Add rename files via api ontap to restore
+Missing snapshots?
+
+
+
+
+
+Done.
+-Add options for io-freeze, Proxmox Snapshot, include memory and don't try to suspend
+-Add a table for snapshots with create date an retention to delete later:
+	Added a check if the snapshot can be deleted, let the record stay an retry until successful
+-encrypt passwords in db Netapp + Proxmox + tokens
+-Not updating BackupRecord correctly
+-Added Setup if no is configured
+-Added Encryption for dbpassword
+-added default user during setup

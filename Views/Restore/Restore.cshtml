@@ -1,0 +1,88 @@
+﻿@model BareProx.Models.RestoreFormViewModel
+
+@{
+    ViewData["Title"] = "Restore VM Options";
+}
+
+<h2>Restore VM</h2>
+
+<form asp-controller="Restore" asp-action="PerformRestore" method="post" novalidate>
+    <input type="hidden" asp-for="BackupId" />
+    <input type="hidden" asp-for="OriginalConfig" />
+    <input type="hidden" asp-for="OriginalHostAddress" />
+    <input type="hidden" asp-for="OriginalHostName" />
+
+    <div class="mb-3">
+        <label class="form-label">Original VM ID</label>
+        <input type="text" class="form-control" asp-for="VmId" readonly />
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label">Original VM Name</label>
+        <input type="text" class="form-control" asp-for="VmName" readonly />
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label">Snapshot</label>
+        <input type="text" class="form-control" asp-for="SnapshotName" readonly />
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label">Volume</label>
+        <input type="text" class="form-control" asp-for="VolumeName" readonly />
+    </div>
+    <div class="mb-3">
+        <label asp-for="HostAddress" class="form-label">Target Host</label>
+        <select asp-for="HostAddress" class="form-select" asp-items="Model.HostOptions">
+            <option value="">-- select a host --</option>
+        </select>
+        <span asp-validation-for="HostAddress" class="text-danger"></span>
+    </div>
+    <div class="mb-3">
+        <label asp-for="RestoreType" class="form-label">Restore Type</label>
+        <select asp-for="RestoreType" class="form-select">
+            <option value="CreateNew">Create as New VM</option>
+            <option value="ReplaceOriginal">Replace Existing VM</option>
+        </select>
+    </div>
+
+    <div class="mb-3" id="newVmNameGroup">
+        <label asp-for="NewVmName" class="form-label">New VM Name</label>
+        <input type="text" class="form-control" asp-for="NewVmName" />
+        <span asp-validation-for="NewVmName" class="text-danger"></span>
+    </div>
+
+    <div class="form-check mb-3">
+        <input class="form-check-input" type="checkbox" asp-for="StartDisconnected" />
+        <label class="form-check-label" asp-for="StartDisconnected">
+            Start Disconnected from Network
+        </label>
+    </div>
+
+    <button type="submit" name="submit" value="Start" class="btn btn-success">Start Restore</button>
+    <button type="submit" name="submit" value="Cancel" class="btn btn-secondary">Cancel</button>
+</form>
+
+@section Scripts {
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            var select = document.querySelector('select[name="RestoreType"]');
+            var vmNameGroup = document.getElementById('newVmNameGroup');
+            var newVmNameInput = document.querySelector('input[name="NewVmName"]');
+            var originalVmName = document.querySelector('input[name="VmName"]').value;
+
+            function toggleVmName() {
+                if (select.value === 'ReplaceOriginal') {
+                    vmNameGroup.style.display = 'none';
+                    newVmNameInput.value = originalVmName;
+                } else {
+                    vmNameGroup.style.display = 'block';
+                    newVmNameInput.value = '';
+                }
+            }
+
+            select.addEventListener('change', toggleVmName);
+            toggleVmName();
+        });
+    </script>
+}

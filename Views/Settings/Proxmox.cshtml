@@ -1,0 +1,71 @@
+﻿@using BareProx.Models
+@model IEnumerable<ProxmoxCluster>
+
+@{
+    ViewData["Title"] = "Proxmox Clusters";
+}
+
+<h2>Proxmox Clusters</h2>
+
+<!-- Feedback Message -->
+@if (TempData["Message"] != null)
+{
+    <div class="alert alert-info">@TempData["Message"]</div>
+}
+
+<!-- Cluster Table -->
+<table class="table table-bordered">
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Status</th>
+            <th>Last Checked</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var cluster in Model)
+        {
+            <tr>
+                <td>@cluster.Name</td>
+                <td>@cluster.LastStatus</td>
+                <td>@cluster.LastChecked?.ToLocalTime().ToString("g")</td>
+                <td>
+                    <form asp-controller="Settings" asp-action="AuthenticateCluster" method="post" style="display:inline;">
+                        <input type="hidden" name="id" value="@cluster.Id" />
+                        <button type="submit" class="btn btn-primary btn-sm">Authenticate</button>
+                    </form>
+
+                    <a asp-controller="Settings" asp-action="EditCluster" asp-route-id="@cluster.Id" class="btn btn-warning btn-sm">Edit</a>
+
+                    <a asp-controller="Settings" asp-action="ClusterStorage" asp-route-clusterId="@cluster.Id" class="btn btn-info btn-sm">Storage</a>
+
+                    <form asp-controller="Settings" asp-action="DeleteCluster" method="post" style="display:inline;" onsubmit="return confirm('Are you sure you want to delete this cluster?');">
+                        <input type="hidden" name="id" value="@cluster.Id" />
+                        <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+                    </form>
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+<hr />
+
+<!-- Add Cluster Form -->
+<h4>Add New Cluster</h4>
+<form asp-controller="Settings" asp-action="AddCluster" method="post">
+    <div class="form-group">
+        <label for="Name">Name</label>
+        <input type="text" name="Name" class="form-control" required />
+    </div>
+    <div class="form-group">
+        <label for="Username">Username</label>
+        <input type="text" name="Username" class="form-control" required />
+    </div>
+    <div class="form-group">
+        <label for="Password">Password</label>
+        <input type="password" name="Password" class="form-control" required />
+    </div>
+    <button type="submit" class="btn btn-success mt-2">Add Cluster</button>
+</form>

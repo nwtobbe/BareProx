@@ -1,0 +1,113 @@
+﻿@model BareProx.Models.CleanupPageViewModel
+
+<h2>Cleanup Flex-Clones</h2>
+
+<h4>In-Use Clones</h4>
+@if (!Model.InUse.Any())
+{
+    <p><em>None.</em></p>
+}
+else
+{
+    <table class="table table-sm">
+        <thead>
+            <tr><th>Volume</th><th>Mount IP</th><th>VMs</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var item in Model.InUse)
+            {
+                <tr class="table-warning">
+                    <td>@item.VolumeName</td>
+                    <td>@item.MountIp</td>
+                    <td>
+                        <ul class="mb-0">
+                            @foreach (var vm in item.AttachedVms)
+                            {
+                                <li>@vm.Name (@vm.Id) on @vm.HostName</li>
+                            }
+                        </ul>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+<hr />
+
+<h4>Orphaned Clones</h4>
+@if (!Model.Orphaned.Any())
+{
+    <p id="no-orphans"><em>None.</em></p>
+}
+else
+{
+    <form id="csrf-form">
+        @Html.AntiForgeryToken()
+    </form>
+
+    <table class="table table-sm" id="orphaned-table">
+        <thead>
+            <tr><th>Volume</th><th>Node</th><th>Action</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var item in Model.Orphaned)
+            {
+                <tr data-volume="@item.VolumeName" data-ip="@item.MountIp">
+                    <td>@item.VolumeName</td>
+                    <td>@item.MountIp</td>
+                    <td>
+                        <button type="button" class="btn btn-sm btn-danger cleanup-btn">
+                            💣 Delete
+                        </button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@section Scripts {
+    <script>
+        document.querySelectorAll(".cleanup-btn").forEach(button => {
+            button.addEventListener("click", async function () {
+                const row = button.closest("tr");
+                const volumeName = row.dataset.volume;
+                const mountIp = row.dataset.ip;
+
+                const token = document.querySelector("#csrf-form input[name='__RequestVerificationToken']")?.value;
+
+                button.disabled = true;
+                button.textContent = "⏳ Working...";
+
+                const response = await fetch('@Url.Action("Cleanup", "Cleanup")', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'RequestVerificationToken': token
+                    },
+                    body: new URLSearchParams({
+                        volumeName: volumeName,
+                        mountIp: mountIp
+                    })
+                });
+
+                if (response.ok) {
+                    row.remove();
+                    if (document.querySelectorAll("#orphaned-table tbody tr").length === 0) {
+                        document.getElementById("orphaned-table").remove();
+                        const marker = document.createElement("p");
+                        marker.id = "no-orphans";
+                        marker.innerHTML = "<em>None.</em>";
+                        document.querySelector("hr").insertAdjacentElement("afterend", marker);
+                    }
+                } else {
+                    button.disabled = false;
+                    button.textContent = "💣 Delete";
+                    const error = await response.text();
+                    alert("Failed to delete volume.\n\n" + error);
+                }
+            });
+        });
+    </script>
+}

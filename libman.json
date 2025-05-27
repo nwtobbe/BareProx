@@ -1,0 +1,10 @@
+{
+  "version": "3.0",
+  "defaultProvider": "unpkg",
+  "libraries": [
+    {
+      "library": "datatables@1.10.18",
+      "destination": "wwwroot/lib/datatables"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "DatabaseConfig": {
+    "DbServer": "localhost\\SQLEXPRESS",
+    "DbName": "BareProxDB",
+    "DbUser": "proxmox",
+    "DbPassword": "VNfiasR9uCP+aNKaKYgWd8zUqEuy5K4jrVQzTY3fLQQ="
+  }
+}
