@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Security.Cryptography;
 using BareProx.Data;
@@ -15,27 +15,85 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 // Alias for clarity
-using DbConfigModel = BareProx.Models.DatabaseConfig;
+using DbConfigModel = BareProx.Models.DatabaseConfigModels;
 
 var builder = WebApplication.CreateBuilder(args);
+//var connectionString = builder.Configuration.GetConnectionString("ApplicationDbContextConnection") ?? throw new InvalidOperationException("Connection string 'ApplicationDbContextConnection' not found.");;
+
+// --- Set paths for persistent and data storage -----------------------------
+var persistentPath = Path.Combine("/config"); // json
+var dataPath = Path.Combine("/data"); // db
+
+// Make sure paths exist
+Directory.CreateDirectory(persistentPath);
+Directory.CreateDirectory(dataPath);
+
+// Ensure config files exist
+var appSettingsPath = Path.Combine(persistentPath, "appsettings.json");
+var dbConfigPath = Path.Combine(persistentPath, "DatabaseConfig.json");
+
+if (!File.Exists(appSettingsPath))
+{
+    File.WriteAllText(appSettingsPath, """
+    {
+      "Logging": {
+        "LogLevel": {
+          "Default": "Information",
+          "Microsoft.AspNetCore": "Warning"
+        }
+      },
+      "AllowedHosts": "*",
+      "DefaultTimeZone": "W. Europe Standard Time"
+    }
+    """);
+}
+
+if (!File.Exists(dbConfigPath))
+{
+    File.WriteAllText(dbConfigPath, """
+    {
+    "DatabaseConfig": {
+    "DbType": "",
+    "DbServer": "",
+    "DbName": "",
+    "DbUser": "",
+    "DbPassword": ""
+      }
+    }
+    """);
+}
+
+
 
 // --- Load JSON + ENV configs ----------------------------------------------
 builder.Configuration
-    .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-    .AddJsonFile("DatabaseConfig.json", optional: false, reloadOnChange: true)
+    .AddJsonFile(Path.Combine(persistentPath, "appsettings.json"), optional: true, reloadOnChange: true)
+    .AddJsonFile(Path.Combine(persistentPath, "DatabaseConfig.json"), optional: true, reloadOnChange: true)
     .AddEnvironmentVariables();
+
+// --- Add any additional configuration sources here if needed
+builder.Services.Configure<ConfigSettings>(
+    builder.Configuration.GetSection("ConfigSettings")
+);
 
 // --- Check if DB config exists --------------------------------------------
 var rawDbCfg = builder.Configuration
     .GetSection("DatabaseConfig")
     .Get<DbConfigModel>() ?? new DbConfigModel();
 
-bool dbIsEmpty = string.IsNullOrWhiteSpace(rawDbCfg.DbServer)
-              && string.IsNullOrWhiteSpace(rawDbCfg.DbName)
-              && string.IsNullOrWhiteSpace(rawDbCfg.DbUser)
-              && string.IsNullOrWhiteSpace(rawDbCfg.DbPassword);
+//bool dbIsEmpty = string.IsNullOrWhiteSpace(rawDbCfg.DbServer)
+//              && string.IsNullOrWhiteSpace(rawDbCfg.DbName)
+//              && string.IsNullOrWhiteSpace(rawDbCfg.DbUser)
+//              && string.IsNullOrWhiteSpace(rawDbCfg.DbPassword);
 
-bool isConfigured = !dbIsEmpty;
+//bool isConfigured = !dbIsEmpty;
+bool isConfigured =
+    !string.IsNullOrWhiteSpace(rawDbCfg.DbType) &&
+    !string.IsNullOrWhiteSpace(rawDbCfg.DbName) &&
+    (rawDbCfg.DbType == "Sqlite" ||
+     (!string.IsNullOrWhiteSpace(rawDbCfg.DbServer) &&
+      !string.IsNullOrWhiteSpace(rawDbCfg.DbUser) &&
+      !string.IsNullOrWhiteSpace(rawDbCfg.DbPassword)));
 
 builder.Services.Configure<DbConfigModel>(
     builder.Configuration.GetSection("DatabaseConfig"));
@@ -54,7 +112,7 @@ if (string.IsNullOrWhiteSpace(existingKey))
     Console.WriteLine($"[Init] Generated encryption key: {newKey}");
 
     // persist to appsettings.json
-    var path = Path.Combine(builder.Environment.ContentRootPath, "appsettings.json");
+    var path = Path.Combine(persistentPath, "appsettings.json");
     var json = File.ReadAllText(path);
     var settings = JObject.Parse(json);
 
@@ -76,25 +134,40 @@ if (isConfigured)
     {
         var cfg = sp.GetRequiredService<IOptionsMonitor<DbConfigModel>>().CurrentValue;
         var encSvc = sp.GetRequiredService<IEncryptionService>();
-        var pwd = encSvc.Decrypt(cfg.DbPassword);
 
-        var csb = new SqlConnectionStringBuilder
+        if (cfg.DbType?.Equals("Sqlite", StringComparison.OrdinalIgnoreCase) == true)
         {
-            DataSource = cfg.DbServer,
-            InitialCatalog = cfg.DbName,
-            UserID = cfg.DbUser,
-            Password = pwd,
-            MultipleActiveResultSets = true,
-            TrustServerCertificate = true
-        };
-
-        opts.UseSqlServer(csb.ConnectionString);
+            var dbPath = Path.Combine(dataPath, $"{cfg.DbName}.db");
+            var connStr = $"Data Source={dbPath}";
+            opts.UseSqlite(connStr);
+        }
+        else
+        {
+            var pwd = encSvc.Decrypt(cfg.DbPassword);
+            var csb = new SqlConnectionStringBuilder
+            {
+                DataSource = cfg.DbServer,
+                InitialCatalog = cfg.DbName,
+                UserID = cfg.DbUser,
+                Password = pwd,
+                MultipleActiveResultSets = true,
+                TrustServerCertificate = true
+            };
+            opts.UseSqlServer(csb.ConnectionString);
+        }
     });
 
     builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 
     builder.Services.AddDefaultIdentity<IdentityUser>(opts =>
-        opts.SignIn.RequireConfirmedAccount = true)
+    {
+        // users can sign in immediately after creation
+        opts.SignIn.RequireConfirmedAccount = false;
+
+        // optionally tweak other settings:
+        // opts.User.RequireUniqueEmail = false;
+        // opts.Password.RequireNonAlphanumeric = false;
+    })
         .AddEntityFrameworkStores<ApplicationDbContext>();
 
     // --- Repositories & Domain Services ----------------------------------------
@@ -130,6 +203,13 @@ if (isConfigured)
 
 }
 
+
+// --- BIND & REGISTER the App‐TimeZone stuff ----------------------------
+builder.Services.Configure<ConfigSettings>(
+    builder.Configuration.GetSection("ConfigSettings")
+);
+builder.Services.AddSingleton<IAppTimeZoneService, AppTimeZoneService>();
+
 // MVC & Pages
 builder.Services.AddControllersWithViews();
 builder.Services.AddRazorPages();
@@ -144,48 +224,55 @@ if (isConfigured)
     var encSvc = scope.ServiceProvider.GetRequiredService<IEncryptionService>();
     var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
 
-    // 3a) Create DB if missing via master
-    try
-    {
-        var masterCsb = new SqlConnectionStringBuilder
-        {
-            DataSource = cfg.DbServer,
-            InitialCatalog = "master",
-            UserID = cfg.DbUser,
-            Password = encSvc.Decrypt(cfg.DbPassword),
-            TrustServerCertificate = true
-        };
-        using var masterConn = new SqlConnection(masterCsb.ConnectionString);
-        masterConn.Open();
-
-        var safeName = cfg.DbName.Replace("]", "]]");
-        var sql = $@"
-            IF DB_ID(N'{safeName}') IS NULL
-                CREATE DATABASE [{safeName}];
-        ";
-        using var cmd = new SqlCommand(sql, masterConn);
-        cmd.ExecuteNonQuery();
-
-        logger.LogInformation("Database '{DbName}' verified/created.", cfg.DbName);
-    }
-    catch (Exception ex)
-    {
-        logger.LogError(ex, "Failed to verify/create database '{DbName}'", cfg.DbName);
-    }
-
-    // 3b) Apply EF Core migrations
     try
     {
         var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        // Only try SQL Server CREATE DATABASE logic if it's not SQLite
+        if (!string.Equals(cfg.DbType, "Sqlite", StringComparison.OrdinalIgnoreCase))
+        {
+            var masterCsb = new SqlConnectionStringBuilder
+            {
+                DataSource = cfg.DbServer,
+                InitialCatalog = "master",
+                UserID = cfg.DbUser,
+                Password = encSvc.Decrypt(cfg.DbPassword),
+                TrustServerCertificate = true
+            };
+            using var masterConn = new SqlConnection(masterCsb.ConnectionString);
+            masterConn.Open();
+
+            var safeName = cfg.DbName.Replace("]", "]]");
+            var sql = $@"
+                IF DB_ID(N'{safeName}') IS NULL
+                    CREATE DATABASE [{safeName}];
+            ";
+            using var cmd = new SqlCommand(sql, masterConn);
+            cmd.ExecuteNonQuery();
+
+            logger.LogInformation("Database '{DbName}' verified/created.", cfg.DbName);
+        }
+        else
+        {
+            // Ensure SQLite file exists before migrations (it'll be created by Migrate() if not)
+            var dbPath = Path.Combine(dataPath, $"{cfg.DbName}.db");
+            if (!File.Exists(dbPath))
+            {
+                File.Create(dbPath).Dispose(); // create and close the file immediately
+                logger.LogInformation("SQLite database file '{File}' created.", dbPath);
+            }
+        }
+
+        // ✅ Always apply EF Core migrations
         dbContext.Database.Migrate();
         logger.LogInformation("Migrations applied to '{DbName}'.", cfg.DbName);
     }
     catch (Exception ex)
     {
-        logger.LogError(ex, "Applying migrations to '{DbName}' failed.", cfg.DbName);
+        logger.LogError(ex, "Migration phase failed for '{DbName}'.", cfg.DbName);
     }
 
-    // 3c) Seed default user
+    // 3c) Seed user if DB is connectable
     try
     {
         var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -213,10 +300,10 @@ if (isConfigured)
     }
     catch (Exception ex)
     {
-        var logger2 = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-        logger2.LogError(ex, "Error during default user seed.");
+        logger.LogError(ex, "Error during default user seed.");
     }
 }
+
 
 // --- 4) Redirect if not configured ----------------------------------------
 if (!isConfigured)

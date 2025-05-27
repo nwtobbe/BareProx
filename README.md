@@ -1,5 +1,5 @@
 # BareProx 2025, What Netapp did not want to give you
-SQL-lite
+
 Docker compose
 
 Authentication failed error page?
@@ -36,6 +36,14 @@ Missing snapshots?
 
 
 Done.
+Added paths for first run creation
+	volumes:
+  - ./bareprox-config:/config
+	-	appsettings.json
+	-	DatabaseConfig.json
+  - ./bareprox-data:/data
+	-	BareProxDB.db
+-Changed to SQL-lite
 -Add options for io-freeze, Proxmox Snapshot, include memory and don't try to suspend
 -Add a table for snapshots with create date an retention to delete later:
 	Added a check if the snapshot can be deleted, let the record stay an retry until successful

@@ -7,7 +7,7 @@ using BareProx.Models;
 using BareProx.Services;
 
 // Alias to disambiguate if needed
-using DbConfigModel = BareProx.Models.DatabaseConfig;
+using DbConfigModel = BareProx.Models.DatabaseConfigModels;
 using Microsoft.Data.SqlClient;
 using Microsoft.IdentityModel.Tokens;
 using System.Security.Cryptography;
@@ -27,7 +27,7 @@ namespace BareProx.Controllers
         {
             _env = env;
             _encryptionService = encryptionService;
-            _configFile = Path.Combine(_env.ContentRootPath, "DatabaseConfig.json");
+            _configFile = Path.Combine("/config", "DatabaseConfig.json");
         }
 
         // Helper to check if configuration exists and is complete
@@ -86,45 +86,45 @@ namespace BareProx.Controllers
         // POST: /Setup/Config
         [HttpPost("Config")]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> Config(DbConfigModel model)
+        public IActionResult Config(DbConfigModel model)
         {
-            // … your existing create-db-test code …
+            if (model.DbType == "Sqlite")
+            {
+                model.DbServer = "";
+                model.DbUser = "";
+                model.DbPassword = "";
 
-            // 1) Encrypt & save the DatabaseConfig.json
-            model.DbPassword = _encryptionService.Encrypt(model.DbPassword);
+                // ❗ Remove server-side validation errors for SQL fields
+                ModelState.Remove(nameof(model.DbServer));
+                ModelState.Remove(nameof(model.DbUser));
+                ModelState.Remove(nameof(model.DbPassword));
+            }
+
+            if (!ModelState.IsValid)
+                return View("~/Views/Setup/Config.cshtml", model);
+
             var root = System.IO.File.Exists(_configFile)
                 ? JObject.Parse(System.IO.File.ReadAllText(_configFile))
                 : new JObject();
+
+            if (model.DbType == "SqlServer" && !string.IsNullOrWhiteSpace(model.DbPassword))
+            {
+                model.DbPassword = _encryptionService.Encrypt(model.DbPassword);
+            }
+
             root["DatabaseConfig"] = JObject.FromObject(model);
+
             System.IO.File.WriteAllText(
                 _configFile,
                 root.ToString(Formatting.Indented)
             );
 
-            // 2) **Now** generate the encryption key (only once!)
-            var appSettingsPath = Path.Combine(_env.ContentRootPath, "appsettings.json");
-            var json = System.IO.File.ReadAllText(appSettingsPath);
-            var settings = JObject.Parse(json, new JsonLoadSettings
-            {
-                CommentHandling = CommentHandling.Ignore,
-                LineInfoHandling = LineInfoHandling.Ignore
-            });
-
-            // if no Encryption section or no Key, generate+set it
-            if (settings["Encryption"]?.Value<string>("Key") == null)
-            {
-                var keyBytes = RandomNumberGenerator.GetBytes(24);
-                var newKey = Base64UrlEncoder.Encode(keyBytes);   // 32 chars
-                settings["Encryption"] = new JObject(new JProperty("Key", newKey));
-                System.IO.File.WriteAllText(
-                    appSettingsPath,
-                    settings.ToString(Formatting.Indented)
-                );
-            }
-
-            TempData["SuccessMessage"] = "Configuration saved and verified successfully. Please restart the application.";
-            return View("~/Views/Setup/Config.cshtml", model);
+            TempData["SuccessMessage"] = "Configuration saved. Please restart the app to apply.";
+            return RedirectToAction(nameof(Config));
         }
+
+
+
 
     }
 }

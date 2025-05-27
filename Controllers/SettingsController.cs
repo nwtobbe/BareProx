@@ -8,7 +8,9 @@ using Newtonsoft.Json.Linq;
 using BareProx.Models;
 using Microsoft.EntityFrameworkCore;
 
-using DbConfigModel = BareProx.Models.DatabaseConfig;
+using DbConfigModel = BareProx.Models.DatabaseConfigModels;
+using Microsoft.AspNetCore.Mvc.Rendering;
+
 
 namespace BareProx.Controllers
 {
@@ -20,6 +22,7 @@ namespace BareProx.Controllers
         private readonly IEncryptionService _encryptionService;
         private readonly IWebHostEnvironment _env;
         private readonly string _configFile;
+
 
         public SettingsController(
             ApplicationDbContext context,
@@ -33,7 +36,8 @@ namespace BareProx.Controllers
             _netappService = netappService;
             _encryptionService = encryptionService;
             _env = env;
-            _configFile = Path.Combine(_env.ContentRootPath, "DatabaseConfig.json");
+            _configFile = Path.Combine("/config", "appsettings.json");
+
         }
 
         // helper properties to resolve only when needed:
@@ -44,54 +48,64 @@ namespace BareProx.Controllers
         private INetappService NetappService =>
             HttpContext.RequestServices.GetRequiredService<INetappService>();
 
-
-        // GET: /Settings/Config
+        // GET: Settings/Config
         [HttpGet]
         public IActionResult Config()
         {
-            DbConfigModel model;
+            // Load JSON (or create new if missing)
+            JObject cfg;
             if (System.IO.File.Exists(_configFile))
             {
-                var json = System.IO.File.ReadAllText(_configFile);
-                var root = JObject.Parse(json);
-                model = root["DatabaseConfig"]?.ToObject<DbConfigModel>()
-                        ?? new DbConfigModel();
+                var text = System.IO.File.ReadAllText(_configFile);
+                cfg = JObject.Parse(text);
             }
             else
             {
-                model = new DbConfigModel();
+                cfg = new JObject();
             }
-            return View(model);
+
+            // Read stored or fallback
+            var currentTz = (string)cfg["DefaultTimeZone"]
+                            ?? TimeZoneInfo.Local.Id;
+
+            var vm = new ConfigSettingsViewModel
+            {
+                TimeZoneId = currentTz
+            };
+
+            // Populate dropdown
+            var zones = TimeZoneInfo.GetSystemTimeZones()
+                         .Select(z => new { z.Id, z.DisplayName });
+            ViewBag.TimeZones = new SelectList(zones, "Id", "DisplayName", vm.TimeZoneId);
+
+            return View("Config", vm);
         }
 
-        // POST: Settings/System
+        // POST: Settings/Config
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public IActionResult Config(DbConfigModel model)
+        public IActionResult Config(ConfigSettingsViewModel vm)
         {
             if (!ModelState.IsValid)
-                return View(model);
-
-            JObject root;
-            if (System.IO.File.Exists(_configFile))
             {
-                root = JObject.Parse(System.IO.File.ReadAllText(_configFile));
-            }
-            else
-            {
-                root = new JObject();
+                // repopulate on validation error
+                var zones = TimeZoneInfo.GetSystemTimeZones()
+                             .Select(z => new { z.Id, z.DisplayName });
+                ViewBag.TimeZones = new SelectList(zones, "Id", "DisplayName", vm.TimeZoneId);
+                return View("Config", vm);
             }
 
-            // Overwrite or set the DatabaseConfig section
-            root["DatabaseConfig"] = JObject.FromObject(model);
+            // Load or init JSON
+            JObject cfg = System.IO.File.Exists(_configFile)
+                ? JObject.Parse(System.IO.File.ReadAllText(_configFile))
+                : new JObject();
 
-            System.IO.File.WriteAllText(
-            _configFile,
-            root.ToString(Newtonsoft.Json.Formatting.Indented)
-        );
+            // Set and save
+            cfg["DefaultTimeZone"] = vm.TimeZoneId;
+            System.IO.File.WriteAllText(_configFile, cfg.ToString());
 
-            TempData["SuccessMessage"] = "Configuration saved. Please restart the app to apply.";
-            return RedirectToAction(nameof(Config));
+            TempData["Success"] = "Default time-zone updated.";
+            return RedirectToAction("Config");
         }
 
 

@@ -1,5 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
-
+﻿
 namespace BareProx.Models
 {
     public class NetappController
@@ -109,13 +108,13 @@ namespace BareProx.Models
         public int ClusterId { get; set; }
     }
 
-    public class VolumeSelection
-    {
-        public int Id { get; set; }
-        public string Vserver { get; set; }
-        public string VolumeName { get; set; }
-        public string SnapshotPolicy { get; set; }
-    }
+    //public class VolumeSelection
+    //{
+    //    public int Id { get; set; }
+    //    public string Vserver { get; set; }
+    //    public string VolumeName { get; set; }
+    //    public string SnapshotPolicy { get; set; }
+    //}
 
     public class NetappMountInfo
     {

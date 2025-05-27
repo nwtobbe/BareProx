@@ -42,4 +42,14 @@ namespace BareProx.Models
         public string StorageIdentifier { get; set; } = "";
     }
 
+    public class StorageWithVMsDto
+    {
+        public string StorageName { get; set; } = default!;
+        public List<ProxmoxVM> VMs { get; set; } = new();
+        public int ClusterId { get; set; }
+
+        // renamed from StorageId:
+        public int NetappControllerId { get; set; }
+    }
+
 }

@@ -22,24 +22,24 @@ namespace BareProx.Models
         public DateTime? LastRun { get; set; }
     }
 
-    public class BackupScheduleViewModel
-    {
-        public List<SelectListItem>? StorageOptions { get; set; }
-        public List<SelectListItem>? AllVms { get; set; }
-        public string? StorageName { get; set; }
-        public bool? IsApplicationAware { get; set; }
-        public string? Schedule { get; set; }
-        public List<ScheduleEntryViewModel> Schedules { get; set; } = new();
-        public string? Name { get; set; }
-        public List<string>? ExcludedVmIds { get; set; }
-    }
-    public class ScheduleEntryViewModel
-{
-    public string Type { get; set; }  // Hourly, Daily, Weekly
-    public int? Frequency { get; set; }
-    public TimeSpan? Time { get; set; }
-    public string Label { get; set; }
-}
+    //public class BackupScheduleViewModel
+    //{
+    //    public List<SelectListItem>? StorageOptions { get; set; }
+    //    public List<SelectListItem>? AllVms { get; set; }
+    //    public string? StorageName { get; set; }
+    //    public bool? IsApplicationAware { get; set; }
+    //    public string? Schedule { get; set; }
+    //    public List<ScheduleEntryViewModel> Schedules { get; set; } = new();
+    //    public string? Name { get; set; }
+    //    public List<string>? ExcludedVmIds { get; set; }
+    //}
+//    public class ScheduleEntryViewModel
+//{
+//    public string Type { get; set; }  // Hourly, Daily, Weekly
+//    public int? Frequency { get; set; }
+//    public TimeSpan? Time { get; set; }
+//    public string Label { get; set; }
+//}
     public class CreateScheduleRequest
     {
         public int Id { get; set; }  
@@ -72,8 +72,6 @@ namespace BareProx.Models
         public int RetentionCount { get; set; } = 7;
         public string RetentionUnit { get; set; } = "Days";
     }
-
-
     public class BackupRequest
     {
         public string StorageName { get; set; } = null!;
@@ -168,18 +166,10 @@ namespace BareProx.Models
         public List<SelectListItem> HostOptions { get; set; } = new();
         public string MountIp { get; set; } = string.Empty;
     }
-    public class Job
-    {
-        public int Id { get; set; }
-        public string Type { get; set; } // "Restore", "Backup", etc.
-        public string Status { get; set; } // "Pending", "Running", "Completed", "Failed", "Cancelled"
-        public string? ErrorMessage { get; set; }
-        public string? RelatedVm { get; set; }
-        public DateTime StartedAt { get; set; }
-        public DateTime? CompletedAt { get; set; }
 
-        // Optional: serialized payload (config, labels, paths)
-        public string? PayloadJson { get; set; }
-    }
+
+
+
+
 }
 

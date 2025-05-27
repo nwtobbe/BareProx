@@ -1,4 +1,4 @@
-﻿@model BareProx.Models.DatabaseConfig
+﻿@model BareProx.Models.DatabaseConfigModels
 
 @{
     ViewData["Title"] = "Database Configuration Setup";
@@ -10,35 +10,18 @@
 <form asp-action="Config" asp-controller="Setup" method="post">
     @Html.AntiForgeryToken()
 
-    <!-- Validation summary for ModelState errors -->
-    <div asp-validation-summary="All" class="text-danger mb-3"></div>
+    <!-- Hidden inputs for fixed config -->
+    <input type="hidden" name="DbType" value="Sqlite" />
+    <input type="hidden" name="DbName" value="BareProxDB" />
 
-    <div class="form-group">
-        <label asp-for="DbServer" class="control-label">Database Server Address</label>
-        <input asp-for="DbServer" class="form-control" />
-        <span asp-validation-for="DbServer" class="text-danger"></span>
-    </div>
-
-    <div class="form-group">
-        <label asp-for="DbName" class="control-label">Database Name</label>
-        <input asp-for="DbName" class="form-control" />
-        <span asp-validation-for="DbName" class="text-danger"></span>
-    </div>
-
-    <div class="form-group">
-        <label asp-for="DbUser" class="control-label">Username</label>
-        <input asp-for="DbUser" class="form-control" />
-        <span asp-validation-for="DbUser" class="text-danger"></span>
-    </div>
-
-    <div class="form-group">
-        <label asp-for="DbPassword" class="control-label">Password</label>
-        <input asp-for="DbPassword" class="form-control" type="password" />
-        <span asp-validation-for="DbPassword" class="text-danger"></span>
+    <!-- Optional: Visible info -->
+    <div class="alert alert-info">
+        This app is configured to use <strong>SQLite</strong> with database file <code>BareProxDB.db</code>.
     </div>
 
     <button type="submit" class="btn btn-primary">Save Configuration</button>
 </form>
+
 
 @if (TempData["ErrorMessage"] is string errMsg)
 {
@@ -51,4 +34,21 @@
 
 @section Scripts {
     <partial name="_ValidationScriptsPartial" />
+    <script>
+        function updateVisibility() {
+            const isSql = document.getElementById("dbTypeSelector").value === "SqlServer";
+            document.querySelectorAll(".sql-only").forEach(div => {
+                div.style.display = isSql ? "block" : "none";
+
+                if (!isSql) {
+                    // clear values and validation messages
+                    div.querySelectorAll("input").forEach(i => i.value = "");
+                    div.querySelectorAll(".text-danger").forEach(e => e.textContent = "");
+                }
+            });
+        }
+
+        document.getElementById("dbTypeSelector").addEventListener("change", updateVisibility);
+        updateVisibility(); // run on initial load
+    </script>
 }
