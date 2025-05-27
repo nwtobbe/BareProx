@@ -1,0 +1,161 @@
+﻿@model CreateScheduleRequest
+@{
+    ViewData["Title"] = "Create Backup Schedule";
+}
+
+<div class="mb-3 d-flex justify-content-between align-items-center">
+    <h4 class="mb-0">Create Backup Schedule</h4>
+    <a asp-action="Backup" asp-controller="Backup" class="btn btn-secondary">
+        ← Back to Schedules
+    </a>
+</div>
+
+<form asp-action="CreateSchedule" method="post">
+    <div class="mb-3">
+        <label class="form-label">Storage</label>
+        <select asp-for="StorageName" class="form-select" asp-items="Model.StorageOptions">
+            <option value="">-- Select Storage --</option>
+        </select>
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label">Backup Type</label><br />
+        <div class="form-check form-check-inline">
+            <input class="form-check-input" type="radio" asp-for="IsApplicationAware" value="false" checked />
+            <label class="form-check-label">Crash-Consistent</label>
+        </div>
+        <div class="form-check form-check-inline">
+            <input class="form-check-input" type="radio" asp-for="IsApplicationAware" value="true" />
+            <label class="form-check-label">Application-Aware</label>
+        </div>
+    </div>
+
+    <div id="appAwareOptions" class="border rounded p-3 bg-light d-none">
+        <div class="form-check">
+            <input class="form-check-input" type="checkbox" asp-for="EnableIoFreeze" />
+            <label class="form-check-label">Enable IO-Freeze</label>
+        </div>
+        <div class="form-check">
+            <input class="form-check-input" type="checkbox" asp-for="UseProxmoxSnapshot" id="UseProxmoxSnapshot" />
+            <label class="form-check-label">Create Proxmox Snapshot</label>
+        </div>
+        <div id="proxmoxSnapshotOptions" class="mt-2 ms-3 d-none">
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" asp-for="WithMemory" />
+                <label class="form-check-label">Include RAM (With Memory)</label>
+            </div>
+        </div>
+    </div>
+
+    <hr />
+
+    <div class="mb-3">
+        <label class="form-label">Schedule Type</label>
+        <select asp-for="SingleSchedule.Type" class="form-select" onchange="renderSingleScheduleFields(this.value)">
+            <option value="">-- Select Type --</option>
+            <option value="Hourly">Hourly</option>
+            <option value="Daily">Daily</option>
+            <option value="Weekly">Weekly</option>
+        </select>
+    </div>
+
+    <div id="single-schedule-fields"></div>
+
+    <div class="mb-3">
+        <label asp-for="SingleSchedule.Label" class="form-label">Schedule Label</label>
+        <input asp-for="SingleSchedule.Label" class="form-control" />
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label">Retention</label>
+        <div class="input-group">
+            <input name="SingleSchedule.RetentionCount" type="number" min="1" max="999" class="form-control" />
+            <select name="SingleSchedule.RetentionUnit" class="form-select">
+                <option value="Hours">Hours</option>
+                <option value="Days" selected>Days</option>
+                <option value="Weeks">Weeks</option>
+            </select>
+        </div>
+        <small class="form-text text-muted">How long to keep this snapshot before cleanup.</small>
+    </div>
+
+    <div class="mb-3">
+        <label asp-for="Name" class="form-label">Backup Name</label>
+        <input asp-for="Name" class="form-control" />
+    </div>
+
+    <div class="mb-3">
+        <label asp-for="ExcludedVmIds" class="form-label">Exclude VMs</label>
+        <select asp-for="ExcludedVmIds" class="form-select" asp-items="Model.AllVms" multiple></select>
+    </div>
+
+    <div class="mb-3 text-end">
+        <button type="submit" class="btn btn-success">Create Schedule</button>
+        <a asp-action="Backup" asp-controller="Backup" class="btn btn-secondary">Cancel</a>
+    </div>
+</form>
+
+@section Scripts {
+    <script>
+        function renderSingleScheduleFields(type) {
+            const container = document.getElementById("single-schedule-fields");
+            const days = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+            const dayHtml = days.map(day =>
+                `<label class="me-2">
+                    <input type="checkbox" name="SingleSchedule.DaysOfWeek" value="${day}" /> ${day}
+                </label>`
+            ).join('');
+            let html = `<div class="mb-3"><label>Days</label><div>${dayHtml}</div></div>`;
+
+            if (type === "Hourly") {
+                html += `
+                    <div class="mb-3">
+                        <label>Start Hour</label>
+                        <input type="number" min="0" max="23" name="SingleSchedule.StartHour" class="form-control" />
+                    </div>
+                    <div class="mb-3">
+                        <label>End Hour</label>
+                        <input type="number" min="0" max="23" name="SingleSchedule.EndHour" class="form-control" />
+                    </div>`;
+            } else {
+                html += `
+                    <div class="mb-3">
+                        <label>Time</label>
+                        <input type="time" name="SingleSchedule.Time" class="form-control" />
+                    </div>`;
+            }
+
+            container.innerHTML = html;
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            const snapshotCheckbox = document.getElementById("UseProxmoxSnapshot");
+            const snapshotOptions = document.getElementById("proxmoxSnapshotOptions");
+            const freezeCheckbox = document.getElementById("EnableIoFreeze");
+
+            function toggleAppAwareUI() {
+                const isAppAware = document.querySelector('input[name="IsApplicationAware"]:checked').value === "true";
+                document.getElementById("appAwareOptions").classList.toggle("d-none", !isAppAware);
+            }
+            function toggleSnapshotOptions() {
+                const enabled = snapshotCheckbox.checked;
+                snapshotOptions.classList.toggle("d-none", !enabled);
+                if (enabled && freezeCheckbox.checked) freezeCheckbox.checked = false;
+            }
+            function toggleFreezeConflict() {
+                if (freezeCheckbox.checked && snapshotCheckbox.checked) {
+                    snapshotCheckbox.checked = false;
+                    snapshotOptions.classList.add("d-none");
+                }
+            }
+
+            document.querySelectorAll("input[name='IsApplicationAware']")
+                    .forEach(el => el.addEventListener("change", toggleAppAwareUI));
+            snapshotCheckbox.addEventListener("change", toggleSnapshotOptions);
+            freezeCheckbox.addEventListener("change", toggleFreezeConflict);
+
+            toggleAppAwareUI();
+            toggleSnapshotOptions();
+        });
+    </script>
+}
