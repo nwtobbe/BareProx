@@ -159,6 +159,7 @@ if (isConfigured)
         }
     });
 
+
     builder.Services.AddDatabaseDeveloperPageExceptionFilter();
 
     builder.Services.AddDefaultIdentity<IdentityUser>(opts =>
@@ -178,6 +179,7 @@ if (isConfigured)
     builder.Services.AddScoped<INetappService, NetappService>();
     builder.Services.AddScoped<ProxmoxService>();
     builder.Services.AddScoped<IRestoreService, RestoreService>();
+
 
     // --- Remote API Client -----------------------------------------------------
     builder.Services.AddSingleton<IRemoteApiClient, RemoteApiClient>();
@@ -202,6 +204,7 @@ if (isConfigured)
     builder.Services.AddHostedService<QueuedBackgroundService>();
     builder.Services.AddHostedService<ScheduledBackupService>();
     builder.Services.AddHostedService<JanitorService>();
+    builder.Services.AddHostedService<SnapMirrorSyncService>();
 
 }
 
@@ -216,7 +219,7 @@ builder.Services.AddSingleton<IAppTimeZoneService, AppTimeZoneService>();
 builder.Services.AddControllersWithViews();
 builder.Services.AddRazorPages();
 
-// --- Lock down ---
+// --- Lock down --- Fix _LoginPartial.cshtml to enable lockout and uncomment this section
 //if (isConfigured)
 //{
 

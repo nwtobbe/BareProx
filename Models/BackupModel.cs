@@ -4,25 +4,7 @@ using System.Collections.Generic;
 
 namespace BareProx.Models
 {
-    public class BackupSchedule
-    {
-        public int Id { get; set; }
-        public string Name { get; set; }
-        public string StorageName { get; set; }
-        public string Schedule { get; set; }
-        public string Frequency { get; set; }
-        public TimeSpan? TimeOfDay { get; set; }
-        public bool IsApplicationAware { get; set; }
-        public bool EnableIoFreeze { get; set; }
-        public bool UseProxmoxSnapshot { get; set; }
-        public bool WithMemory { get; set; }
-        public string? ExcludedVmIds { get; set; }
-        public int RetentionCount { get; set; }
-        public string RetentionUnit { get; set; }
-        public DateTime? LastRun { get; set; }
-    }
-
-    //public class BackupScheduleViewModel
+       //public class BackupScheduleViewModel
     //{
     //    public List<SelectListItem>? StorageOptions { get; set; }
     //    public List<SelectListItem>? AllVms { get; set; }
@@ -33,16 +15,28 @@ namespace BareProx.Models
     //    public string? Name { get; set; }
     //    public List<string>? ExcludedVmIds { get; set; }
     //}
-//    public class ScheduleEntryViewModel
-//{
-//    public string Type { get; set; }  // Hourly, Daily, Weekly
-//    public int? Frequency { get; set; }
-//    public TimeSpan? Time { get; set; }
-//    public string Label { get; set; }
-//}
+    //    public class ScheduleEntryViewModel
+    //{
+    //    public string Type { get; set; }  // Hourly, Daily, Weekly
+    //    public int? Frequency { get; set; }
+    //    public TimeSpan? Time { get; set; }
+    //    public string Label { get; set; }
+    //}
+
+    public class VolumeMeta
+    {
+        public int ClusterId { get; set; }
+        public int ControllerId { get; set; }
+    }
     public class CreateScheduleRequest
     {
-        public int Id { get; set; }  
+        public int Id { get; set; }
+        public bool IsEnabled { get; set; } = true;
+        public int ClusterId { get; set; }
+        public int ControllerId { get; set; }
+
+        // New: map volumeName -> which cluster/controller to use
+        public Dictionary<string, VolumeMeta> VolumeMeta { get; set; } = new();
         public string StorageName { get; set; } = null!;
         public bool IsApplicationAware { get; set; }
         public string Name { get; set; } = null!;
@@ -58,6 +52,9 @@ namespace BareProx.Models
         // For dropdowns
         public List<SelectListItem> StorageOptions { get; set; } = new();
         public List<SelectListItem> AllVms { get; set; } = new();
+        public bool CanReplicateToSecondary { get; set; }  // set in controller logic
+        public bool ReplicateToSecondary { get; set; }     // user input
+        public HashSet<string> ReplicableVolumes { get; set; } = new();
     }
 
     public class ScheduleEntry
@@ -78,7 +75,7 @@ namespace BareProx.Models
         public bool IsApplicationAware { get; set; }
         public string Label { get; set; } = "Manual";
         public int ClusterId { get; set; }
-        public int NetappControllerId { get; set; }
+        public int ControllerId { get; set; }
 
         public int RetentionCount { get; set; } = 7;
         public string RetentionUnit { get; set; } = "Days";
@@ -88,48 +85,10 @@ namespace BareProx.Models
         public bool UseProxmoxSnapshot { get; set; }
         public bool WithMemory { get; set; }
         public bool DontTrySuspend { get; set; }
+        public bool ReplicateToSecondary { get; set; }
         public int ScheduleID { get; set; }
     }
-    public class BackupRecord
-    {
-        public int Id { get; set; }
-
-        public int VMID { get; set; }
-
-        public int JobId { get; set; }
-        public Job Job { get; set; } = default!;
-
-        public string? VmName { get; set; }
-
-        public string HostName { get; set; }
-
-        public string StorageName { get; set; }
-
-        public string SnapshotName { get; set; }
-
-        public int ControllerId { get; set; }
-
-        public string Label { get; set; }
-
-        public string ConfigurationJson { get; set; }
-
-        public int RetentionCount { get; set; }
-
-        public string RetentionUnit { get; set; } = default!;
-
-        public DateTime TimeStamp { get; set; }
-
-        // 🔗 Schedule that triggered this backup
-        public int? ScheduleId { get; set; }
-
-        // 🔐 App-aware context
-        public bool IsApplicationAware { get; set; }
-        public bool EnableIoFreeze { get; set; }
-        public bool UseProxmoxSnapshot { get; set; }
-        public bool WithMemory { get; set; }
-    }
-
-    public class RestoreViewModel
+       public class RestoreViewModel
     {
         public int BackupId { get; set; }
         public string VmId { get; set; } // VM ID

@@ -1,21 +1,10 @@
 ﻿
+using Microsoft.EntityFrameworkCore;
+using System.ComponentModel.DataAnnotations.Schema;
+using System.Text.Json.Serialization;
+
 namespace BareProx.Models
 {
-    public class NetappController
-    {
-        public int Id { get; set; }
-
-        public string Hostname { get; set; } = null!;
-
-        public string IpAddress { get; set; } = null!;
-
-        public bool IsPrimary { get; set; }
-
-        // New properties:
-        public string Username { get; set; } = null!;
-
-        public string PasswordHash { get; set; } = null!;  // Store hashed password, NOT plain text!
-    }
     public class SnapshotResult
     {
         public bool Success { get; set; }
@@ -52,6 +41,27 @@ namespace BareProx.Models
         public string Uuid { get; set; } = null!;
     }
 
+
+    public class TransferInfo
+    {
+        [JsonPropertyName("state")]
+        public string State { get; set; } = "";
+
+        [JsonPropertyName("bytes_transferred")]
+        public long BytesTransferred { get; set; }
+
+        [JsonPropertyName("total_duration")]
+        public string TotalDuration { get; set; } = "";
+
+        [JsonPropertyName("end_time")]
+        public DateTimeOffset EndTime { get; set; }
+    }
+    public class VolumeSnapshotViewModel
+    {
+        public string PrimaryVolumeName { get; set; }
+        public string? SecondaryVolumeName { get; set; }
+        public List<string> SnapshotNames { get; set; }
+    }
     public class VolumeSnapshotTreeDto
     {
         public string Vserver { get; set; } = null!;
@@ -65,6 +75,7 @@ namespace BareProx.Models
         public string SnapshotName { get; set; } = null!;
         public string ReadWrite { get; set; } = "ro";  // "ro" or "rw"
         public string MountIp { get; set; } = null!;
+        public int ControllerId { get; set; }
     }
 
     public class NetappControllerTreeDto
@@ -86,19 +97,10 @@ namespace BareProx.Models
         public string MountIp { get; set; }
         public int ClusterId { get; set; }
         public string Vserver { get; set; }
-        public bool IsSelected { get; set; } // ✅ Add this
+        public bool IsSelected { get; set; }
+        public List<string> Snapshots { get; set; } = new();
     }
 
-    public class SelectedNetappVolume
-    {
-        public int Id { get; set; }
-        public string Vserver { get; set; }
-        public string VolumeName { get; set; }
-        public string Uuid { get; set; }
-        public string MountIp { get; set; }
-        public int ClusterId { get; set; }
-        public int NetappControllerId { get; set; }
-    }
     public class NetappVolumeExportDto
     {
         public string Vserver { get; set; }

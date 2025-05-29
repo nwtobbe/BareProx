@@ -30,34 +30,71 @@ namespace BareProx.Controllers
             if (cluster == null)
             {
                 ViewBag.Warning = "No Proxmox clusters are configured.";
-                return View(new List<VolumeSnapshotTreeDto>());
+                return View(new List<NetappControllerTreeDto>());
             }
 
-            var netappController = await _context.NetappControllers.FirstOrDefaultAsync();
-            if (netappController == null)
+            var netappControllers = await _context.NetappControllers.ToListAsync();
+            if (!netappControllers.Any())
             {
                 ViewBag.Warning = "No NetApp controllers are configured.";
-                return View(new List<VolumeSnapshotTreeDto>());
+                return View(new List<NetappControllerTreeDto>());
             }
 
-            var storageVmMap = await _proxmoxService.GetFilteredStorageWithVMsAsync(cluster.Id, netappController.Id);
+            var selectedVolumes = await _context.SelectedNetappVolumes.ToListAsync();
+            var volumeLookup = selectedVolumes.ToLookup(v => v.NetappControllerId);
 
-            var storageNames = storageVmMap.Keys
-                .Where(name =>
-                    !name.Contains("backup", StringComparison.OrdinalIgnoreCase) &&
-                    !name.Contains("restore_", StringComparison.OrdinalIgnoreCase))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var result = new List<NetappControllerTreeDto>();
 
-            var result = await _netappService.GetSnapshotsForVolumesAsync(storageNames);
+            foreach (var controller in netappControllers)
+            {
+                var controllerDto = new NetappControllerTreeDto
+                {
+                    ControllerName = controller.Hostname,
+                    Svms = new List<NetappSvmDto>()
+                };
 
-            return View(result ?? new List<VolumeSnapshotTreeDto>());
+                var groupedBySvm = volumeLookup[controller.Id].GroupBy(v => v.Vserver);
+                foreach (var svmGroup in groupedBySvm)
+                {
+                    var svmDto = new NetappSvmDto
+                    {
+                        Name = svmGroup.Key,
+                        Volumes = new List<NetappVolumeDto>()
+                    };
+
+                    foreach (var vol in svmGroup)
+                    {
+                        var volumeDto = new NetappVolumeDto
+                        {
+                            VolumeName = vol.VolumeName,
+                            Vserver = vol.Vserver,
+                            MountIp = vol.MountIp,
+                            Uuid = vol.Uuid,
+                            ClusterId = vol.ClusterId,
+                            IsSelected = true
+                        };
+
+                        var snapshots = await _netappService.GetSnapshotsAsync(vol.ClusterId, vol.VolumeName);
+                        volumeDto.Snapshots = snapshots;
+
+                        svmDto.Volumes.Add(volumeDto);
+                    }
+
+                    controllerDto.Svms.Add(svmDto);
+                }
+
+                result.Add(controllerDto);
+            }
+
+            return View(result);
         }
 
 
+
         [HttpGet]
-        public async Task<IActionResult> GetSnapshotsForVolume(string volume, string vserver)
+        public async Task<IActionResult> GetSnapshotsForVolume(string volume, int ClusterId)
         {
-            var snapshots = await _netappService.GetSnapshotsAsync(vserver, volume);
+            var snapshots = await _netappService.GetSnapshotsAsync(ClusterId, volume);
             return Json(new { snapshots });
         }
         [HttpGet]

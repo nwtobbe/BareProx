@@ -265,35 +265,6 @@ namespace BareProx.Controllers
             return RedirectToAction("EditCluster", new { id = clusterId });
         }
 
-        [HttpPost]
-        public async Task<IActionResult> AutoDetectHosts(int clusterId)
-        {
-            var cluster = await _context.ProxmoxClusters
-                .Include(c => c.Hosts)
-                .FirstOrDefaultAsync(c => c.Id == clusterId);
-
-            if (cluster == null)
-                return NotFound();
-
-            // You need to implement the call to Proxmox API here using your service
-            var hostsFromApi = await _proxmoxService.GetHostsForClusterAsync(cluster);
-
-            foreach (var hostAddress in hostsFromApi)
-            {
-                if (!cluster.Hosts.Any(h => h.HostAddress == hostAddress))
-                {
-                    var newHost = new ProxmoxHost
-                    {
-                        ClusterId = clusterId,
-                        HostAddress = hostAddress
-                    };
-                    _context.ProxmoxHosts.Add(newHost);
-                }
-            }
-            await _context.SaveChangesAsync();
-
-            return RedirectToAction("EditCluster", new { id = clusterId });
-        }
 
         // GET: Settings/NetappControllers
         public async Task<IActionResult> Index()

@@ -30,72 +30,240 @@ namespace BareProx.Controllers
             return View(schedules);
         }
 
+        [HttpGet]
         public async Task<IActionResult> CreateSchedule()
         {
-            var cluster = await _context.ProxmoxClusters.Include(c => c.Hosts).FirstOrDefaultAsync();
-            var netapp = await _context.NetappControllers.FirstOrDefaultAsync();
+            // 1) Load all clusters (with their hosts)
+            var clusters = await _context.ProxmoxClusters
+                                         .Include(c => c.Hosts)
+                                         .ToListAsync();
+            if (!clusters.Any())
+                return NotFound("No Proxmox clusters configured.");
 
-            if (cluster == null || netapp == null)
-                return NotFound("Missing cluster or NetApp configuration.");
+            // 2) Load all primary NetApp controllers
+            var primaryControllers = await _context.NetappControllers
+                                                   .Where(n => n.IsPrimary)
+                                                   .ToListAsync();
+            if (!primaryControllers.Any())
+                return NotFound("No primary NetApp controllers configured.");
 
-            var storageWithVms = await _proxmoxService.GetFilteredStorageWithVMsAsync(cluster.Id, netapp.Id);
-            if (storageWithVms == null)
-                return NotFound("Could not retrieve storage and VMs.");
+            // 3) Build a combined map: storageName → list of VMs
+            var combinedStorage = new Dictionary<string, List<ProxmoxVM>>(StringComparer.OrdinalIgnoreCase);
 
-            var viewModel = new CreateScheduleRequest
+            // 4) Build metadata: storageName → which cluster/controller first provided it
+            var volumeMeta = new Dictionary<string, VolumeMeta>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var cluster in clusters)
             {
-                StorageOptions = storageWithVms.Keys.Select(s => new SelectListItem { Text = s, Value = s }).ToList(),
-                AllVms = storageWithVms.SelectMany(kvp => kvp.Value.Select(vm => new SelectListItem { Text = $"{vm.Name} ({kvp.Key})", Value = vm.Id.ToString() })).ToList(),
-                ExcludedVmIds = new List<string>()
+                foreach (var controller in primaryControllers)
+                {
+                    var map = await _proxmoxService
+                        .GetEligibleBackupStorageWithVMsAsync(cluster, controller.Id);
+
+                    if (map == null) continue;
+
+                    foreach (var kv in map)
+                    {
+                        var storageName = kv.Key;
+                        var vms = kv.Value;
+
+                        // merge VM lists
+                        if (!combinedStorage.TryGetValue(storageName, out var list))
+                        {
+                            list = new List<ProxmoxVM>();
+                            combinedStorage[storageName] = list;
+                        }
+                        list.AddRange(vms);
+
+                        // record the first cluster/controller that had this storage
+                        if (!volumeMeta.ContainsKey(storageName))
+                        {
+                            volumeMeta[storageName] = new VolumeMeta
+                            {
+                                ClusterId = cluster.Id,
+                                ControllerId = controller.Id
+                            };
+                        }
+                    }
+                }
+            }
+
+            // 5) Compute replicable volumes (your existing logic)
+            var selectedVolumes = await _context.SelectedNetappVolumes.ToListAsync();
+            var relationships = await _context.SnapMirrorRelations.ToListAsync();
+            var replicableVolumes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var rel in relationships)
+            {
+                var primary = selectedVolumes.FirstOrDefault(v =>
+                    v.NetappControllerId == rel.SourceControllerId &&
+                    v.VolumeName == rel.SourceVolume);
+
+                var secondary = selectedVolumes.FirstOrDefault(v =>
+                    v.NetappControllerId == rel.DestinationControllerId &&
+                    v.VolumeName == rel.DestinationVolume);
+
+                if (primary != null && secondary != null)
+                    replicableVolumes.Add(primary.VolumeName);
+            }
+
+            // 6) Flatten into SelectListItems
+            var storageOptions = combinedStorage.Keys
+                .OrderBy(s => s)
+                .Select(s => new SelectListItem { Text = s, Value = s })
+                .ToList();
+
+            var allVms = combinedStorage
+                .SelectMany(kvp => kvp.Value.Select(vmInfo =>
+                    new SelectListItem
+                    {
+                        Text = $"{vmInfo.Name} ({kvp.Key})",
+                        Value = vmInfo.Id.ToString()
+                    }))
+                .ToList();
+
+            // 7) Build the view model
+            var vm = new CreateScheduleRequest
+            {
+                VolumeMeta = volumeMeta,
+                StorageOptions = storageOptions,
+                AllVms = allVms,
+                ExcludedVmIds = new List<string>(),
+                ReplicableVolumes = replicableVolumes
             };
 
-            return View(viewModel);
+            return View(vm);
         }
+
 
         [HttpPost]
         [ValidateAntiForgeryToken]
         public async Task<IActionResult> CreateSchedule(CreateScheduleRequest model)
         {
+            // 0) Conditional ModelState cleanup for Hourly vs Daily/Weekly
+            if (model.SingleSchedule != null)
+            {
+                var prefix = nameof(model.SingleSchedule) + ".";
+                if (model.SingleSchedule.Type == "Hourly")
+                {
+                    ModelState.Remove(prefix + nameof(model.SingleSchedule.DaysOfWeek));
+                    ModelState.Remove(prefix + nameof(model.SingleSchedule.Time));
+                }
+                else
+                {
+                    ModelState.Remove(prefix + nameof(model.SingleSchedule.StartHour));
+                    ModelState.Remove(prefix + nameof(model.SingleSchedule.EndHour));
+                }
+            }
+
+            // 1) If validation fails, re-populate everything and return view
             if (!ModelState.IsValid || model.SingleSchedule == null)
             {
-                var cluster = await _context.ProxmoxClusters.Include(c => c.Hosts).FirstOrDefaultAsync();
-                var netapp = await _context.NetappControllers.FirstOrDefaultAsync();
-                var storageWithVms = await _proxmoxService.GetFilteredStorageWithVMsAsync(cluster.Id, netapp.Id);
+                // a) Fetch clusters + primary controllers
+                var clusters = await _context.ProxmoxClusters.Include(c => c.Hosts).ToListAsync();
+                var primaryControllers = await _context.NetappControllers.Where(n => n.IsPrimary).ToListAsync();
 
-                model.StorageOptions = storageWithVms.Keys.Select(s => new SelectListItem { Text = s, Value = s }).ToList();
-                model.AllVms = storageWithVms.SelectMany(kvp => kvp.Value.Select(vm => new SelectListItem { Text = $"{vm.Name} ({kvp.Key})", Value = vm.Id.ToString() })).ToList();
+                // b) Build combinedStorage & volumeMeta
+                var combinedStorage = new Dictionary<string, List<ProxmoxVM>>(StringComparer.OrdinalIgnoreCase);
+                var volumeMeta = new Dictionary<string, VolumeMeta>(StringComparer.OrdinalIgnoreCase);
 
+                foreach (var cluster in clusters)
+                {
+                    foreach (var ctrl in primaryControllers)
+                    {
+                        var map = await _proxmoxService.GetEligibleBackupStorageWithVMsAsync(cluster, ctrl.Id);
+                        if (map == null) continue;
+
+                        foreach (var kv in map)
+                        {
+                            if (!combinedStorage.TryGetValue(kv.Key, out var list))
+                            {
+                                list = new List<ProxmoxVM>();
+                                combinedStorage[kv.Key] = list;
+                            }
+                            list.AddRange(kv.Value);
+
+                            if (!volumeMeta.ContainsKey(kv.Key))
+                            {
+                                volumeMeta[kv.Key] = new VolumeMeta
+                                {
+                                    ClusterId = cluster.Id,
+                                    ControllerId = ctrl.Id
+                                };
+                            }
+                        }
+                    }
+                }
+
+                // c) Compute replicableVolumes
+                var selectedVolumes = await _context.SelectedNetappVolumes.ToListAsync();
+                var relations = await _context.SnapMirrorRelations.ToListAsync();
+                var replicableVolumes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var rel in relations)
+                {
+                    var prim = selectedVolumes.FirstOrDefault(v =>
+                        v.NetappControllerId == rel.SourceControllerId &&
+                        v.VolumeName == rel.SourceVolume);
+                    var sec = selectedVolumes.FirstOrDefault(v =>
+                        v.NetappControllerId == rel.DestinationControllerId &&
+                        v.VolumeName == rel.DestinationVolume);
+
+                    if (prim != null && sec != null)
+                        replicableVolumes.Add(prim.VolumeName);
+                }
+
+                // d) Flatten storageOptions & AllVms
+                model.StorageOptions = combinedStorage.Keys
+                    .OrderBy(s => s)
+                    .Select(s => new SelectListItem { Text = s, Value = s })
+                    .ToList();
+
+                model.AllVms = combinedStorage
+                    .SelectMany(kvp => kvp.Value.Select(vmInfo =>
+                        new SelectListItem
+                        {
+                            Text = $"{vmInfo.Name} ({kvp.Key})",
+                            Value = vmInfo.Id.ToString()
+                        }))
+                    .ToList();
+
+                model.ReplicableVolumes = replicableVolumes;
+                model.VolumeMeta = volumeMeta;
+
+                // e) Show error banner
                 TempData["ErrorMessage"] = "Please fill in all required schedule details.";
                 return View(model);
             }
 
+            // 2) At this point, the model is valid → create the schedule
             var s = model.SingleSchedule;
-
-            if (string.IsNullOrWhiteSpace(s.Type) ||
-                s.DaysOfWeek == null || !s.DaysOfWeek.Any() ||
-                (s.Type != "Hourly" && string.IsNullOrWhiteSpace(s.Time)) ||
-                (s.Type == "Hourly" && (!s.StartHour.HasValue || !s.EndHour.HasValue)) ||
-                s.RetentionCount < 1 || s.RetentionCount > 999 || string.IsNullOrWhiteSpace(s.RetentionUnit))
-            {
-                TempData["ErrorMessage"] = "Invalid schedule configuration.";
-                return RedirectToAction("Backup");
-            }
 
             var schedule = new BackupSchedule
             {
-                Name = s.Label ?? $"{s.Type} Schedule",
+                Name = model.Name,
                 StorageName = model.StorageName,
+                IsEnabled = model.IsEnabled,
                 Schedule = s.Type,
-                Frequency = s.Type == "Hourly" ? $"{s.StartHour}-{s.EndHour}" : string.Join(",", s.DaysOfWeek),
-                TimeOfDay = s.Type == "Hourly" ? null : (TimeSpan.TryParse(s.Time, out var parsedTime) ? parsedTime : null),
+                Frequency = s.Type == "Hourly"
+                                          ? $"{s.StartHour}-{s.EndHour}"
+                                          : string.Join(",", s.DaysOfWeek),
+                TimeOfDay = s.Type == "Hourly"
+                                          ? (TimeSpan?)null
+                                          : TimeSpan.Parse(s.Time),
                 IsApplicationAware = model.IsApplicationAware,
                 EnableIoFreeze = model.EnableIoFreeze,
                 UseProxmoxSnapshot = model.UseProxmoxSnapshot,
                 WithMemory = model.WithMemory,
-                ExcludedVmIds = model.ExcludedVmIds != null ? string.Join(",", model.ExcludedVmIds) : null,
+                ExcludedVmIds = model.ExcludedVmIds is null
+                                          ? null
+                                          : string.Join(",", model.ExcludedVmIds),
                 RetentionCount = s.RetentionCount,
                 RetentionUnit = s.RetentionUnit,
-                LastRun = null
+                LastRun = null,
+                ReplicateToSecondary = model.ReplicateToSecondary,
+                ClusterId = model.ClusterId,
+                ControllerId = model.ControllerId
             };
 
             _context.BackupSchedules.Add(schedule);
@@ -105,36 +273,128 @@ namespace BareProx.Controllers
             return RedirectToAction("Backup");
         }
 
+
+
+        // GET: EditSchedule
+        [HttpGet]
         public async Task<IActionResult> EditSchedule(int id)
         {
             var schedule = await _context.BackupSchedules.FindAsync(id);
-            if (schedule == null)
-                return NotFound();
+            if (schedule == null) return NotFound();
 
-            var cluster = await _context.ProxmoxClusters.Include(c => c.Hosts).FirstOrDefaultAsync();
-            var netapp = await _context.NetappControllers.FirstOrDefaultAsync();
-            var storageWithVms = await _proxmoxService.GetFilteredStorageWithVMsAsync(cluster.Id, netapp.Id);
+            // 1) Load all clusters + primary NetApp controllers
+            var clusters = await _context.ProxmoxClusters.Include(c => c.Hosts).ToListAsync();
+            var primaryControllers = await _context.NetappControllers.Where(n => n.IsPrimary).ToListAsync();
 
+            // 2) Build combinedStorage & volumeMeta
+            var combinedStorage = new Dictionary<string, List<ProxmoxVM>>(StringComparer.OrdinalIgnoreCase);
+            var volumeMeta = new Dictionary<string, VolumeMeta>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var cluster in clusters)
+            {
+                foreach (var controller in primaryControllers)
+                {
+                    var map = await _proxmoxService.GetEligibleBackupStorageWithVMsAsync(cluster, controller.Id);
+                    if (map == null) continue;
+
+                    foreach (var kv in map)
+                    {
+                        // merge VMs
+                        if (!combinedStorage.TryGetValue(kv.Key, out var list))
+                        {
+                            list = new List<ProxmoxVM>();
+                            combinedStorage[kv.Key] = list;
+                        }
+                        list.AddRange(kv.Value);
+
+                        // record first meta
+                        if (!volumeMeta.ContainsKey(kv.Key))
+                        {
+                            volumeMeta[kv.Key] = new VolumeMeta
+                            {
+                                ClusterId = cluster.Id,
+                                ControllerId = controller.Id
+                            };
+                        }
+                    }
+                }
+            }
+
+            // 3) replicableVolumes logic (unchanged)
+            var selectedVolumes = await _context.SelectedNetappVolumes.ToListAsync();
+            var relationships = await _context.SnapMirrorRelations.ToListAsync();
+            var replicableVolumes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var rel in relationships)
+            {
+                var primary = selectedVolumes.FirstOrDefault(v =>
+                    v.NetappControllerId == rel.SourceControllerId &&
+                    v.VolumeName == rel.SourceVolume);
+                var secondary = selectedVolumes.FirstOrDefault(v =>
+                    v.NetappControllerId == rel.DestinationControllerId &&
+                    v.VolumeName == rel.DestinationVolume);
+
+                if (primary != null && secondary != null)
+                    replicableVolumes.Add(primary.VolumeName);
+            }
+
+            // 4) Flatten lists
+            var storageOptions = combinedStorage.Keys
+                .OrderBy(s => s)
+                .Select(s => new SelectListItem { Text = s, Value = s })
+                .ToList();
+
+            var allVms = combinedStorage
+                .SelectMany(kvp => kvp.Value.Select(vmInfo =>
+                    new SelectListItem
+                    {
+                        Text = $"{vmInfo.Name} ({kvp.Key})",
+                        Value = vmInfo.Id.ToString()
+                    }))
+                .ToList();
+
+            // 5) Build view model
             var model = new CreateScheduleRequest
             {
-                Id = id,
+                Id = schedule.Id,
                 Name = schedule.Name,
                 StorageName = schedule.StorageName,
+                IsEnabled = schedule.IsEnabled,
                 IsApplicationAware = schedule.IsApplicationAware,
                 EnableIoFreeze = schedule.EnableIoFreeze,
                 UseProxmoxSnapshot = schedule.UseProxmoxSnapshot,
                 WithMemory = schedule.WithMemory,
-                ExcludedVmIds = schedule.ExcludedVmIds?.Split(',').ToList() ?? new List<string>(),
-                StorageOptions = storageWithVms.Keys.Select(s => new SelectListItem { Text = s, Value = s }).ToList(),
-                AllVms = storageWithVms.SelectMany(kvp => kvp.Value.Select(vm => new SelectListItem { Text = $"{vm.Name} ({kvp.Key})", Value = vm.Id.ToString() })).ToList(),
+                ReplicateToSecondary = schedule.ReplicateToSecondary,
+
+                ExcludedVmIds = schedule.ExcludedVmIds?.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList()
+                                       ?? new List<string>(),
+
+                StorageOptions = storageOptions,
+                AllVms = allVms,
+                ReplicableVolumes = replicableVolumes,
+
+                VolumeMeta = volumeMeta,
+                ClusterId = volumeMeta.TryGetValue(schedule.StorageName, out var vmMeta)
+                                         ? vmMeta.ClusterId
+                                         : 0,
+                ControllerId = volumeMeta.TryGetValue(schedule.StorageName, out vmMeta)
+                                         ? vmMeta.ControllerId
+                                         : 0,
+
                 SingleSchedule = new ScheduleEntry
                 {
                     Label = schedule.Name,
                     Type = schedule.Schedule,
-                    DaysOfWeek = schedule.Frequency.Split(',').ToList(),
+                    DaysOfWeek = schedule.Schedule == "Hourly"
+                                      ? new List<string>()
+                                      : schedule.Frequency.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList(),
                     Time = schedule.TimeOfDay?.ToString(@"hh\:mm"),
-                    StartHour = schedule.Frequency.Contains("-") ? int.Parse(schedule.Frequency.Split('-')[0]) : (int?)null,
-                    EndHour = schedule.Frequency.Contains("-") ? int.Parse(schedule.Frequency.Split('-')[1]) : (int?)null,
+                    StartHour = schedule.Schedule == "Hourly"
+                                      ? int.Parse(schedule.Frequency.Split('-')[0])
+                                      : (int?)null,
+                    EndHour = schedule.Schedule == "Hourly"
+                                      ? int.Parse(schedule.Frequency.Split('-')[1])
+                                      : (int?)null,
                     RetentionCount = schedule.RetentionCount,
                     RetentionUnit = schedule.RetentionUnit
                 }
@@ -144,34 +404,54 @@ namespace BareProx.Controllers
             return View("EditSchedule", model);
         }
 
+
+        // POST: EditSchedule
         [HttpPost]
         [ValidateAntiForgeryToken]
         public async Task<IActionResult> EditSchedule(int id, CreateScheduleRequest model)
         {
+            if (!ModelState.IsValid)
+                return View("EditSchedule", model);
+
             var schedule = await _context.BackupSchedules.FindAsync(id);
-            if (schedule == null)
-                return NotFound();
+            if (schedule == null) return NotFound();
 
+            // 1) Update core fields
             var s = model.SingleSchedule;
-
-            schedule.Name = s.Label ?? $"{s.Type} Schedule";
+            schedule.Name = s.Label ?? schedule.Name;
             schedule.StorageName = model.StorageName;
+            schedule.IsEnabled = model.IsEnabled;
             schedule.Schedule = s.Type;
-            schedule.Frequency = s.Type == "Hourly" ? $"{s.StartHour}-{s.EndHour}" : string.Join(",", s.DaysOfWeek);
-            schedule.TimeOfDay = s.Type == "Hourly" ? null : (TimeSpan.TryParse(s.Time, out var parsedTime) ? parsedTime : null);
+            schedule.Frequency = s.Type == "Hourly"
+                                           ? $"{s.StartHour}-{s.EndHour}"
+                                           : string.Join(",", s.DaysOfWeek);
+            schedule.TimeOfDay = s.Type == "Hourly"
+                                           ? null
+                                           : (TimeSpan.TryParse(s.Time, out var t) ? t : (TimeSpan?)null);
+            schedule.RetentionCount = s.RetentionCount;
+            schedule.RetentionUnit = s.RetentionUnit;
+
+            // 2) App-aware & snapshot options
             schedule.IsApplicationAware = model.IsApplicationAware;
             schedule.EnableIoFreeze = model.EnableIoFreeze;
             schedule.UseProxmoxSnapshot = model.UseProxmoxSnapshot;
             schedule.WithMemory = model.WithMemory;
-            schedule.ExcludedVmIds = model.ExcludedVmIds != null ? string.Join(",", model.ExcludedVmIds) : null;
-            schedule.RetentionCount = s.RetentionCount;
-            schedule.RetentionUnit = s.RetentionUnit;
+
+            // 3) Replication flag & excluded VMs
+            schedule.ReplicateToSecondary = model.ReplicateToSecondary;
+            schedule.ExcludedVmIds = model.ExcludedVmIds != null
+                                                ? string.Join(",", model.ExcludedVmIds)
+                                                : null;
+
+            // 4) Persist the chosen cluster & controller
+            schedule.ClusterId = model.ClusterId;
+            schedule.ControllerId = model.ControllerId;
 
             await _context.SaveChangesAsync();
-
             TempData["SuccessMessage"] = "Backup schedule updated successfully.";
             return RedirectToAction("Backup");
         }
+
 
         public IActionResult DeleteSchedule(int id)
         {
@@ -184,6 +464,7 @@ namespace BareProx.Controllers
 
             return RedirectToAction("Backup");
         }
+
 
         [HttpPost]
         public IActionResult StartBackupNow([FromForm] BackupRequest request)
@@ -207,15 +488,16 @@ namespace BareProx.Controllers
                         request.IsApplicationAware,
                         request.Label,
                         request.ClusterId,
-                        request.NetappControllerId,
+                        request.ControllerId,
                         request.RetentionCount,
                         request.RetentionUnit,
                         request.EnableIoFreeze,
                         request.UseProxmoxSnapshot,
                         request.WithMemory,
                         request.DontTrySuspend,
-                        request.ScheduleID
-                        
+                        request.ScheduleID,
+                        request.ReplicateToSecondary
+
                     );
 
                     logger.LogInformation("Backup process completed for {StorageName}", request.StorageName);

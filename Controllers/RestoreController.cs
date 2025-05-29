@@ -17,19 +17,22 @@ namespace BareProx.Controllers
         private readonly INetappService _netappService;
         private readonly ProxmoxService _proxmoxService;
         private readonly IRestoreService _restoreService;
+        private readonly IAppTimeZoneService _tz;
 
         public RestoreController(
             ApplicationDbContext context,
             IBackupService backupService,
             INetappService netappService,
             ProxmoxService proxmoxService,
-            IRestoreService restoreService)
+            IRestoreService restoreService,
+            IAppTimeZoneService tz)
         {
             _context = context;
             _backupService = backupService;
             _netappService = netappService;
             _proxmoxService = proxmoxService;
             _restoreService = restoreService;
+            _tz = tz;
         }
 
         public async Task<IActionResult> Index()
@@ -44,7 +47,7 @@ namespace BareProx.Controllers
                     VolumeName = r.StorageName,
                     StorageName = r.StorageName,
                     ClusterName = "ProxMox",
-                    TimeStamp = r.TimeStamp
+                    TimeStamp = _tz.ConvertUtcToApp(r.TimeStamp)
                 })
                 .ToListAsync();
             return View(backups);
@@ -70,12 +73,11 @@ namespace BareProx.Controllers
                 SnapshotName = record.SnapshotName,
                 VolumeName = record.StorageName,
                 OriginalConfig = record.ConfigurationJson,
-                CloneVolumeName = $"clone_{record.VMID}_{DateTime.UtcNow:yyyyMMddHHmm}",
+                CloneVolumeName = $"clone_{record.VMID}_{_tz.ConvertUtcToApp(DateTime.UtcNow):yyyy-MM-dd-HH-mm}",
                 StartDisconnected = false,
                 OriginalHostAddress = originalHost?.HostAddress,
                 OriginalHostName = originalHost?.Hostname
             };
-
             vm.HostOptions = cluster.Hosts
                 .Select(h => new SelectListItem { Value = h.HostAddress, Text = $"{h.Hostname} ({h.HostAddress})" })
                 .ToList();

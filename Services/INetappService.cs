@@ -6,14 +6,27 @@
   
         public interface INetappService
         {
+
+
             Task<List<VserverDto>> GetVserversAndVolumesAsync(int netappControllerId);
             Task<List<NetappMountInfo>> GetVolumesWithMountInfoAsync(int netappControllerId);
             Task<SnapshotResult> CreateSnapshotAsync(int clusterId, string StorageName, string snapmirrorLabel);
             Task<FlexCloneResult> CloneVolumeFromSnapshotAsync(string volumeName, string snapshotName, string cloneName, int controllerId);
+        /// <summary>
+        /// Tell NetApp to update (resync) the SnapMirror relationship identified by uuid.
+        /// </summary>
+        Task<bool> TriggerSnapMirrorUpdateAsync(string relationshipUuid);
+
+        /// <summary>
+        /// Fetch the current state of a single SnapMirror relationship by its uuid.
+        /// </summary>
+        Task<SnapMirrorRelation> GetSnapMirrorRelationAsync(string relationshipUuid);
+
+        Task SyncSnapMirrorRelationsAsync();
         Task<List<string>> GetNfsEnabledIpsAsync(string vserver);
 
         Task<List<VolumeSnapshotTreeDto>> GetSnapshotsForVolumesAsync(HashSet<string> volumeNames);
-        Task<List<string>> GetSnapshotsAsync(string vserver, string volumeName);
+        Task<List<string>> GetSnapshotsAsync(int ControllerId, string volumeName);
         Task<bool> DeleteVolumeAsync(string volumeName, int controllerId);
         Task<List<string>> ListFlexClonesAsync(int controllerId);
 

@@ -1,100 +1,146 @@
-﻿@model List<VolumeSnapshotTreeDto>
+﻿@model List<BareProx.Models.NetappControllerTreeDto>
 
-@if (ViewBag.Warning is string warningMessage)
-{
-    <div class="alert alert-warning mt-3">
-        <strong>⚠ Warning:</strong> @warningMessage
-    </div>
-}
+<h2>Proxmox Volumes with Snapshots</h2>
 
-<h2>Snapshots</h2>
+<input type="text" id="searchBox" class="form-control mb-3" placeholder="Search volumes or snapshots..." />
 
-<div id="snapshot-tree">
-    @foreach (var volume in Model)
+<div id="volumeTree">
+    @for (int controllerIdx = 0; controllerIdx < Model.Count; controllerIdx++)
     {
-        <div class="card mb-2">
-            <div class="card-header d-flex justify-content-between">
-                <strong>@volume.VolumeName</strong>
-                <button class="btn btn-sm btn-outline-primary"
-                        onclick="openMountWizard('@volume.VolumeName', '@volume.Vserver')">
-                    Mount
-                </button>
+        var controller = Model[controllerIdx];
+        <div class="card mb-3 volume-card">
+            <div class="card-header bg-dark text-white">
+                <strong>@controller.ControllerName</strong>
             </div>
-            <ul class="list-group list-group-flush">
-                @foreach (var snap in volume.Snapshots)
+            <div class="card-body">
+                @for (int svmIdx = 0; svmIdx < controller.Svms.Count; svmIdx++)
                 {
-                    <li class="list-group-item">@snap</li>
+                    var svm = controller.Svms[svmIdx];
+                    <div class="mb-2">
+                        <h6>@svm.Name</h6>
+
+                        @for (int volIdx = 0; volIdx < svm.Volumes.Count; volIdx++)
+                        {
+                            var volume = svm.Volumes[volIdx];
+                            var collapseId = $"snapshots_{controllerIdx}_{svmIdx}_{volIdx}";
+                            <div class="card mb-1 ms-3 volume-card">
+                                <div class="card-header p-2">
+                                    <button class="btn btn-sm btn-link text-start w-100" type="button" data-bs-toggle="collapse" data-bs-target="#@collapseId">
+                                        📦 @volume.VolumeName
+                                    </button>
+                                </div>
+                                <div id="@collapseId" class="collapse">
+                                    <div class="card-body p-2">
+                                        @if (volume.Snapshots?.Any() == true)
+                                        {
+                                            <ul class="list-group snapshot-list">
+                                                @foreach (var snap in volume.Snapshots)
+                                                {
+                                                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                                                        @snap
+                                                        <button type="button"
+                                                                class="btn btn-sm btn-outline-primary"
+                                                                data-bs-toggle="modal"
+                                                                data-bs-target="#mountModal"
+                                                                data-volume="@volume.VolumeName"
+                                                                data-vserver="@volume.Vserver"
+                                                                data-snapshot="@snap">
+                                                            Mount
+                                                        </button>
+                                                    </li>
+                                                }
+                                            </ul>
+                                        }
+                                        else
+                                        {
+                                            <p class="text-muted ms-2">No snapshots found.</p>
+                                        }
+                                    </div>
+                                </div>
+                            </div>
+                        }
+                    </div>
                 }
-            </ul>
+            </div>
         </div>
     }
 </div>
 
-<!-- Mount Modal -->
-<div class="modal fade" id="mountModal" tabindex="-1" aria-hidden="true">
+<!-- Mount Snapshot Modal -->
+<div class="modal fade" id="mountModal" tabindex="-1" aria-labelledby="mountModalLabel" aria-hidden="true">
     <div class="modal-dialog">
-        <div class="modal-content">
-            <form id="mountForm" method="post" asp-action="MountSnapshot">
+        <form asp-controller="Wafl" asp-action="MountSnapshot" method="post">
+            <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title">Mount Snapshot</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <h5 class="modal-title" id="mountModalLabel">Mount Snapshot</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
-                    <input type="hidden" id="volumeName" name="VolumeName" />
-                    <input type="hidden" id="vserver" name="Vserver" />
+                    <input type="hidden" name="VolumeName" id="modalVolumeName" />
+                    <input type="hidden" name="Vserver" id="modalVserver" />
+                    <input type="hidden" name="SnapshotName" id="modalSnapshotName" />
 
-                    <div class="mb-2">
-                        <label>Snapshot</label>
-                        <select name="SnapshotName" id="snapshotSelect" class="form-control"></select>
-                    </div>
-
-                    <div class="mb-2">
-                        <label>Access Mode</label>
-                        <select name="ReadWrite" class="form-control">
-                            <option value="ro">Read-Only</option>
-                            <option value="rw">Read-Write</option>
+                    <div class="mb-3">
+                        <label for="modalMountIp" class="form-label">Select Mount IP</label>
+                        <select name="MountIp" id="modalMountIp" class="form-select" required>
+                            <option disabled selected value="">Loading...</option>
                         </select>
-                    </div>
-
-                    <div class="mb-2">
-                        <label>SVM NFS IP</label>
-                        <select name="MountIp" id="nfsIpSelect" class="form-control"></select>
                     </div>
                 </div>
                 <div class="modal-footer">
                     <button type="submit" class="btn btn-primary">Mount</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                 </div>
-            </form>
-        </div>
+            </div>
+        </form>
     </div>
 </div>
 
 @section Scripts {
     <script>
-        function openMountWizard(volumeName, vserver) {
-            $("#volumeName").val(volumeName);
-            $("#vserver").val(vserver);
+        document.getElementById("searchBox").addEventListener("input", function () {
+            const query = this.value.toLowerCase();
+            const cards = document.querySelectorAll(".volume-card");
 
-            // Clear previous data
-            $("#snapshotSelect").empty();
-            $("#nfsIpSelect").empty();
+            cards.forEach(card => {
+                const header = card.querySelector(".card-header").innerText.toLowerCase();
+                const snapshots = [...card.querySelectorAll(".snapshot-list li")].map(li => li.innerText.toLowerCase());
 
-            // Fetch snapshots
-            $.get(`/Wafl/GetSnapshotsForVolume?volume=${volumeName}&vserver=${vserver}`, function(data) {
-                data.snapshots.forEach(snap =>
-                    $("#snapshotSelect").append(`<option value="${snap}">${snap}</option>`)
-                );
+                card.style.display = (header.includes(query) || snapshots.some(s => s.includes(query))) ? "" : "none";
             });
+        });
 
-            // Fetch NFS-enabled LIFs
-            $.get(`/Wafl/GetNfsIps?vserver=${vserver}`, function(data) {
-                data.ips.forEach(ip =>
-                    $("#nfsIpSelect").append(`<option value="${ip}">${ip}</option>`)
-                );
-            });
+        document.getElementById('mountModal').addEventListener('show.bs.modal', async function (event) {
+            const button = event.relatedTarget;
+            const volume = button.getAttribute('data-volume');
+            const vserver = button.getAttribute('data-vserver');
+            const snapshot = button.getAttribute('data-snapshot');
 
-            new bootstrap.Modal(document.getElementById("mountModal")).show();
-        }
+            document.getElementById('modalVolumeName').value = volume;
+            document.getElementById('modalVserver').value = vserver;
+            document.getElementById('modalSnapshotName').value = snapshot;
+
+            const mountIpSelect = document.getElementById('modalMountIp');
+            mountIpSelect.innerHTML = '<option disabled selected value="">Loading...</option>';
+
+            try {
+                const response = await fetch(`/Wafl/GetNfsIps?vserver=${encodeURIComponent(vserver)}`);
+                const data = await response.json();
+                mountIpSelect.innerHTML = '';
+
+                if (data.ips.length === 0) {
+                    mountIpSelect.innerHTML = '<option disabled>No mount IPs available</option>';
+                } else {
+                    data.ips.forEach(ip => {
+                        const option = document.createElement('option');
+                        option.value = ip;
+                        option.text = ip;
+                        mountIpSelect.appendChild(option);
+                    });
+                }
+            } catch {
+                mountIpSelect.innerHTML = '<option disabled>Error loading IPs</option>';
+            }
+        });
     </script>
 }
-

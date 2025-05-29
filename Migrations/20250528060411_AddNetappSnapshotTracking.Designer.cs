@@ -3,6 +3,7 @@ using System;
 using BareProx.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace BareProx.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250528060411_AddNetappSnapshotTracking")]
+    partial class AddNetappSnapshotTracking
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.5");
@@ -46,9 +49,6 @@ namespace BareProx.Migrations
                     b.Property<string>("Label")
                         .IsRequired()
                         .HasColumnType("TEXT");
-
-                    b.Property<bool>("ReplicateToSecondary")
-                        .HasColumnType("INTEGER");
 
                     b.Property<int>("RetentionCount")
                         .HasColumnType("INTEGER");
@@ -96,12 +96,6 @@ namespace BareProx.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
-                    b.Property<int>("ClusterId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("ControllerId")
-                        .HasColumnType("INTEGER");
-
                     b.Property<bool>("EnableIoFreeze")
                         .HasColumnType("INTEGER");
 
@@ -115,18 +109,12 @@ namespace BareProx.Migrations
                     b.Property<bool>("IsApplicationAware")
                         .HasColumnType("INTEGER");
 
-                    b.Property<bool>("IsEnabled")
-                        .HasColumnType("INTEGER");
-
                     b.Property<DateTime?>("LastRun")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("TEXT");
-
-                    b.Property<bool>("ReplicateToSecondary")
-                        .HasColumnType("INTEGER");
 
                     b.Property<int>("RetentionCount")
                         .HasColumnType("INTEGER");
@@ -227,42 +215,28 @@ namespace BareProx.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("TEXT");
-
-                    b.Property<bool>("ExistsOnPrimary")
+                    b.Property<int>("ControllerId")
                         .HasColumnType("INTEGER");
 
-                    b.Property<bool>("ExistsOnSecondary")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<bool>("IsReplicated")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("JobId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<DateTime>("LastChecked")
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("PrimaryControllerId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("PrimaryVolume")
+                    b.Property<string>("ControllerRole")
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<int?>("SecondaryControllerId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("SecondaryVolume")
+                    b.Property<DateTime>("CreatedAt")
                         .HasColumnType("TEXT");
+
+                    b.Property<bool>("IsReplicated")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("SnapmirrorLabel")
                         .IsRequired()
                         .HasColumnType("TEXT");
 
                     b.Property<string>("SnapshotName")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("VolumeName")
                         .IsRequired()
                         .HasColumnType("TEXT");
 
@@ -381,51 +355,6 @@ namespace BareProx.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("SelectedNetappVolumes");
-                });
-
-            modelBuilder.Entity("BareProx.Models.SnapMirrorRelation", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("DestinationControllerId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("DestinationVolume")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("RelationshipType")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("SnapMirrorPolicy")
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("SourceControllerId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("SourceVolume")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("Uuid")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<bool>("healthy")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("lag_time")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("state")
-                        .HasColumnType("TEXT");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("SnapMirrorRelations");
                 });
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRole", b =>

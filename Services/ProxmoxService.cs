@@ -151,106 +151,95 @@ namespace BareProx.Services
             }
         }
 
-        public async Task<List<string>> GetHostsForClusterAsync(ProxmoxCluster cluster)
+        //public async Task<Dictionary<string, List<ProxmoxVM>>> GetSharedStorageWithVMsAsync(
+        //    int clusterId,
+        //    List<NetappMountInfo> netappMounts)
+        //{
+        //    var cluster = await _context.ProxmoxClusters
+        //        .Include(c => c.Hosts)
+        //        .FirstOrDefaultAsync(c => c.Id == clusterId);
+
+        //    if (cluster == null)
+        //        return null;
+
+        //    var result = new Dictionary<string, List<ProxmoxVM>>();
+
+        //    foreach (var host in cluster.Hosts)
+        //    {
+        //        try
+        //        {
+        //            var storageUrl =
+        //                $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/storage";
+        //            var storageResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, storageUrl);
+        //            var storageJson = await storageResp.Content.ReadAsStringAsync();
+
+        //            using var storageDoc = JsonDocument.Parse(storageJson);
+        //            var storages = storageDoc.RootElement.GetProperty("data");
+
+        //            foreach (var storage in storages.EnumerateArray())
+        //            {
+        //                if (storage.GetProperty("type").GetString() != "nfs")
+        //                    continue;
+
+        //                var storageName = storage.GetProperty("storage").GetString();
+        //                var serverIp = storage.GetProperty("server").GetString() ?? string.Empty;
+        //                var exportPath = storage.GetProperty("export").GetString() ?? string.Empty;
+        //                exportPath = exportPath.TrimEnd('/');
+
+        //                bool existsInNetapp = netappMounts.Any(m =>
+        //                    m.MountIp == serverIp && m.MountPath == exportPath);
+
+        //                if (!existsInNetapp)
+        //                    continue;
+
+        //                if (!result.ContainsKey(storageName))
+        //                    result[storageName] = new List<ProxmoxVM>();
+
+        //                var vmUrl =
+        //                    $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/qemu";
+        //                var vmResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, vmUrl);
+        //                var vmJson = await vmResp.Content.ReadAsStringAsync();
+        //                using var vmDoc = JsonDocument.Parse(vmJson);
+        //                var vms = vmDoc.RootElement.GetProperty("data");
+
+        //                foreach (var vm in vms.EnumerateArray())
+        //                {
+        //                    var vmId = vm.GetProperty("vmid").GetInt32();
+        //                    var name = vm.TryGetProperty("name", out var nameProp)
+        //                        ? nameProp.GetString()
+        //                        : $"VM {vmId}";
+
+        //                    result[storageName].Add(new ProxmoxVM
+        //                    {
+        //                        Id = vmId,
+        //                        Name = name
+        //                    });
+        //                }
+        //            }
+        //        }
+        //        catch
+        //        {
+        //            // optionally log per-host failure
+        //            continue;
+        //        }
+        //    }
+
+        //    return result;
+        //}
+        public async Task<Dictionary<string, List<ProxmoxVM>>> GetEligibleBackupStorageWithVMsAsync(
+    ProxmoxCluster cluster,
+    int netappControllerId,
+    List<string>? onlyIncludeStorageNames = null)
         {
-            var hosts = new List<string>();
-            if (!cluster.Hosts.Any())
-                return hosts;
+            var storageVmMap = onlyIncludeStorageNames != null
+                ? await GetVmsByStorageListAsync(cluster, onlyIncludeStorageNames)
+                : await GetFilteredStorageWithVMsAsync(cluster.Id, netappControllerId);
 
-            var host = cluster.Hosts.First();
-            var url = $"https://{host.HostAddress}:8006/api2/json/cluster/resources?type=node";
-
-            var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url);
-            var body = await resp.Content.ReadAsStringAsync();
-            using var doc = JsonDocument.Parse(body);
-
-            foreach (var node in doc.RootElement.GetProperty("data").EnumerateArray())
-            {
-                if (node.GetProperty("type").GetString() != "node")
-                    continue;
-
-                if (node.TryGetProperty("ip", out var ip)) hosts.Add(ip.GetString());
-                else if (node.TryGetProperty("ip-address", out var ip2)) hosts.Add(ip2.GetString());
-                else hosts.Add(node.GetProperty("node").GetString());
-            }
-
-            return hosts;
-        }
-
-        public async Task<Dictionary<string, List<ProxmoxVM>>> GetSharedStorageWithVMsAsync(
-            int clusterId,
-            List<NetappMountInfo> netappMounts)
-        {
-            var cluster = await _context.ProxmoxClusters
-                .Include(c => c.Hosts)
-                .FirstOrDefaultAsync(c => c.Id == clusterId);
-
-            if (cluster == null)
-                return null;
-
-            var result = new Dictionary<string, List<ProxmoxVM>>();
-
-            foreach (var host in cluster.Hosts)
-            {
-                try
-                {
-                    var storageUrl =
-                        $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/storage";
-                    var storageResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, storageUrl);
-                    var storageJson = await storageResp.Content.ReadAsStringAsync();
-
-                    using var storageDoc = JsonDocument.Parse(storageJson);
-                    var storages = storageDoc.RootElement.GetProperty("data");
-
-                    foreach (var storage in storages.EnumerateArray())
-                    {
-                        if (storage.GetProperty("type").GetString() != "nfs")
-                            continue;
-
-                        var storageName = storage.GetProperty("storage").GetString();
-                        var serverIp = storage.GetProperty("server").GetString() ?? string.Empty;
-                        var exportPath = storage.GetProperty("export").GetString() ?? string.Empty;
-                        exportPath = exportPath.TrimEnd('/');
-
-                        bool existsInNetapp = netappMounts.Any(m =>
-                            m.MountIp == serverIp && m.MountPath == exportPath);
-
-                        if (!existsInNetapp)
-                            continue;
-
-                        if (!result.ContainsKey(storageName))
-                            result[storageName] = new List<ProxmoxVM>();
-
-                        var vmUrl =
-                            $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/qemu";
-                        var vmResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, vmUrl);
-                        var vmJson = await vmResp.Content.ReadAsStringAsync();
-                        using var vmDoc = JsonDocument.Parse(vmJson);
-                        var vms = vmDoc.RootElement.GetProperty("data");
-
-                        foreach (var vm in vms.EnumerateArray())
-                        {
-                            var vmId = vm.GetProperty("vmid").GetInt32();
-                            var name = vm.TryGetProperty("name", out var nameProp)
-                                ? nameProp.GetString()
-                                : $"VM {vmId}";
-
-                            result[storageName].Add(new ProxmoxVM
-                            {
-                                Id = vmId,
-                                Name = name
-                            });
-                        }
-                    }
-                }
-                catch
-                {
-                    // optionally log per-host failure
-                    continue;
-                }
-            }
-
-            return result;
+            return storageVmMap
+                .Where(kvp =>
+                    !kvp.Key.Contains("backup", StringComparison.OrdinalIgnoreCase) &&
+                    !kvp.Key.Contains("restore_", StringComparison.OrdinalIgnoreCase))
+                .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
         }
 
         public async Task<Dictionary<string, List<ProxmoxVM>>> GetFilteredStorageWithVMsAsync(

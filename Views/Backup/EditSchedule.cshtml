@@ -1,169 +1,346 @@
 ﻿@model CreateScheduleRequest
+@using System.Text.Json
+@using System.Linq
 
 @{
     ViewData["Title"] = "Edit Backup Schedule";
 }
 
-<h2>Edit Backup Schedule</h2>
+<div class="mb-3 d-flex justify-content-between align-items-center">
+    <h4 class="mb-0">Edit Backup Schedule</h4>
+    <a asp-action="Backup" asp-controller="Backup" class="btn btn-secondary">← Back to Schedules</a>
+</div>
 
-<form asp-action="EditSchedule" method="post">
+<form asp-action="EditSchedule"
+      method="post"
+      class="needs-validation"
+      novalidate="novalidate">
     <input type="hidden" asp-for="Id" />
 
+    <!-- Name -->
     <div class="mb-3">
-        <label class="form-label">Storage</label>
-        <select asp-for="StorageName" class="form-select" asp-items="Model.StorageOptions">
-            <option value="">-- Select Storage --</option>
-        </select>
+        <label asp-for="Name" class="form-label">Backup Schedule Name</label>
+        <input asp-for="Name"
+               class="form-control"
+               maxlength="20"
+               pattern="^[A-Za-z0-9_\-]+$"
+               title="Only letters, numbers, hyphens and underscores (max 20 chars)."
+               oninput="validateScheduleName(this)"
+               required />
+        <div class="invalid-feedback">
+            Only letters, numbers, hyphens and underscores are allowed (max 20 characters).
+        </div>
     </div>
 
+    <!-- Enabled -->
+    <div class="mb-3 form-check">
+        <input class="form-check-input" asp-for="IsEnabled" />
+        <label class="form-check-label" asp-for="IsEnabled">Schedule Enabled</label>
+    </div>
+
+    <!-- Storage -->
+    <div class="mb-3">
+        <label class="form-label">Storage</label>
+        <select asp-for="StorageName"
+                class="form-select"
+                asp-items="Model.StorageOptions"
+                required>
+            <option value="">-- Select Storage --</option>
+        </select>
+        <div class="invalid-feedback">Please select a storage.</div>
+    </div>
+    <input type="hidden" asp-for="ClusterId" id="ClusterId" />
+    <input type="hidden" asp-for="ControllerId" id="ControllerId" />
+
+    <!-- Backup Type -->
     <div class="mb-3">
         <label class="form-label">Backup Type</label><br />
         <div class="form-check form-check-inline">
-            <input class="form-check-input" type="radio" asp-for="IsApplicationAware" value="false" />
-            <label class="form-check-label">Crash-Consistent</label>
+            <input asp-for="IsApplicationAware"
+                   class="form-check-input"
+                   type="radio"
+                   id="ccRadio"
+                   value="false" />
+            <label class="form-check-label" for="ccRadio">Crash-Consistent</label>
         </div>
         <div class="form-check form-check-inline">
-            <input class="form-check-input" type="radio" asp-for="IsApplicationAware" value="true" />
-            <label class="form-check-label">Application-Aware</label>
+            <input asp-for="IsApplicationAware"
+                   class="form-check-input"
+                   type="radio"
+                   id="aaRadio"
+                   value="true" />
+            <label class="form-check-label" for="aaRadio">Application-Aware</label>
         </div>
     </div>
 
+    <!-- App-Aware Options -->
     <div id="appAwareOptions" class="border rounded p-3 bg-light d-none">
         <div class="form-check">
-            <input class="form-check-input" type="checkbox" asp-for="EnableIoFreeze" />
-            <label class="form-check-label">Enable IO-Freeze</label>
+            <input class="form-check-input"
+                   type="checkbox"
+                   asp-for="EnableIoFreeze"
+                   id="EnableIoFreeze" />
+            <label class="form-check-label" for="EnableIoFreeze">Enable IO-Freeze</label>
         </div>
         <div class="form-check">
-            <input class="form-check-input" type="checkbox" asp-for="UseProxmoxSnapshot" id="UseProxmoxSnapshot" />
-            <label class="form-check-label">Create Proxmox Snapshot</label>
+            <input class="form-check-input"
+                   type="checkbox"
+                   asp-for="UseProxmoxSnapshot"
+                   id="UseProxmoxSnapshot" />
+            <label class="form-check-label" for="UseProxmoxSnapshot">Create Proxmox Snapshot</label>
+        </div>
+        <div id="appAwareError" class="text-danger mt-2" style="display:none;">
+            You must choose either IO-Freeze OR Proxmox Snapshot.
         </div>
         <div id="proxmoxSnapshotOptions" class="mt-2 ms-3 d-none">
             <div class="form-check">
-                <input class="form-check-input" type="checkbox" asp-for="WithMemory" />
-                <label class="form-check-label">Include RAM (With Memory)</label>
+                <input class="form-check-input"
+                       type="checkbox"
+                       asp-for="WithMemory"
+                       id="WithMemory" />
+                <label class="form-check-label" for="WithMemory">Include RAM (With Memory)</label>
             </div>
         </div>
     </div>
 
+    <hr />
+
+    <!-- Schedule Type -->
     <div class="mb-3">
         <label class="form-label">Schedule Type</label>
-        <select asp-for="SingleSchedule.Type" class="form-select" onchange="renderSingleScheduleFields(this.value)">
+        <select asp-for="SingleSchedule.Type"
+                id="scheduleTypeSelect"
+                class="form-select"
+                required>
             <option value="">-- Select Type --</option>
-            <option value="Hourly"
-                    selected="@(Model.SingleSchedule?.Type == "Hourly" ? "selected" : null)">
-                Hourly
-            </option>
-            <option value="Daily" selected="@(Model.SingleSchedule?.Type == "Daily")">Daily</option>
-            <option value="Weekly" selected="@(Model.SingleSchedule?.Type == "Weekly")">Weekly</option>
+            <option value="Hourly">Hourly</option>
+            <option value="Daily">Daily</option>
+            <option value="Weekly">Weekly</option>
         </select>
+        <div class="invalid-feedback">Please select a schedule type.</div>
     </div>
 
-    <div id="single-schedule-fields">
-        @if (Model.SingleSchedule?.Type == "Hourly")
-        {
-            <div class="mb-3">
-                <label>Days</label><div>
-                    @foreach (var day in new[] { "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" })
-                    {
-                        <label class="me-2">
-                            <input type="checkbox" name="SingleSchedule.DaysOfWeek" value="@day" @(Model.SingleSchedule.DaysOfWeek.Contains(day) ? "checked" : null) /> @day
-                        </label>
-                    }
-                </div>
-            </div>
-            <div class="mb-3">
-                <label>Start Hour</label>
-                <input type="number" min="0" max="23" name="SingleSchedule.StartHour" value="@Model.SingleSchedule.StartHour" class="form-control" />
-            </div>
-            <div class="mb-3">
-                <label>End Hour</label>
-                <input type="number" min="0" max="23" name="SingleSchedule.EndHour" value="@Model.SingleSchedule.EndHour" class="form-control" />
-            </div>
-        }
-        else
-        {
-            <div class="mb-3">
-                <label>Days</label><div>
-                    @foreach (var day in new[] { "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" })
-                    {
-                        <label class="me-2">
-                            <input type="checkbox" name="SingleSchedule.DaysOfWeek" value="@day" @(Model.SingleSchedule.DaysOfWeek.Contains(day) ? "checked" : null) /> @day
-                        </label>
-                    }
-                </div>
-            </div>
-            <div class="mb-3">
-                <label>Time</label>
-                <input type="time" name="SingleSchedule.Time" value="@Model.SingleSchedule.Time" class="form-control" />
-            </div>
-        }
-    </div>
+    <!-- Dynamic schedule fields -->
+    <div id="single-schedule-fields"></div>
+    <input type="hidden" asp-for="SingleSchedule.Label" id="snapmirrorLabel" />
 
-    <div class="mb-3">
-        <label asp-for="SingleSchedule.Label" class="form-label">Schedule Label</label>
-        <input asp-for="SingleSchedule.Label" class="form-control" />
-    </div>
-
+    <!-- Retention -->
     <div class="mb-3">
         <label class="form-label">Retention</label>
         <div class="input-group">
-            <input asp-for="SingleSchedule.RetentionCount" type="number" min="1" max="999" class="form-control" />
-            <select asp-for="SingleSchedule.RetentionUnit" class="form-select">
+            <select asp-for="SingleSchedule.RetentionUnit" class="form-select" required>
                 <option value="Hours">Hours</option>
                 <option value="Days">Days</option>
                 <option value="Weeks">Weeks</option>
             </select>
+            <input asp-for="SingleSchedule.RetentionCount"
+                   type="number"
+                   min="1" max="256"
+                   class="form-control"
+                   id="RetentionCount"
+                   required />
+            <div class="invalid-feedback">
+                Enter a number between 1 and 256.
+            </div>
         </div>
-        <small class="form-text text-muted">How long to keep this snapshot before cleanup.</small>
     </div>
 
-    <div class="mb-3">
-        <label asp-for="Name" class="form-label">Backup Name</label>
-        <input asp-for="Name" class="form-control" />
+    <input type="hidden"
+           id="replicableVolumes"
+           value="@string.Join(',', Model.ReplicableVolumes ?? new HashSet<string>())" />
+
+    <!-- Replicate to Secondary -->
+    <div class="mb-3 form-check d-none" id="replicateCheckbox">
+        <input class="form-check-input" asp-for="ReplicateToSecondary" id="ReplicateToSecondary" />
+        <label class="form-check-label" asp-for="ReplicateToSecondary">Replicate to Secondary</label>
     </div>
 
+    <!-- Exclude VMs -->
     <div class="mb-3">
         <label asp-for="ExcludedVmIds" class="form-label">Exclude VMs</label>
-        <select asp-for="ExcludedVmIds" class="form-select" asp-items="Model.AllVms" multiple></select>
+        <select asp-for="ExcludedVmIds"
+                class="form-select"
+                asp-items="Model.AllVms"
+                multiple></select>
     </div>
 
     <div class="mb-3 text-end">
         <button type="submit" class="btn btn-primary">Update Schedule</button>
-        <a class="btn btn-secondary" asp-action="Backup">Cancel</a>
+        <a asp-action="Backup" asp-controller="Backup" class="btn btn-secondary">Cancel</a>
     </div>
 </form>
 
 @section Scripts {
     <script>
-        document.addEventListener('DOMContentLoaded', function () {
-            const snapshotCheckbox = document.getElementById("UseProxmoxSnapshot");
-            const snapshotOptions = document.getElementById("proxmoxSnapshotOptions");
-            const freezeCheckbox = document.getElementById("EnableIoFreeze");
-
-            function toggleAppAwareUI() {
-                const isAppAware = document.querySelector('input[name="IsApplicationAware"]:checked').value === "true";
-                document.getElementById("appAwareOptions").classList.toggle("d-none", !isAppAware);
+        document.addEventListener('DOMContentLoaded', function() {
+          // ── Helpers ───────────────────────────────────────────
+          function blockNonNumeric(e) {
+            if (['e','E','+','-','.'].indexOf(e.key) !== -1) {
+              e.preventDefault();
             }
+          }
+          function clampInput(el) {
+            if (!el) return;
+            el.addEventListener('keydown', blockNonNumeric);
+            el.addEventListener('input', function() {
+              var min = parseInt(el.min, 10),
+                  max = parseInt(el.max, 10),
+                  v = parseInt(el.value, 10);
+              if (isNaN(v)) return;
+              if (v < min) el.value = min;
+              if (v > max) el.value = max;
+            });
+          }
+          function validateScheduleName(input) {
+            input.value = input.value
+                          .replace(/[^A-Za-z0-9_\-]/g, '')
+                          .slice(0, 20);
+          }
 
-            function toggleSnapshotOptions() {
-                const enabled = snapshotCheckbox.checked;
-                snapshotOptions.classList.toggle("d-none", !enabled);
-                if (enabled && freezeCheckbox.checked) freezeCheckbox.checked = false;
+          // ── Grab elements ─────────────────────────────────────
+          var form         = document.querySelector('form.needs-validation');
+          var nameInput    = form.querySelector('input[asp-for="Name"]');
+          var retentionEl  = document.getElementById('RetentionCount');
+          var selectType   = document.getElementById('scheduleTypeSelect');
+          var ccRadio      = document.getElementById('ccRadio');
+          var aaRadio      = document.getElementById('aaRadio');
+          var appOpts      = document.getElementById('appAwareOptions');
+          var ioFreezeCb   = document.getElementById('EnableIoFreeze');
+          var proxSnapCb   = document.getElementById('UseProxmoxSnapshot');
+          var appErr       = document.getElementById('appAwareError');
+          var proxOpts     = document.getElementById('proxmoxSnapshotOptions');
+          var replicateBox = document.getElementById('replicateCheckbox');
+          var replicable   = (document.getElementById('replicableVolumes')||{value:''}).value.split(',');
+          var storageSel   = form.querySelector('select[name="StorageName"]');
+          var snapLabel    = document.getElementById('snapmirrorLabel');
+
+          // ── Initial model values ─────────────────────────────
+          var initialType      = '@Model.SingleSchedule.Type';
+          var initialStartHour = '@Model.SingleSchedule.StartHour';
+          var initialEndHour   = '@Model.SingleSchedule.EndHour';
+          var initialTime      = '@Model.SingleSchedule.Time';
+          var initialDays      = @Html.Raw(JsonSerializer.Serialize(Model.SingleSchedule.DaysOfWeek ?? Enumerable.Empty<string>()));
+
+          // ── Render dynamic fields ─────────────────────────────
+          function renderFields(type) {
+            var c = document.getElementById('single-schedule-fields');
+            var html = '';
+            if (type === 'Hourly') {
+              html += '<div class="mb-3"><label>Start Hour</label>' +
+                      '<input type="number" min="0" max="23" step="1" ' +
+                      'name="SingleSchedule.StartHour" value="' + initialStartHour + '" ' +
+                      'class="form-control" required />' +
+                      '<div class="invalid-feedback">Required</div></div>' +
+                      '<div class="mb-3"><label>End Hour</label>' +
+                      '<input type="number" min="0" max="23" step="1" ' +
+                      'name="SingleSchedule.EndHour" value="' + initialEndHour + '" ' +
+                      'class="form-control" required />' +
+                      '<div class="invalid-feedback">Required</div></div>';
+            } else {
+              html += '<div class="mb-3"><label>Days</label><div>';
+              ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].forEach(function(d) {
+                var chk = initialDays.indexOf(d) !== -1 ? 'checked' : '';
+                html += '<label class="me-2">' +
+                        '<input type="checkbox" name="SingleSchedule.DaysOfWeek" value="' + d + '" ' + chk + ' /> ' + d +
+                        '</label>';
+              });
+              html += '</div><div class="invalid-feedback d-block">Select at least one day.</div></div>' +
+                      '<div class="mb-3"><label>Time</label>' +
+                      '<input type="time" name="SingleSchedule.Time" value="' + initialTime + '" ' +
+                      'class="form-control" required />' +
+                      '<div class="invalid-feedback">Required</div></div>';
             }
+            c.innerHTML = html;
+            snapLabel.value = type.toLowerCase();
+            c.querySelectorAll('input[type=number]').forEach(clampInput);
+          }
 
-            function toggleFreezeConflict() {
-                if (freezeCheckbox.checked && snapshotCheckbox.checked) {
-                    snapshotCheckbox.checked = false;
-                    snapshotOptions.classList.add("d-none");
-                }
+          // ── Toggle App-Aware panel ─────────────────────────────
+          function toggleAppAware() {
+            var show = aaRadio.checked;
+            appOpts.classList.toggle('d-none', !show);
+            if (!show) {
+              ioFreezeCb.checked = false;
+              proxSnapCb.checked = false;
+              proxOpts.classList.add('d-none');
+              appErr.style.display = 'none';
             }
+          }
 
-            document.querySelectorAll("input[name='IsApplicationAware']").forEach(el => el.addEventListener("change", toggleAppAwareUI));
-            snapshotCheckbox.addEventListener("change", toggleSnapshotOptions);
-            freezeCheckbox.addEventListener("change", toggleFreezeConflict);
+          // ── Wire up event handlers ────────────────────────────
+          if (ccRadio) ccRadio.addEventListener('change', toggleAppAware);
+          if (aaRadio) aaRadio.addEventListener('change', toggleAppAware);
 
-            toggleAppAwareUI();
-            toggleSnapshotOptions();
+          if (ioFreezeCb) {
+            ioFreezeCb.addEventListener('change', function() {
+              if (ioFreezeCb.checked) {
+                proxSnapCb.checked = false;
+                proxOpts.classList.add('d-none');
+              }
+            });
+          }
+          if (proxSnapCb) {
+            proxSnapCb.addEventListener('change', function() {
+              if (proxSnapCb.checked) {
+                ioFreezeCb.checked = false;
+                proxOpts.classList.remove('d-none');
+              } else {
+                proxOpts.classList.add('d-none');
+                document.getElementById('WithMemory').checked = false;
+              }
+            });
+          }
+
+          if (storageSel) {
+            storageSel.addEventListener('change', function() {
+              if (replicable.indexOf(storageSel.value) !== -1) {
+                replicateBox.classList.remove('d-none');
+              } else {
+                replicateBox.classList.add('d-none');
+                replicateBox.querySelector('input').checked = false;
+              }
+            });
+          }
+
+          if (form) {
+            form.addEventListener('submit', function(e) {
+              if (!form.checkValidity()) {
+                e.preventDefault(); e.stopPropagation();
+              }
+              if (aaRadio && aaRadio.checked && !ioFreezeCb.checked && !proxSnapCb.checked) {
+                appErr.style.display = 'block';
+                e.preventDefault(); e.stopPropagation();
+              }
+              form.classList.add('was-validated');
+            });
+          }
+
+          if (nameInput) {
+            nameInput.addEventListener('input', function(e) {
+              validateScheduleName(e.target);
+            });
+          }
+          clampInput(retentionEl);
+
+          // ── Initial render ──────────────────────────────────
+          if (initialType && selectType) {
+            selectType.value = initialType;
+            renderFields(initialType);
+            selectType.addEventListener('change', function(e) {
+              renderFields(e.target.value);
+            });
+          }
+
+          // ── Hidden cluster/controller wiring ─────────────────
+          var volumeMeta = @Html.Raw(JsonSerializer.Serialize(Model.VolumeMeta));
+          if (storageSel) {
+            storageSel.dispatchEvent(new Event('change'));
+            storageSel.addEventListener('change', function() {
+              var m = volumeMeta[storageSel.value] || {};
+              document.getElementById('ClusterId').value    = m.ClusterId || '';
+              document.getElementById('ControllerId').value = m.ControllerId || '';
+            });
+          }
         });
     </script>
 }

@@ -4,7 +4,7 @@ Docker compose
 
 Authentication failed error page?
 Timezones under settings
-
+Fix in restorecontroller ClusterName = "ProxMox",
 Add schedules + run
 Add select storage svm:s for primary, volumes to use
 	and use it in functions
@@ -30,9 +30,9 @@ Missing snapshots?
 
 
 
-
-
 Done.
+Fixed local Timezone for snapshots
+New date/time formatting for snapshots
 Added UserManagement
 Added paths for first run creation
 	volumes:

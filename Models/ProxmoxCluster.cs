@@ -4,21 +4,6 @@ using System.Collections.Generic;
 
 namespace BareProx.Models
 {
-    public class ProxmoxCluster
-    {
-        public int Id { get; set; }
-        public string Name { get; set; }
-        public string Username { get; set; }
-        public string PasswordHash { get; set; } // or encrypted string
-        public string? ApiToken { get; set; }
-        public string? CsrfToken { get; set; }
-        public DateTime? TokenExpiry { get; set; }
-        public string? LastStatus { get; set; }
-        public DateTime? LastChecked { get; set; }
-
-        public ICollection<ProxmoxHost> Hosts { get; set; } = new List<ProxmoxHost>();
-    }
-
     public class SelectStorageViewModel
     {
         public int ClusterId { get; set; }
@@ -35,12 +20,6 @@ namespace BareProx.Models
         public string Node { get; set; } = "";
         public bool IsSelected { get; set; } = false;
     }
-    public class ProxSelectedStorage
-    {
-        public int Id { get; set; }
-        public int ClusterId { get; set; }
-        public string StorageIdentifier { get; set; } = "";
-    }
 
     public class StorageWithVMsDto
     {
@@ -50,6 +29,7 @@ namespace BareProx.Models
 
         // renamed from StorageId:
         public int NetappControllerId { get; set; }
+        public bool IsReplicable { get; set; }
     }
 
 }

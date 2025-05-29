@@ -10,6 +10,8 @@ using System.Net;
 using Polly;
 using Polly.Retry;
 using static System.Net.Mime.MediaTypeNames;
+using Microsoft.AspNetCore.Mvc;
+using static System.Net.WebRequestMethods;
 
 
 namespace BareProx.Services
@@ -21,14 +23,21 @@ namespace BareProx.Services
         private readonly ILogger<NetappService> _logger;
         private readonly IEncryptionService _encryptionService;
         private readonly IRemoteApiClient _remoteApiClient;
-        public NetappService(ApplicationDbContext context, IHttpClientFactory httpClientFactory, ILogger<NetappService> logger, IEncryptionService encryptionService, IRemoteApiClient remoteApiClient)
+        private readonly IAppTimeZoneService _tz;
+
+        public NetappService(ApplicationDbContext context, 
+            IHttpClientFactory httpClientFactory, 
+            ILogger<NetappService> logger, 
+            IEncryptionService encryptionService, 
+            IRemoteApiClient remoteApiClient,
+            IAppTimeZoneService tz)
         {
             _context = context;
             _httpClientFactory = httpClientFactory;
             _logger = logger;
             _encryptionService = encryptionService;
             _remoteApiClient = remoteApiClient;
-
+            _tz = tz;
         }
 
         private AuthenticationHeaderValue GetEncryptedAuthHeader(string username, string encryptedPassword)
@@ -209,6 +218,249 @@ namespace BareProx.Services
             }
         }
 
+        public async Task<bool> TriggerSnapMirrorUpdateAsync(string relationshipUuid)
+        {
+            // 1) Lookup the relation record
+            var relation = await _context.SnapMirrorRelations
+                .FirstOrDefaultAsync(r => r.Uuid == relationshipUuid);
+            if (relation == null)
+            {
+                _logger.LogError(
+                    "No SnapMirrorRelation found for UUID {Uuid}", relationshipUuid);
+                return false;
+            }
+
+            // 2) Lookup the Destination-controller entity
+            var controller = await _context.NetappControllers
+                .FirstOrDefaultAsync(c => c.Id == relation.DestinationControllerId);
+            if (controller == null)
+            {
+                _logger.LogError(
+                    "No NetappController record for ID {Id}", relation.DestinationControllerId);
+                return false;
+            }
+
+            // 3) (Optional) verify the snapshot exists on the source volume
+            //    If you still want that guard, uncomment the next lines:
+            //
+            // if (!await SnapshotExistsOnControllerAsync(
+            //         relation.SourceVolume, 
+            //         /* your snapshotName here */, 
+            //         controller))
+            // {
+            //     _logger.LogWarning(
+            //         "Snapshot not found on volume {Vol} — skipping update", 
+            //         relation.SourceVolume);
+            //     return false;
+            // }
+
+            // 4) Trigger the SnapMirror update via HTTP
+            var client = CreateAuthenticatedClient(controller, out var baseUrl);
+            var url = $"{baseUrl}snapmirror/relationships/{relationshipUuid}/transfers";
+            var content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
+
+            var resp = await client.PostAsync(url, content);
+            // debug var raw = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+            {
+                _logger.LogError(
+                    "Failed to trigger SnapMirror update for UUID {Uuid} on controller {Id}: {Status}",
+                    relationshipUuid, controller.Id, resp.StatusCode);
+                return false;
+            }
+
+            _logger.LogInformation(
+                "Triggered SnapMirror update for UUID {Uuid} on controller {Id}",
+                relationshipUuid, controller.Id);
+            return true;
+        }
+
+        /// <summary>
+        /// Verifies the snapshot exists, then fetches the SnapMirror relation by UUID.
+        /// </summary>
+        public async Task<SnapMirrorRelation> GetSnapMirrorRelationAsync(string relationshipUuid)
+        {
+            // 1) Lookup the relation record directly in the database
+            var relation = await _context.SnapMirrorRelations
+                .FirstOrDefaultAsync(r => r.Uuid == relationshipUuid);
+            if (relation == null)
+            {
+                throw new InvalidOperationException(
+                    $"SnapMirror relationship '{relationshipUuid}' not found in database.");
+            }
+
+            // 2) Lookup the controller entity
+            var controller = await _context.NetappControllers
+                .FirstOrDefaultAsync(c => c.Id == relation.DestinationControllerId);
+
+            if (controller == null)
+            {
+                throw new InvalidOperationException(
+                    $"NetApp controller with ID {relation.DestinationControllerId} not found.");
+            }
+
+            // 3) Optionally re-fetch live state from the API:
+            //    (you can remove this if you trust your DB copy)
+            var client = CreateAuthenticatedClient(controller, out var baseUrl);
+            var resp = await client.GetAsync(
+                $"{baseUrl}snapmirror/relationships/{relationshipUuid}");
+            resp.EnsureSuccessStatusCode();
+
+            
+            using var stream = await resp.Content.ReadAsStreamAsync();
+            var live = await JsonSerializer.DeserializeAsync<SnapMirrorRelation>(stream,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+            if (live == null)
+            {
+                throw new InvalidOperationException(
+                    $"No SnapMirrorRelation returned from API for UUID {relationshipUuid}");
+            }
+
+            // 4) Merge the live state back into our DB record if you like, or just return it:
+            //    Here we return the live object
+            return live;
+        }
+
+        public async Task<List<SnapMirrorRelation>> GetSnapMirrorRelationsAsync(NetappController controller)
+        {
+            var client = CreateAuthenticatedClient(controller, out var baseUrl);
+
+            // Updated query string to match what your actual API returns
+            var url = $"{baseUrl}snapmirror/relationships?return_timeout=120" +
+                      "&fields=source.path,destination.path,policy.name,policy.type,policy.uuid,state,lag_time,uuid,healthy" +
+                      "&max_records=1000";
+
+            var resp = await client.GetAsync(url);
+            if (!resp.IsSuccessStatusCode)
+            {
+                _logger.LogError("Failed to fetch SnapMirror relations from controller {0}", controller.Id);
+                return new List<SnapMirrorRelation>();
+            }
+
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            var records = doc.RootElement.GetProperty("records");
+
+            var result = new List<SnapMirrorRelation>();
+
+            foreach (var entry in records.EnumerateArray())
+            {
+                var srcPath = entry.GetProperty("source").GetProperty("path").GetString() ?? "";
+                var dstPath = entry.GetProperty("destination").GetProperty("path").GetString() ?? "";
+                var policyName = entry.GetProperty("policy").GetProperty("name").GetString() ?? "";
+                var policyType = entry.GetProperty("policy").GetProperty("type").GetString() ?? "";
+                var state = entry.GetProperty("state").GetString() ?? "";
+                var lagTime = entry.TryGetProperty("lag_time", out var lagProp) ? lagProp.GetString() : null;
+                var healthy = entry.TryGetProperty("healthy", out var healthyProp) && healthyProp.GetBoolean();
+                var uuid = entry.GetProperty("uuid").GetString() ?? "";
+
+                // Extract volume names from paths: "clustername:volumename"
+                var srcVol = srcPath.Contains(':') ? srcPath.Split(':')[1] : srcPath;
+                var dstVol = dstPath.Contains(':') ? dstPath.Split(':')[1] : dstPath;
+
+                result.Add(new SnapMirrorRelation
+                {
+                    SourceVolume = srcVol,
+                    DestinationVolume = dstVol,
+                    SourceControllerId = 0, // Will be resolved elsewhere
+                    DestinationControllerId = controller.Id,
+                    RelationshipType = policyType,
+                    SnapMirrorPolicy = policyName,
+                    state = state,
+                    lag_time = lagTime,
+                    healthy = healthy,
+                    Uuid = uuid
+                });
+            }
+
+            return result;
+        }
+
+        public async Task SyncSnapMirrorRelationsAsync()
+        {
+            // 1. Get all secondary controllers that have selected volumes
+            var secondaryControllers = await _context.NetappControllers
+                .Where(c => !c.IsPrimary)
+                .ToListAsync();
+
+            foreach (var secondary in secondaryControllers)
+            {
+                var selectedDestVolumes = await _context.SelectedNetappVolumes
+                    .Where(v => v.NetappControllerId == secondary.Id)
+                    .Select(v => v.VolumeName)
+                    .ToListAsync();
+
+                if (!selectedDestVolumes.Any())
+                    continue; // skip if no selected volumes for this controller
+
+                // 2. Pull SnapMirror relationships from secondary
+                var relations = await GetSnapMirrorRelationsAsync(secondary);
+
+                // 3. Filter out those not targeting selected volumes
+                var filtered = relations
+                    .Where(r => selectedDestVolumes.Contains(r.DestinationVolume, StringComparer.OrdinalIgnoreCase))
+                    .ToList();
+                var NetappVolumes = await _context.SelectedNetappVolumes
+                    .ToListAsync();
+                foreach (var relation in filtered)
+                {
+                    var existing = await _context.SnapMirrorRelations.FirstOrDefaultAsync(r =>
+                        r.SourceVolume == relation.SourceVolume &&
+                        r.DestinationVolume == relation.DestinationVolume &&
+                        r.DestinationControllerId == secondary.Id);
+
+
+                    if (existing != null)
+                    {
+                        // Update existing fields
+                        existing.SourceControllerId = relation.SourceControllerId;
+                        existing.SourceVolume = relation.SourceVolume;
+                        existing.DestinationVolume = relation.DestinationVolume;
+                        existing.DestinationControllerId = relation.DestinationControllerId;
+                        existing.RelationshipType = relation.RelationshipType;
+                        existing.state = relation.state;
+                        existing.Uuid = relation.Uuid;
+                        existing.lag_time = relation.lag_time;
+                        existing.SourceControllerId = NetappVolumes.FirstOrDefault(c => c.VolumeName == relation.SourceVolume)?.NetappControllerId ?? 0;
+                        // etc... Add more fields if needed
+                    }
+                    else
+                    {
+                        relation.SourceControllerId = NetappVolumes.FirstOrDefault(c => c.VolumeName == relation.SourceVolume)?.NetappControllerId ?? 0;
+                        _context.SnapMirrorRelations.Add(relation);
+                    }
+                }
+            }
+
+            await _context.SaveChangesAsync();
+        }
+
+
+
+        private async Task<bool> SnapshotExistsOnControllerAsync(string volume, string snapshotName, NetappController controller)
+        {
+            var client = CreateAuthenticatedClient(controller, out var baseUrl);
+
+            var volUrl = $"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volume)}";
+            var volResp = await client.GetAsync(volUrl);
+            if (!volResp.IsSuccessStatusCode) return false;
+
+            using var volDoc = JsonDocument.Parse(await volResp.Content.ReadAsStringAsync());
+            var volRecs = volDoc.RootElement.GetProperty("records");
+            if (volRecs.GetArrayLength() == 0) return false;
+
+            var uuid = volRecs[0].GetProperty("uuid").GetString();
+
+            var snapUrl = $"{baseUrl}storage/volumes/{uuid}/snapshots?fields=name";
+            var snapResp = await client.GetAsync(snapUrl);
+            if (!snapResp.IsSuccessStatusCode) return false;
+
+            using var snapDoc = JsonDocument.Parse(await snapResp.Content.ReadAsStringAsync());
+            return snapDoc.RootElement
+                .GetProperty("records")
+                .EnumerateArray()
+                .Any(e => e.GetProperty("name").GetString() == snapshotName);
+        }
 
         public async Task<SnapshotResult> CreateSnapshotAsync(int clusterId, string storageName, string snapmirrorLabel)
         {
@@ -225,15 +477,33 @@ namespace BareProx.Services
                         ErrorMessage = $"No matching NetApp volume for storage name '{storageName}'."
                     };
                 }
-
-                var snapshotName = $"{snapmirrorLabel}-{DateTime.UtcNow:yyyyMMddHHmmss}";
+                // --- Set Snapshot Name
+                var snapshotName = $"BP_{snapmirrorLabel}-{_tz.ConvertUtcToApp(DateTime.UtcNow):yyyy-MM-dd-HH_mm-ss}";
                 await SendSnapshotRequestAsync(volume.VolumeName, snapshotName, snapmirrorLabel);
-
+                //_context.NetappSnapshots.Add(new NetappSnapshot
+                //{
+                //    JobId = 0,                                          // none yet
+                //    PrimaryVolume = volume.VolumeName,
+                //    SecondaryVolume = null,                             // none yet
+                //    SnapshotName = snapshotName,
+                //    PrimaryControllerId = clusterId,
+                //    SecondaryControllerId = null,
+                //    ExistsOnPrimary = true,                             // we just created it
+                //    ExistsOnSecondary = false,
+                //    CreatedAt = _tz.ConvertUtcToApp(DateTime.UtcNow),
+                //    ControllerRole = "Primary",
+                //    ControllerId = clusterId,
+                //    SnapmirrorLabel = snapmirrorLabel,
+                //    IsReplicated = false,                               // not yet
+                //    LastChecked = _tz.ConvertUtcToApp(DateTime.UtcNow)
+                //});
+                //await _context.SaveChangesAsync();
                 return new SnapshotResult
                 {
                     Success = true,
                     SnapshotName = snapshotName
                 };
+                
             }
             catch (Exception ex)
             {
@@ -749,11 +1019,17 @@ namespace BareProx.Services
         }
 
 
-        public async Task<List<string>> GetSnapshotsAsync(string vserver, string volumeName)
+        public async Task<List<string>> GetSnapshotsAsync(int ControllerId, string volumeName)
         {
-            var controller = await _context.NetappControllers.FirstOrDefaultAsync();
+            // lookup Controller
+            var controller = await _context.NetappControllers
+                .FirstOrDefaultAsync(c => c.Id == ControllerId);
             if (controller == null)
+            {
+                _logger.LogError(
+                    "No NetappController record for ID {Id}", ControllerId);
                 throw new Exception("NetApp controller not found.");
+            }
 
             // 🔐 Use encrypted credentials + helper
             var client = CreateAuthenticatedClient(controller, out var baseUrl);

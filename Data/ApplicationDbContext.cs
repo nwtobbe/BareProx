@@ -19,5 +19,8 @@ namespace BareProx.Data
         public DbSet<Job> Jobs { get; set; }
         public DbSet<ProxSelectedStorage> SelectedStorages { get; set; }
         public DbSet<SelectedNetappVolume> SelectedNetappVolumes { get; set; }
+        public DbSet<NetappSnapshot> NetappSnapshots { get; set; } = null!;
+        public DbSet<SnapMirrorRelation> SnapMirrorRelations { get; set; } = null!;
+
     }
 }
