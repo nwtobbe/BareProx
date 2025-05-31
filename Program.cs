@@ -237,9 +237,9 @@ builder.Services.AddRazorPages();
 
 
 
-#if DEBUG
-builder.Logging.SetMinimumLevel(LogLevel.Debug);
-#else
+//#if DEBUG
+//builder.Logging.SetMinimumLevel(LogLevel.Debug);
+//#else
 //---Lock down-- - Fix _LoginPartial.cshtml to enable lockout and uncomment this section
 if (isConfigured)
 {
@@ -252,7 +252,7 @@ if (isConfigured)
     });
 }
 builder.Logging.SetMinimumLevel(LogLevel.Warning);
-#endif
+// #endif
 
 // 4) Configure Kestrel to use the SelfSignedCertificateService for HTTPS
 builder.WebHost.ConfigureKestrel(options =>
