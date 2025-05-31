@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Server.Kestrel.Https;
 using System;
 using System.IO;
 using System.Security.Cryptography;
@@ -13,6 +14,7 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.Data.SqlClient;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+
 
 // Alias for clarity
 using DbConfigModel = BareProx.Models.DatabaseConfigModels;
@@ -45,7 +47,14 @@ if (!File.Exists(appSettingsPath))
         }
       },
       "AllowedHosts": "*",
-      "DefaultTimeZone": "W. Europe Standard Time"
+      "DefaultTimeZone": "W. Europe Standard Time",
+      "CertificateOptions": {
+      "OutputFolder": "/config/Certs",
+      "PfxFileName": "selfsigned.pfx",
+      "PfxPassword": "changeit",
+      "SubjectName": "CN=localhost",
+      "ValidDays": 365
+    }
     }
     """);
 }
@@ -77,6 +86,13 @@ builder.Configuration
 builder.Services.Configure<ConfigSettings>(
     builder.Configuration.GetSection("ConfigSettings")
 );
+// Bind the "CertificateOptions" section
+builder.Services.Configure<CertificateOptions>(
+    builder.Configuration.GetSection("CertificateOptions"));
+
+// Register the service as a Singleton
+builder.Services.AddSingleton<SelfSignedCertificateService>();
+
 
 // --- Check if DB config exists --------------------------------------------
 var rawDbCfg = builder.Configuration
@@ -230,6 +246,27 @@ builder.Services.AddRazorPages();
 //            .Build();
 //    });
 //}
+
+// 4) Configure Kestrel to use the SelfSignedCertificateService for HTTPS
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.ListenAnyIP(80);
+
+    options.ListenAnyIP(443, listenOpts =>
+    {
+        var certService = builder.Services.BuildServiceProvider()
+                                 .GetRequiredService<SelfSignedCertificateService>();
+
+        var cert = certService.CurrentCertificate;
+        if (cert == null)
+        {
+            throw new InvalidOperationException("Failed to load or generate the self‐signed certificate.");
+        }
+
+        listenOpts.UseHttps(cert);
+    });
+});
+
 
 var app = builder.Build();
 

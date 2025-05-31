@@ -10,6 +10,7 @@
     <table class="table table-bordered table-striped">
         <thead>
             <tr>
+                <th>Name</th>
                 <th>Storage</th>
                 <th>Frequency</th>
                 <th>Schedule</th>
@@ -22,6 +23,7 @@
             @foreach (var schedule in Model)
             {
                 <tr>
+					<td>@schedule.Name</td>
                     <td>@schedule.StorageName</td>
                     <td>@schedule.Frequency</td>
                     <td>@schedule.Schedule</td>

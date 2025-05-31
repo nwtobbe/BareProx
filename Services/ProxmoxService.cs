@@ -111,29 +111,43 @@ namespace BareProx.Services
             string url,
             HttpContent content = null)
         {
-            var client = await GetAuthenticatedClientAsync(cluster);
-            var request = new HttpRequestMessage(method, url) { Content = content };
-            var response = await client.SendAsync(request);
-            //string raw = await response.Content.ReadAsStringAsync();
-            //Console.WriteLine($"Snapshot API response ({(int)response.StatusCode}): {raw}");
-            if (response.StatusCode == HttpStatusCode.Unauthorized)
+            try
             {
-                // Re-authenticate and update tokens in DB
-                var reauth = await AuthenticateAndStoreTokenAsync(cluster);
-                if (!reauth)
-                    throw new Exception("Authentication failed: missing token or CSRF.");
+                var client = await GetAuthenticatedClientAsync(cluster);
+                var request = new HttpRequestMessage(method, url) { Content = content };
+                var response = await client.SendAsync(request);
+                //string raw = await response.Content.ReadAsStringAsync();
+                //Console.WriteLine($"Snapshot API response ({(int)response.StatusCode}): {raw}");
+                if (response.StatusCode == HttpStatusCode.Unauthorized)
+                {
+                    // Re-authenticate and update tokens in DB
+                    var reauth = await AuthenticateAndStoreTokenAsync(cluster);
+                    if (!reauth)
+                        throw new ServiceUnavailableException("Authentication failed: missing token or CSRF.");
 
-                // reload tokens
-                await _context.Entry(cluster).ReloadAsync();
-                client = await GetAuthenticatedClientAsync(cluster);
+                    // reload tokens
+                    await _context.Entry(cluster).ReloadAsync();
+                    client = await GetAuthenticatedClientAsync(cluster);
 
-                // retry once
-                request = new HttpRequestMessage(method, url) { Content = content };
-                response = await client.SendAsync(request);
+                    // retry once
+                    request = new HttpRequestMessage(method, url) { Content = content };
+                    response = await client.SendAsync(request);
+                }
+
+                response.EnsureSuccessStatusCode();
+                return response;
             }
-
-            response.EnsureSuccessStatusCode();
-            return response;
+            catch (HttpRequestException ex)
+            {
+                // This catches socket errors, timeouts, connection refused, etc.
+                var host = cluster.Hosts.FirstOrDefault()?.HostAddress ?? "unknown";
+                _ = _context.ProxmoxClusters
+                    .Where(c => c.Id == cluster.Id)
+                    .ExecuteUpdateAsync(b => b.SetProperty(c => c.LastStatus, _ => $"Unreachable: {ex.Message}")
+                                             .SetProperty(c => c.LastChecked, _ => DateTime.UtcNow));
+                throw new ServiceUnavailableException(
+                    $"Cannot reach Proxmox host at {host}:8006. {ex.Message}", ex);
+            }
         }
 
 
@@ -151,81 +165,7 @@ namespace BareProx.Services
             }
         }
 
-        //public async Task<Dictionary<string, List<ProxmoxVM>>> GetSharedStorageWithVMsAsync(
-        //    int clusterId,
-        //    List<NetappMountInfo> netappMounts)
-        //{
-        //    var cluster = await _context.ProxmoxClusters
-        //        .Include(c => c.Hosts)
-        //        .FirstOrDefaultAsync(c => c.Id == clusterId);
-
-        //    if (cluster == null)
-        //        return null;
-
-        //    var result = new Dictionary<string, List<ProxmoxVM>>();
-
-        //    foreach (var host in cluster.Hosts)
-        //    {
-        //        try
-        //        {
-        //            var storageUrl =
-        //                $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/storage";
-        //            var storageResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, storageUrl);
-        //            var storageJson = await storageResp.Content.ReadAsStringAsync();
-
-        //            using var storageDoc = JsonDocument.Parse(storageJson);
-        //            var storages = storageDoc.RootElement.GetProperty("data");
-
-        //            foreach (var storage in storages.EnumerateArray())
-        //            {
-        //                if (storage.GetProperty("type").GetString() != "nfs")
-        //                    continue;
-
-        //                var storageName = storage.GetProperty("storage").GetString();
-        //                var serverIp = storage.GetProperty("server").GetString() ?? string.Empty;
-        //                var exportPath = storage.GetProperty("export").GetString() ?? string.Empty;
-        //                exportPath = exportPath.TrimEnd('/');
-
-        //                bool existsInNetapp = netappMounts.Any(m =>
-        //                    m.MountIp == serverIp && m.MountPath == exportPath);
-
-        //                if (!existsInNetapp)
-        //                    continue;
-
-        //                if (!result.ContainsKey(storageName))
-        //                    result[storageName] = new List<ProxmoxVM>();
-
-        //                var vmUrl =
-        //                    $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/qemu";
-        //                var vmResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, vmUrl);
-        //                var vmJson = await vmResp.Content.ReadAsStringAsync();
-        //                using var vmDoc = JsonDocument.Parse(vmJson);
-        //                var vms = vmDoc.RootElement.GetProperty("data");
-
-        //                foreach (var vm in vms.EnumerateArray())
-        //                {
-        //                    var vmId = vm.GetProperty("vmid").GetInt32();
-        //                    var name = vm.TryGetProperty("name", out var nameProp)
-        //                        ? nameProp.GetString()
-        //                        : $"VM {vmId}";
-
-        //                    result[storageName].Add(new ProxmoxVM
-        //                    {
-        //                        Id = vmId,
-        //                        Name = name
-        //                    });
-        //                }
-        //            }
-        //        }
-        //        catch
-        //        {
-        //            // optionally log per-host failure
-        //            continue;
-        //        }
-        //    }
-
-        //    return result;
-        //}
+       
         public async Task<Dictionary<string, List<ProxmoxVM>>> GetEligibleBackupStorageWithVMsAsync(
     ProxmoxCluster cluster,
     int netappControllerId,

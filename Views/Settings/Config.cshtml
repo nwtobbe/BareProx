@@ -1,4 +1,14 @@
-﻿@model ConfigSettingsViewModel
+﻿@model BareProx.Models.SettingsPageViewModel
+@if (TempData["RestartRequired"] != null)
+{
+    <div class="alert alert-warning">
+        <strong>Restart required:</strong> The application must restart to apply the new certificate.
+        <form asp-action="RestartApp" asp-controller="Settings" method="post" style="display:inline;">
+            @Html.AntiForgeryToken()
+            <button type="submit" class="btn btn-danger btn-sm ms-3">Restart Now</button>
+        </form>
+    </div>
+}
 @{
     ViewBag.Title = "Application Configuration";
 }
@@ -12,20 +22,88 @@
     </div>
 }
 
+<!-- ================================
+     Section A: Time Zone Form
+     ================================ -->
 @using (Html.BeginForm("Config", "Settings", FormMethod.Post))
 {
     @Html.AntiForgeryToken()
 
-    <div class="form-group">
-        @Html.LabelFor(m => m.TimeZoneId)
+    <div class="form-group mb-3">
+        @Html.LabelFor(m => m.Config.TimeZoneId)
         @Html.DropDownListFor(
-                m => m.TimeZoneId,
-                (SelectList)ViewBag.TimeZones,
+                m => m.Config.TimeZoneId,
+                Model.TimeZones,
                 "— select time zone —",
                 new { @class = "form-control" })
-        @Html.ValidationMessageFor(m => m.TimeZoneId,
+        @Html.ValidationMessageFor(
+                m => m.Config.TimeZoneId,
                 "", new { @class = "text-danger" })
     </div>
 
-    <button type="submit" class="btn btn-primary">Save</button>
+    <button type="submit" class="btn btn-primary">Save Time Zone</button>
+}
+
+<hr />
+
+<!-- ========================================
+     Section B: Display Current Certificate
+     ======================================== -->
+@if (!string.IsNullOrWhiteSpace(Model.Regenerate.CurrentSubject))
+{
+    <h4>Current Self-Signed Certificate</h4>
+    <dl class="row">
+        <dt class="col-sm-3">Subject</dt>
+        <dd class="col-sm-9">@Model.Regenerate.CurrentSubject</dd>
+
+        <dt class="col-sm-3">Valid From</dt>
+        <dd class="col-sm-9">@Model.Regenerate.CurrentNotBefore?.ToString("u")</dd>
+
+        <dt class="col-sm-3">Valid Until</dt>
+        <dd class="col-sm-9">@Model.Regenerate.CurrentNotAfter?.ToString("u")</dd>
+
+        <dt class="col-sm-3">Thumbprint</dt>
+        <dd class="col-sm-9">@Model.Regenerate.CurrentThumbprint</dd>
+    </dl>
+}
+else
+{
+    <div class="alert alert-warning">
+        No certificate is currently loaded.
+    </div>
+}
+
+<hr />
+
+<!-- ============================================
+     Section C: Regenerate Certificate Form
+     ============================================ -->
+<h4>Regenerate Self-Signed Certificate</h4>
+@using (Html.BeginForm("RegenerateCert", "Settings", FormMethod.Post))
+{
+    @Html.AntiForgeryToken()
+
+    <div class="form-group mb-3">
+        <label for="Regenerate.RegenSubjectName">Common Name (CN)</label>
+        <input name="Regenerate.RegenSubjectName" class="form-control" value="@Model.Regenerate.RegenSubjectName" />
+        @Html.ValidationMessage("Regenerate.RegenSubjectName", "", new { @class = "text-danger" })
+    </div>
+
+    <div class="form-group mb-3">
+        <label for="Regenerate.RegenValidDays">Validity (days)</label>
+        <input type="number" min="1" name="Regenerate.RegenValidDays" class="form-control" value="@Model.Regenerate.RegenValidDays" />
+        @Html.ValidationMessage("Regenerate.RegenValidDays", "", new { @class = "text-danger" })
+    </div>
+
+    <div class="form-group mb-3">
+        <label for="Regenerate.RegenSANs">Subject Alternative Names (SAN)</label>
+        <input name="Regenerate.RegenSANs" class="form-control" placeholder="e.g. localhost,example.com" value="@Model.Regenerate.RegenSANs" />
+        @Html.ValidationMessage("Regenerate.RegenSANs", "", new { @class = "text-danger" })
+    </div>
+
+    <button type="submit" class="btn btn-warning">Regenerate Certificate</button>
+}
+
+@section Scripts {
+    @await Html.PartialAsync("_ValidationScriptsPartial")
 }

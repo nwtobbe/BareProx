@@ -7,7 +7,13 @@
 <h2>Restore VM</h2>
 
 <form asp-controller="Restore" asp-action="PerformRestore" method="post" novalidate>
+    @* carry these values through *@
     <input type="hidden" asp-for="BackupId" />
+    <input type="hidden" asp-for="ClusterId" />
+    <input type="hidden" asp-for="ControllerId" />
+    <input type="hidden" asp-for="Target" />
+
+    @* the rest as before *@
     <input type="hidden" asp-for="OriginalConfig" />
     <input type="hidden" asp-for="OriginalHostAddress" />
     <input type="hidden" asp-for="OriginalHostName" />
@@ -31,6 +37,7 @@
         <label class="form-label">Volume</label>
         <input type="text" class="form-control" asp-for="VolumeName" readonly />
     </div>
+
     <div class="mb-3">
         <label asp-for="HostAddress" class="form-label">Target Host</label>
         <select asp-for="HostAddress" class="form-select" asp-items="Model.HostOptions">
@@ -38,6 +45,7 @@
         </select>
         <span asp-validation-for="HostAddress" class="text-danger"></span>
     </div>
+
     <div class="mb-3">
         <label asp-for="RestoreType" class="form-label">Restore Type</label>
         <select asp-for="RestoreType" class="form-select">
@@ -66,23 +74,23 @@
 @section Scripts {
     <script>
         document.addEventListener('DOMContentLoaded', function () {
-            var select = document.querySelector('select[name="RestoreType"]');
-            var vmNameGroup = document.getElementById('newVmNameGroup');
-            var newVmNameInput = document.querySelector('input[name="NewVmName"]');
-            var originalVmName = document.querySelector('input[name="VmName"]').value;
+          var select = document.querySelector('select[name="RestoreType"]');
+          var vmNameGroup = document.getElementById('newVmNameGroup');
+          var newVmNameInput = document.querySelector('input[name="NewVmName"]');
+          var originalVmName = document.querySelector('input[name="VmName"]').value;
 
-            function toggleVmName() {
-                if (select.value === 'ReplaceOriginal') {
-                    vmNameGroup.style.display = 'none';
-                    newVmNameInput.value = originalVmName;
-                } else {
-                    vmNameGroup.style.display = 'block';
-                    newVmNameInput.value = '';
-                }
+          function toggleVmName() {
+            if (select.value === 'ReplaceOriginal') {
+              vmNameGroup.style.display = 'none';
+              newVmNameInput.value = originalVmName;
+            } else {
+              vmNameGroup.style.display = 'block';
+              newVmNameInput.value = '';
             }
+          }
 
-            select.addEventListener('change', toggleVmName);
-            toggleVmName();
+          select.addEventListener('change', toggleVmName);
+          toggleVmName();
         });
     </script>
 }

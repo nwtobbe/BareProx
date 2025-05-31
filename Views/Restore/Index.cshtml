@@ -6,7 +6,6 @@
 
 <h2>Restore Backups</h2>
 
-<!-- Use local DataTables CSS -->
 <link rel="stylesheet" href="~/lib/datatables/media/css/jquery.dataTables.min.css" />
 
 <table id="restoreTable" class="table table-bordered table-striped">
@@ -18,7 +17,7 @@
             <th>Storage</th>
             <th>Cluster</th>
             <th>Date</th>
-            <th></th>
+            <th>Restore</th>
         </tr>
     </thead>
     <tbody>
@@ -32,24 +31,52 @@
                 <td>@item.ClusterName</td>
                 <td>@item.TimeStamp.ToString("yyyy-MM-dd HH:mm")</td>
                 <td>
-                    <form asp-controller="Restore" asp-action="Restore" method="get">
-                        <input type="hidden" name="backupId" value="@item.BackupId" />
-                        <button type="submit" class="btn btn-sm btn-primary">Restore</button>
-                    </form>
+                    @* Primary button *@
+                    @if (item.IsOnPrimary)
+                    {
+                        <form asp-controller="Restore"
+                              asp-action="Restore"
+                              method="get"
+                              style="display:inline-block; margin-right:4px;">
+                            <input type="hidden" name="backupId" value="@item.BackupId" />
+                            <input type="hidden" name="clusterId" value="@item.ClusterId" />
+                            <input type="hidden" name="controllerId" value="@item.PrimaryControllerId" />
+                            <input type="hidden" name="target" value="Primary" />
+                            <button type="submit" class="btn btn-sm btn-primary">
+                                Primary
+                            </button>
+                        </form>
+                    }
+
+                    @* Secondary button *@
+                    @if (item.IsOnSecondary && item.SecondaryControllerId.HasValue)
+                    {
+                        <form asp-controller="Restore"
+                              asp-action="Restore"
+                              method="get"
+                              style="display:inline-block;">
+                            <input type="hidden" name="backupId" value="@item.BackupId" />
+                            <input type="hidden" name="clusterId" value="@item.ClusterId" />
+                            <input type="hidden" name="controllerId" value="@item.SecondaryControllerId" />
+                            <input type="hidden" name="target" value="Secondary" />
+                            <button type="submit" class="btn btn-sm btn-secondary">
+                                Secondary
+                            </button>
+                        </form>
+                    }
                 </td>
             </tr>
         }
     </tbody>
 </table>
 
-<!-- Use local jQuery and DataTables JS -->
 @section Scripts {
     <script src="~/lib/jquery/dist/jquery.min.js"></script>
     <script src="~/lib/datatables/media/js/jquery.dataTables.min.js"></script>
     <script>
-        $(document).ready(function () {
+        $(function () {
             $('#restoreTable').DataTable({
-                order: [[5, 'desc']],
+                order: [[5, 'desc']],  // sort by Date column
                 pageLength: 25
             });
         });

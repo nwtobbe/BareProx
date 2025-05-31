@@ -53,5 +53,57 @@ namespace BareProx.Controllers
 
             return RedirectToAction("Index");
         }
+
+        [HttpGet]
+        public async Task<IActionResult> Table(
+             string status = "",
+             string search = "",
+             string sortColumn = "StartedAt",
+             bool asc = false)
+        {
+            // 1) Grab raw job entities
+            var query = _context.Jobs.AsNoTracking().AsQueryable();
+
+            // 2) Project to your view model
+            var jobs = query
+                .Select(j => new JobViewModel
+                {
+                    Id = j.Id,
+                    Type = j.Type,
+                    RelatedVm = j.RelatedVm,
+                    Status = j.Status,
+                    StartedAtLocal = j.StartedAt,
+                    CompletedAtLocal = j.CompletedAt,
+                    ErrorMessage = j.ErrorMessage
+                });
+
+            // 3) Filter
+            if (!string.IsNullOrWhiteSpace(status))
+                jobs = jobs.Where(j => j.Status == status);
+            if (!string.IsNullOrWhiteSpace(search))
+                jobs = jobs.Where(j =>
+                    j.Type.Contains(search) ||
+                    j.RelatedVm.Contains(search));
+
+            // 4) Sort
+            jobs = (sortColumn, asc) switch
+            {
+                ("Type", true) => jobs.OrderBy(j => j.Type),
+                ("Type", false) => jobs.OrderByDescending(j => j.Type),
+                ("RelatedVm", true) => jobs.OrderBy(j => j.RelatedVm),
+                ("RelatedVm", false) => jobs.OrderByDescending(j => j.RelatedVm),
+                ("Status", true) => jobs.OrderBy(j => j.Status),
+                ("Status", false) => jobs.OrderByDescending(j => j.Status),
+                ("CompletedAt", true) => jobs.OrderBy(j => j.CompletedAtLocal),
+                ("CompletedAt", false) => jobs.OrderByDescending(j => j.CompletedAtLocal),
+                _ => asc
+                                         ? jobs.OrderBy(j => j.StartedAtLocal)
+                                         : jobs.OrderByDescending(j => j.StartedAtLocal)
+            };
+
+            var list = await jobs.ToListAsync();
+
+            return PartialView("_JobsTable", list);
+        }
     }
 }

@@ -37,30 +37,64 @@ namespace BareProx.Controllers
 
         public async Task<IActionResult> Index()
         {
+            // 1) Load all backup‐points
             var backups = await _context.BackupRecords
-                .Select(r => new RestoreViewModel
+                                        .OrderByDescending(r => r.TimeStamp)
+                                        .ToListAsync();
+
+            // 2) Load all snapshots, keyed by their JobId
+            var snapsByJob = await _context.NetappSnapshots
+                .ToDictionaryAsync(s => s.JobId);
+
+            // 3) Get the Proxmox cluster info
+            var proxCluster = await _context.ProxmoxClusters
+                .Select(c => new { c.Id, c.Name })
+                .FirstOrDefaultAsync();
+            if (proxCluster == null)
+                return StatusCode(500, "Cluster not configured");
+
+            // 4) Build your list
+            var vmList = backups.Select(r =>
+            {
+                // find the snapshot row for this record’s JobId (if any)
+                snapsByJob.TryGetValue(r.JobId, out var snap);
+
+                return new RestoreViewModel
                 {
                     BackupId = r.Id,
+                    JobId = r.JobId,                   // carry it if you need it
                     VmName = r.VmName.ToString(),
                     VmId = r.VMID.ToString(),
                     SnapshotName = r.SnapshotName,
                     VolumeName = r.StorageName,
                     StorageName = r.StorageName,
-                    ClusterName = "ProxMox",
-                    TimeStamp = _tz.ConvertUtcToApp(r.TimeStamp)
-                })
-                .ToListAsync();
-            return View(backups);
+                    ClusterName = proxCluster.Name,
+                    ClusterId = proxCluster.Id,
+                    TimeStamp = _tz.ConvertUtcToApp(r.TimeStamp),
+
+                    // these come straight from that one NetappSnapshot row
+                    IsOnPrimary = snap?.ExistsOnPrimary ?? false,
+                    PrimaryControllerId = snap?.PrimaryControllerId ?? 0,
+                    IsOnSecondary = snap?.ExistsOnSecondary ?? false,
+                    SecondaryControllerId = snap?.SecondaryControllerId
+                };
+            })
+            .ToList();
+
+            return View(vmList);
         }
 
-        public async Task<IActionResult> Restore(int backupId)
+
+
+
+        public async Task<IActionResult> Restore(int backupId, int clusterId, int controllerId, string target)
         {
             var record = await _context.BackupRecords.FindAsync(backupId);
             if (record == null) return NotFound();
 
             var cluster = await _context.ProxmoxClusters
-                .Include(c => c.Hosts)
-                .FirstOrDefaultAsync();
+            .Include(c => c.Hosts)
+            .FirstOrDefaultAsync(c => c.Id == clusterId);
             if (cluster == null) return StatusCode(500, "Cluster not configured");
 
             var originalHost = cluster.Hosts.FirstOrDefault(h => h.Hostname == record.HostName);
@@ -68,6 +102,9 @@ namespace BareProx.Controllers
             var vm = new RestoreFormViewModel
             {
                 BackupId = record.Id,
+                ClusterId = clusterId,
+                ControllerId = controllerId,
+                Target = target,
                 VmId = record.VMID.ToString(),
                 VmName = record.VmName.ToString(),
                 SnapshotName = record.SnapshotName,
@@ -126,7 +163,7 @@ namespace BareProx.Controllers
                 return View("Restore", model);
             }
 
-            model.ControllerId = backup.ControllerId;
+            //model.ControllerId = backup.ControllerId;
 
             var success = await _restoreService.RunRestoreAsync(model);
             TempData["Message"] = success ? "Restore queued" : "Restore failed";

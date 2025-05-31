@@ -22,6 +22,8 @@ namespace BareProx.Controllers
         private readonly IEncryptionService _encryptionService;
         private readonly IWebHostEnvironment _env;
         private readonly string _configFile;
+        private readonly SelfSignedCertificateService _certService;
+        private readonly IHostApplicationLifetime _appLifetime;
 
 
         public SettingsController(
@@ -29,7 +31,9 @@ namespace BareProx.Controllers
             ProxmoxService proxmoxService,
             INetappService netappService,
             IEncryptionService encryptionService,
-            IWebHostEnvironment env)
+            IWebHostEnvironment env,
+            SelfSignedCertificateService certService,
+    IHostApplicationLifetime appLifetime)
         {
             _context = context;
             _proxmoxService = proxmoxService;
@@ -37,6 +41,8 @@ namespace BareProx.Controllers
             _encryptionService = encryptionService;
             _env = env;
             _configFile = Path.Combine("/config", "appsettings.json");
+            _certService = certService;
+            _appLifetime = appLifetime;
 
         }
 
@@ -48,11 +54,16 @@ namespace BareProx.Controllers
         private INetappService NetappService =>
             HttpContext.RequestServices.GetRequiredService<INetappService>();
 
-        // GET: Settings/Config
+
+
+        // ========================================================
+        // GET: /Settings/Config
+        // Builds and returns the composite SettingsPageViewModel.
+        // ========================================================
         [HttpGet]
         public IActionResult Config()
         {
-            // Load JSON (or create new if missing)
+            // 1) Load or create the JSON config file (for DefaultTimeZone)
             JObject cfg;
             if (System.IO.File.Exists(_configFile))
             {
@@ -64,50 +75,176 @@ namespace BareProx.Controllers
                 cfg = new JObject();
             }
 
-            // Read stored or fallback
+            // 2) Read stored time zone, or fallback to system local
             var currentTz = (string)cfg["DefaultTimeZone"]
                             ?? TimeZoneInfo.Local.Id;
 
-            var vm = new ConfigSettingsViewModel
+            // 3) Get current certificate details
+            var cert = _certService.CurrentCertificate;
+
+            // 4) Build the composite view model
+            var vm = new SettingsPageViewModel
             {
-                TimeZoneId = currentTz
+                Config = new ConfigSettingsViewModel
+                {
+                    TimeZoneId = currentTz
+                },
+                Regenerate = new RegenerateCertViewModel
+                {
+                    CurrentSubject = cert?.Subject,
+                    CurrentNotBefore = cert?.NotBefore,
+                    CurrentNotAfter = cert?.NotAfter,
+                    CurrentThumbprint = cert?.Thumbprint,
+                    RegenSubjectName = cert?.Subject ?? "CN=localhost",
+                    RegenValidDays = 365,
+                    RegenSANs = "localhost"
+                }
             };
 
-            // Populate dropdown
+            // 5) Build the Time Zone dropdown
             var zones = TimeZoneInfo.GetSystemTimeZones()
                          .Select(z => new { z.Id, z.DisplayName });
-            ViewBag.TimeZones = new SelectList(zones, "Id", "DisplayName", vm.TimeZoneId);
+            vm.TimeZones = new SelectList(zones, "Id", "DisplayName", vm.Config.TimeZoneId);
 
             return View("Config", vm);
-        }
+        } 
 
-        // POST: Settings/Config
+        // ========================================================
+        // POST: /Settings/Config
+        // Binds only to ConfigSettingsViewModel (prefix="Config")
+        // ========================================================
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public IActionResult Config(ConfigSettingsViewModel vm)
+        public IActionResult Config([Bind(Prefix = "Config")] ConfigSettingsViewModel configVm)
         {
+            // 1) Validate only the Config submodel
             if (!ModelState.IsValid)
             {
-                // repopulate on validation error
+                // Re‐build the composite and return view with errors
+                var pageVm = BuildSettingsPageViewModel();
+                pageVm.Config = configVm;
                 var zones = TimeZoneInfo.GetSystemTimeZones()
                              .Select(z => new { z.Id, z.DisplayName });
-                ViewBag.TimeZones = new SelectList(zones, "Id", "DisplayName", vm.TimeZoneId);
-                return View("Config", vm);
+                pageVm.TimeZones = new SelectList(zones, "Id", "DisplayName", configVm.TimeZoneId);
+                return View("Config", pageVm);
             }
 
-            // Load or init JSON
+            // 2) Save the chosen time zone into /config/appsettings.json
             JObject cfg = System.IO.File.Exists(_configFile)
                 ? JObject.Parse(System.IO.File.ReadAllText(_configFile))
                 : new JObject();
 
-            // Set and save
-            cfg["DefaultTimeZone"] = vm.TimeZoneId;
+            cfg["DefaultTimeZone"] = configVm.TimeZoneId;
             System.IO.File.WriteAllText(_configFile, cfg.ToString());
 
-            TempData["Success"] = "Default time-zone updated.";
-            return RedirectToAction("Config");
+            TempData["Success"] = $"Default time zone \"{configVm.TimeZoneId}\" updated.";
+
+            return RedirectToAction(nameof(Config));
         }
 
+        // ========================================================
+        // ========================================================
+        // ========================================================
+        // POST: Settings/RegenerateCert
+        // (regenerate self-signed certificate based on user inputs)
+        // ========================================================
+        [HttpPost]
+        [ValidateAntiForgeryToken]
+        public IActionResult RegenerateCert([Bind(Prefix = "Regenerate")] RegenerateCertViewModel regenVm)
+        {
+            // 1) Validate only the Regenerate submodel
+
+            ModelState.Remove("Regenerate.CurrentSubject");
+            ModelState.Remove("Regenerate.CurrentNotBefore");
+            ModelState.Remove("Regenerate.CurrentNotAfter");
+            ModelState.Remove("Regenerate.CurrentThumbprint");
+
+            if (!ModelState.IsValid)
+            {
+                // Re‐build the composite and return view with errors
+                var pageVm = BuildSettingsPageViewModel();
+                pageVm.Regenerate.RegenSubjectName = regenVm.RegenSubjectName;
+                pageVm.Regenerate.RegenValidDays = regenVm.RegenValidDays;
+                pageVm.Regenerate.RegenSANs = regenVm.RegenSANs;
+                return View("Config", pageVm);
+            }
+
+            // 2) Parse SANs (comma-separated into string[])
+            var sansList = Array.Empty<string>();
+            if (!string.IsNullOrWhiteSpace(regenVm.RegenSANs))
+            {
+                sansList = regenVm.RegenSANs
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .ToArray();
+            }
+
+            // 3) Perform certificate regeneration
+            _certService.Regenerate(
+                subjectName: regenVm.RegenSubjectName,
+                validDays: regenVm.RegenValidDays,
+                sanDnsNames: sansList
+            );
+
+            TempData["Success"] = "Certificate regenerated successfully.";
+            TempData["RestartRequired"] = true;
+            return RedirectToAction(nameof(Config));
+        }
+        // ========================================================
+        // Helper: rebuild the composite page model (for validation errors)
+        // ========================================================
+        private SettingsPageViewModel BuildSettingsPageViewModel()
+        {
+            // Re‐run the GET logic to fetch current state
+            JObject cfg;
+            if (System.IO.File.Exists(_configFile))
+            {
+                var text = System.IO.File.ReadAllText(_configFile);
+                cfg = JObject.Parse(text);
+            }
+            else
+            {
+                cfg = new JObject();
+            }
+
+            var currentTz = (string)cfg["DefaultTimeZone"]
+                            ?? TimeZoneInfo.Local.Id;
+
+            var cert = _certService.CurrentCertificate;
+
+            var vm = new SettingsPageViewModel
+            {
+                Config = new ConfigSettingsViewModel
+                {
+                    TimeZoneId = currentTz
+                },
+                Regenerate = new RegenerateCertViewModel
+                {
+                    CurrentSubject = cert?.Subject,
+                    CurrentNotBefore = cert?.NotBefore,
+                    CurrentNotAfter = cert?.NotAfter,
+                    CurrentThumbprint = cert?.Thumbprint,
+                    RegenSubjectName = cert?.Subject ?? "CN=localhost",
+                    RegenValidDays = 365,
+                    RegenSANs = "localhost"
+                }
+            };
+
+            var zones = TimeZoneInfo.GetSystemTimeZones()
+                         .Select(z => new { z.Id, z.DisplayName });
+            vm.TimeZones = new SelectList(zones, "Id", "DisplayName", vm.Config.TimeZoneId);
+
+            return vm;
+        }
+
+        [HttpPost]
+        [ValidateAntiForgeryToken]
+        public IActionResult RestartApp()
+        {
+            // Graceful shutdown – ensure your hosting environment restarts the app
+            HttpContext.Response.Headers.Add("Refresh", "3"); // optional: auto-refresh after 3 sec
+            _appLifetime.StopApplication();
+            return Content("Application is restarting...");
+        }
 
         // GET: Settings/Proxmox
         public async Task<IActionResult> Proxmox()

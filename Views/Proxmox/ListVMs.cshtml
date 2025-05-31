@@ -67,27 +67,55 @@
                     <div class="mb-3">
                         <label class="form-label">Backup Type</label><br />
                         <div class="form-check form-check-inline">
-                            <input class="form-check-input" type="radio" name="IsApplicationAware" value="false" checked />
+                            <input class="form-check-input"
+                                   type="radio"
+                                   name="IsApplicationAware"
+                                   value="false"
+                                   checked />
                             <label class="form-check-label">Crash-Consistent</label>
                         </div>
                         <div class="form-check form-check-inline">
-                            <input class="form-check-input" type="radio" name="IsApplicationAware" value="true" id="appAwareRadio" />
-                            <label class="form-check-label" for="appAwareRadio">Application-Aware</label>
+                            <input class="form-check-input"
+                                   type="radio"
+                                   name="IsApplicationAware"
+                                   value="true"
+                                   id="appAwareRadio" />
+                            <label class="form-check-label" for="appAwareRadio">
+                                Application-Aware
+                            </label>
                         </div>
                         <div id="appAwareOptions" class="border rounded p-3 mt-3 bg-light d-none">
                             <label class="form-label">App-Aware Options</label>
                             <div class="form-check">
-                                <input class="form-check-input" type="checkbox" name="EnableIoFreeze" id="EnableIoFreeze" value="true" />
-                                <label class="form-check-label" for="EnableIoFreeze">Enable IO-Freeze</label>
+                                <input class="form-check-input"
+                                       type="checkbox"
+                                       name="EnableIoFreeze"
+                                       id="EnableIoFreeze"
+                                       value="true" />
+                                <label class="form-check-label" for="EnableIoFreeze">
+                                    Enable IO-Freeze
+                                </label>
                             </div>
                             <div class="form-check">
-                                <input class="form-check-input" type="checkbox" name="UseProxmoxSnapshot" id="UseProxmoxSnapshot" value="true" />
-                                <label class="form-check-label" for="UseProxmoxSnapshot">Create Proxmox Snapshot</label>
+                                <input class="form-check-input"
+                                       type="checkbox"
+                                       name="UseProxmoxSnapshot"
+                                       id="UseProxmoxSnapshot"
+                                       value="true" />
+                                <label class="form-check-label" for="UseProxmoxSnapshot">
+                                    Create Proxmox Snapshot
+                                </label>
                             </div>
                             <div id="proxmoxSnapshotOptions" class="mt-2 ms-3 d-none">
                                 <div class="form-check">
-                                    <input class="form-check-input" type="checkbox" name="WithMemory" id="WithMemory" value="true" />
-                                    <label class="form-check-label" for="WithMemory">Include RAM (With Memory)</label>
+                                    <input class="form-check-input"
+                                           type="checkbox"
+                                           name="WithMemory"
+                                           id="WithMemory"
+                                           value="true" />
+                                    <label class="form-check-label" for="WithMemory">
+                                        Include RAM (With Memory)
+                                    </label>
                                 </div>
                             </div>
                         </div>
@@ -108,7 +136,12 @@
                     <div class="mb-3">
                         <label class="form-label">Retention</label>
                         <div class="input-group">
-                            <input type="number" name="RetentionCount" class="form-control" min="1" max="999" value="7" />
+                            <input type="number"
+                                   name="RetentionCount"
+                                   class="form-control"
+                                   min="1"
+                                   max="999"
+                                   value="7" />
                             <select name="RetentionUnit" class="form-select">
                                 <option value="Hours">Hours</option>
                                 <option value="Days" selected>Days</option>
@@ -122,7 +155,11 @@
 
                     <!-- Replicate to Secondary -->
                     <div class="mb-3 form-check d-none" id="replicateCheckbox">
-                        <input class="form-check-input" type="checkbox" name="ReplicateToSecondary" id="ReplicateToSecondaryToggle" value="true" />
+                        <input class="form-check-input"
+                               type="checkbox"
+                               name="ReplicateToSecondary"
+                               id="ReplicateToSecondaryToggle"
+                               value="true" />
                         <label class="form-check-label" for="ReplicateToSecondaryToggle">
                             Replicate to Secondary
                         </label>
@@ -130,8 +167,14 @@
                 </div>
 
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="submit" class="btn btn-success">Run Now</button>
+                    <button type="button"
+                            class="btn btn-secondary"
+                            data-bs-dismiss="modal">
+                        Cancel
+                    </button>
+                    <button type="submit" class="btn btn-success">
+                        Run Now
+                    </button>
                 </div>
             </div>
         </form>
@@ -141,77 +184,70 @@
 @section Scripts {
     <script>
         document.addEventListener("DOMContentLoaded", function () {
-          const appAwareRadios   = document.querySelectorAll("input[name='IsApplicationAware']");
-          const optionsContainer = document.getElementById("appAwareOptions");
-          const proxmoxCheckbox  = document.getElementById("UseProxmoxSnapshot");
-          const proxmoxOptions   = document.getElementById("proxmoxSnapshotOptions");
-          const freezeCheckbox   = document.getElementById("EnableIoFreeze");
-          const replicateBox     = document.getElementById("replicateCheckbox");
-          const replicateToggle  = document.getElementById("ReplicateToSecondaryToggle");
-          const labelSelect      = document.getElementById("LabelSelect");
+            const appAwareRadios   = document.querySelectorAll("input[name='IsApplicationAware']");
+            const optionsContainer = document.getElementById("appAwareOptions");
+            const proxmoxCheckbox  = document.getElementById("UseProxmoxSnapshot");
+            const proxmoxOptions   = document.getElementById("proxmoxSnapshotOptions");
+            const freezeCheckbox   = document.getElementById("EnableIoFreeze");
+            const replicateBox     = document.getElementById("replicateCheckbox");
+            const replicateToggle  = document.getElementById("ReplicateToSecondaryToggle");
+            const labelSelect      = document.getElementById("LabelSelect");
 
-          function updateVisibility() {
-            const sel = [...appAwareRadios].find(r => r.checked);
-            optionsContainer.classList.toggle("d-none", sel?.value !== "true");
-          }
-
-          function updateSnapshotOptions() {
-            const useSnap = proxmoxCheckbox.checked;
-            proxmoxOptions.classList.toggle("d-none", !useSnap);
-            if (useSnap && freezeCheckbox.checked) {
-              freezeCheckbox.checked = false;
+            function updateVisibility() {
+                const sel = Array.from(appAwareRadios).find(r => r.checked);
+                optionsContainer.classList.toggle("d-none", sel?.value !== "true");
             }
-          }
 
-          function handleFreezeToggle() {
-            if (freezeCheckbox.checked && proxmoxCheckbox.checked) {
-              proxmoxCheckbox.checked = false;
-              proxmoxOptions.classList.add("d-none");
+            function updateSnapshotOptions() {
+                const useSnap = proxmoxCheckbox.checked;
+                proxmoxOptions.classList.toggle("d-none", !useSnap);
+                if (useSnap && freezeCheckbox.checked) {
+                    freezeCheckbox.checked = false;
+                }
             }
-          }
 
-          function updateReplicateVisibility(isReplicable) {
-            // always clear the checkbox when hiding
-            if (!isReplicable || labelSelect.value === "Manual") {
-              replicateBox.classList.add("d-none");
-              replicateToggle.checked = false;
-            } else {
-              replicateBox.classList.remove("d-none");
+            function handleFreezeToggle() {
+                if (freezeCheckbox.checked && proxmoxCheckbox.checked) {
+                    proxmoxCheckbox.checked = false;
+                    proxmoxOptions.classList.add("d-none");
+                }
             }
-          }
 
-          const backupModal = document.getElementById('backupModal');
-          backupModal.addEventListener('show.bs.modal', function (event) {
-            const btn = event.relatedTarget;
-            // reset replicate ALWAYS
-            replicateToggle.checked = false;
-            replicateBox.classList.add("d-none");
+            function updateReplicateVisibility(isReplicable) {
+                if (!isReplicable || labelSelect.value === "Manual") {
+                    replicateBox.classList.add("d-none");
+                    replicateToggle.checked = false;
+                } else {
+                    replicateBox.classList.remove("d-none");
+                }
+            }
 
-            // populate hidden fields
-            document.getElementById('modalStorageName').value  = btn.getAttribute('data-storage');
-            document.getElementById('modalClusterId').value    = btn.getAttribute('data-cluster');
-            document.getElementById('modalControllerId').value = btn.getAttribute('data-controllerid');
+            const backupModal = document.getElementById('backupModal');
+            backupModal.addEventListener('show.bs.modal', function (event) {
+                const btn = event.relatedTarget;
+                const isRep = btn.getAttribute('data-replicable')?.toLowerCase() === 'true';
 
-            // reset label to Manual
-            labelSelect.value = "Manual";
+                // reset replicate
+                replicateToggle.checked = false;
+                updateReplicateVisibility(isRep);
 
-            const isRep = btn.getAttribute('data-replicable') === 'True'
-                        || btn.getAttribute('data-replicable') === 'true';
+                // populate hidden inputs
+                document.getElementById('modalStorageName').value  = btn.dataset.storage;
+                document.getElementById('modalClusterId').value    = btn.dataset.cluster;
+                document.getElementById('modalControllerId').value = btn.dataset.controllerid;
 
-            // set initial replicate visibility
-            updateReplicateVisibility(isRep);
+                // reset label to Manual
+                labelSelect.value = "Manual";
+                labelSelect.onchange = () => updateReplicateVisibility(isRep);
+            });
 
-            // re-check on label change
-            labelSelect.onchange = () => updateReplicateVisibility(isRep);
-          });
+            appAwareRadios.forEach(r => r.addEventListener("change", updateVisibility));
+            proxmoxCheckbox.addEventListener("change", updateSnapshotOptions);
+            freezeCheckbox.addEventListener("change", handleFreezeToggle);
 
-          appAwareRadios.forEach(r => r.addEventListener("change", updateVisibility));
-          proxmoxCheckbox.addEventListener("change", updateSnapshotOptions);
-          freezeCheckbox.addEventListener("change", handleFreezeToggle);
-
-          // init on load
-          updateVisibility();
-          updateSnapshotOptions();
+            // initial state
+            updateVisibility();
+            updateSnapshotOptions();
         });
     </script>
 }

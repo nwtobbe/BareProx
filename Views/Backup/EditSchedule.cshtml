@@ -172,12 +172,52 @@
 
 @section Scripts {
     <script>
+        // ── Global helper to strip invalid chars & enforce max-length ──
+        function validateScheduleName(input) {
+          input.value = input.value
+                        .replace(/[^A-Za-z0-9_\-]/g, '')
+                        .slice(0, input.maxLength || 20);
+        }
+
         document.addEventListener('DOMContentLoaded', function() {
-          // ── Helpers ───────────────────────────────────────────
-          function blockNonNumeric(e) {
-            if (['e','E','+','-','.'].indexOf(e.key) !== -1) {
+          // ── Grab elements ─────────────────────────────────────────────
+          var form         = document.querySelector('form.needs-validation');
+          var nameInput    = form?.querySelector('input[asp-for="Name"]');
+          var retentionEl  = document.getElementById('RetentionCount');
+          var selectType   = document.getElementById('scheduleTypeSelect');
+          var ccRadio      = document.getElementById('ccRadio');
+          var aaRadio      = document.getElementById('aaRadio');
+          var appOpts      = document.getElementById('appAwareOptions');
+          var ioFreezeCb   = document.getElementById('EnableIoFreeze');
+          var proxSnapCb   = document.getElementById('UseProxmoxSnapshot');
+          var appErr       = document.getElementById('appAwareError');
+          var proxOpts     = document.getElementById('proxmoxSnapshotOptions');
+          var replicateBox = document.getElementById('replicateCheckbox');
+          var replicable   = (document.getElementById('replicableVolumes')||{value:''}).value.split(',');
+          var storageSel   = form?.querySelector('select[name="StorageName"]');
+          var snapLabel    = document.getElementById('snapmirrorLabel');
+
+          // ── Name field: only hook if it exists ────────────────────────
+          if (nameInput) {
+            nameInput.addEventListener('keypress', function(e) {
+              if (!/^[A-Za-z0-9_-]$/.test(e.key)) e.preventDefault();
+            });
+            nameInput.addEventListener('paste', function(e) {
               e.preventDefault();
-            }
+              var text = (e.clipboardData || window.clipboardData)
+                          .getData('text/plain')
+                          .replace(/[^A-Za-z0-9_-]/g, '')
+                          .slice(0, this.maxLength || 20);
+              document.execCommand('insertText', false, text);
+            });
+            nameInput.addEventListener('input', function() {
+              validateScheduleName(this);
+            });
+          }
+
+          // ── Numeric‐only + clamp helper functions ──────────────────────
+          function blockNonNumeric(e) {
+            if (['e','E','+','-','.'].indexOf(e.key) !== -1) e.preventDefault();
           }
           function clampInput(el) {
             if (!el) return;
@@ -191,39 +231,18 @@
               if (v > max) el.value = max;
             });
           }
-          function validateScheduleName(input) {
-            input.value = input.value
-                          .replace(/[^A-Za-z0-9_\-]/g, '')
-                          .slice(0, 20);
-          }
 
-          // ── Grab elements ─────────────────────────────────────
-          var form         = document.querySelector('form.needs-validation');
-          var nameInput    = form.querySelector('input[asp-for="Name"]');
-          var retentionEl  = document.getElementById('RetentionCount');
-          var selectType   = document.getElementById('scheduleTypeSelect');
-          var ccRadio      = document.getElementById('ccRadio');
-          var aaRadio      = document.getElementById('aaRadio');
-          var appOpts      = document.getElementById('appAwareOptions');
-          var ioFreezeCb   = document.getElementById('EnableIoFreeze');
-          var proxSnapCb   = document.getElementById('UseProxmoxSnapshot');
-          var appErr       = document.getElementById('appAwareError');
-          var proxOpts     = document.getElementById('proxmoxSnapshotOptions');
-          var replicateBox = document.getElementById('replicateCheckbox');
-          var replicable   = (document.getElementById('replicableVolumes')||{value:''}).value.split(',');
-          var storageSel   = form.querySelector('select[name="StorageName"]');
-          var snapLabel    = document.getElementById('snapmirrorLabel');
-
-          // ── Initial model values ─────────────────────────────
+          // ── Initial model values ───────────────────────────────────────
           var initialType      = '@Model.SingleSchedule.Type';
           var initialStartHour = '@Model.SingleSchedule.StartHour';
           var initialEndHour   = '@Model.SingleSchedule.EndHour';
           var initialTime      = '@Model.SingleSchedule.Time';
           var initialDays      = @Html.Raw(JsonSerializer.Serialize(Model.SingleSchedule.DaysOfWeek ?? Enumerable.Empty<string>()));
 
-          // ── Render dynamic fields ─────────────────────────────
+          // ── Render dynamic hour/day fields ─────────────────────────────
           function renderFields(type) {
             var c = document.getElementById('single-schedule-fields');
+            if (!c) return;
             var html = '';
             if (type === 'Hourly') {
               html += '<div class="mb-3"><label>Start Hour</label>' +
@@ -251,15 +270,16 @@
                       '<div class="invalid-feedback">Required</div></div>';
             }
             c.innerHTML = html;
-            snapLabel.value = type.toLowerCase();
+            if (snapLabel) snapLabel.value = type.toLowerCase();
             c.querySelectorAll('input[type=number]').forEach(clampInput);
           }
 
-          // ── Toggle App-Aware panel ─────────────────────────────
+          // ── App-Aware toggling ─────────────────────────────────────────
           function toggleAppAware() {
-            var show = aaRadio.checked;
+            if (!appOpts) return;
+            var show = aaRadio?.checked;
             appOpts.classList.toggle('d-none', !show);
-            if (!show) {
+            if (!show && ioFreezeCb && proxSnapCb && proxOpts && appErr) {
               ioFreezeCb.checked = false;
               proxSnapCb.checked = false;
               proxOpts.classList.add('d-none');
@@ -267,13 +287,12 @@
             }
           }
 
-          // ── Wire up event handlers ────────────────────────────
           if (ccRadio) ccRadio.addEventListener('change', toggleAppAware);
           if (aaRadio) aaRadio.addEventListener('change', toggleAppAware);
 
           if (ioFreezeCb) {
             ioFreezeCb.addEventListener('change', function() {
-              if (ioFreezeCb.checked) {
+              if (ioFreezeCb.checked && proxSnapCb && proxOpts) {
                 proxSnapCb.checked = false;
                 proxOpts.classList.add('d-none');
               }
@@ -281,25 +300,30 @@
           }
           if (proxSnapCb) {
             proxSnapCb.addEventListener('change', function() {
-              if (proxSnapCb.checked) {
+              if (proxSnapCb.checked && ioFreezeCb && proxOpts) {
                 ioFreezeCb.checked = false;
                 proxOpts.classList.remove('d-none');
-              } else {
+              } else if (proxOpts) {
                 proxOpts.classList.add('d-none');
-                document.getElementById('WithMemory').checked = false;
+                var withMem = document.getElementById('WithMemory');
+                if (withMem) withMem.checked = false;
               }
             });
           }
 
           if (storageSel) {
             storageSel.addEventListener('change', function() {
+              if (!replicateBox) return;
               if (replicable.indexOf(storageSel.value) !== -1) {
                 replicateBox.classList.remove('d-none');
               } else {
                 replicateBox.classList.add('d-none');
-                replicateBox.querySelector('input').checked = false;
+                var cb = replicateBox.querySelector('input');
+                if (cb) cb.checked = false;
               }
             });
+            // initialize replicate box visibility
+            storageSel.dispatchEvent(new Event('change'));
           }
 
           if (form) {
@@ -307,22 +331,19 @@
               if (!form.checkValidity()) {
                 e.preventDefault(); e.stopPropagation();
               }
-              if (aaRadio && aaRadio.checked && !ioFreezeCb.checked && !proxSnapCb.checked) {
-                appErr.style.display = 'block';
-                e.preventDefault(); e.stopPropagation();
+              if (aaRadio?.checked && ioFreezeCb && proxSnapCb && appErr) {
+                if (!ioFreezeCb.checked && !proxSnapCb.checked) {
+                  appErr.style.display = 'block';
+                  e.preventDefault(); e.stopPropagation();
+                }
               }
               form.classList.add('was-validated');
             });
           }
 
-          if (nameInput) {
-            nameInput.addEventListener('input', function(e) {
-              validateScheduleName(e.target);
-            });
-          }
           clampInput(retentionEl);
 
-          // ── Initial render ──────────────────────────────────
+          // ── Initial schedule-type render ───────────────────────────────
           if (initialType && selectType) {
             selectType.value = initialType;
             renderFields(initialType);
@@ -331,14 +352,15 @@
             });
           }
 
-          // ── Hidden cluster/controller wiring ─────────────────
+          // ── Wire Cluster/Controller IDs on storage change ──────────────
           var volumeMeta = @Html.Raw(JsonSerializer.Serialize(Model.VolumeMeta));
           if (storageSel) {
-            storageSel.dispatchEvent(new Event('change'));
             storageSel.addEventListener('change', function() {
               var m = volumeMeta[storageSel.value] || {};
-              document.getElementById('ClusterId').value    = m.ClusterId || '';
-              document.getElementById('ControllerId').value = m.ControllerId || '';
+              var cId = document.getElementById('ClusterId');
+              var ctrl = document.getElementById('ControllerId');
+              if (cId)    cId.value    = m.ClusterId || '';
+              if (ctrl)  ctrl.value   = m.ControllerId || '';
             });
           }
         });

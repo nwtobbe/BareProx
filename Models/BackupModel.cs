@@ -4,25 +4,6 @@ using System.Collections.Generic;
 
 namespace BareProx.Models
 {
-       //public class BackupScheduleViewModel
-    //{
-    //    public List<SelectListItem>? StorageOptions { get; set; }
-    //    public List<SelectListItem>? AllVms { get; set; }
-    //    public string? StorageName { get; set; }
-    //    public bool? IsApplicationAware { get; set; }
-    //    public string? Schedule { get; set; }
-    //    public List<ScheduleEntryViewModel> Schedules { get; set; } = new();
-    //    public string? Name { get; set; }
-    //    public List<string>? ExcludedVmIds { get; set; }
-    //}
-    //    public class ScheduleEntryViewModel
-    //{
-    //    public string Type { get; set; }  // Hourly, Daily, Weekly
-    //    public int? Frequency { get; set; }
-    //    public TimeSpan? Time { get; set; }
-    //    public string Label { get; set; }
-    //}
-
     public class VolumeMeta
     {
         public int ClusterId { get; set; }
@@ -45,8 +26,6 @@ namespace BareProx.Models
         public bool EnableIoFreeze { get; set; }
         public bool UseProxmoxSnapshot { get; set; }
         public bool WithMemory { get; set; }
-
-        public List<ScheduleEntry> Schedules { get; set; } = new();
         public ScheduleEntry SingleSchedule { get; set; } = new();
 
         // For dropdowns
@@ -88,17 +67,25 @@ namespace BareProx.Models
         public bool ReplicateToSecondary { get; set; }
         public int ScheduleID { get; set; }
     }
-       public class RestoreViewModel
+    public class RestoreViewModel
     {
         public int BackupId { get; set; }
-        public string VmId { get; set; } // VM ID
-        public string VmName { get; set; }
-        public string SnapshotName { get; set; }
-        public string VolumeName { get; set; }
-        public string StorageName { get; set; }
-        public string ClusterName { get; set; }
-        public int ControllerId { get; set; }
+        public string VmName { get; set; } = "";
+        public int JobId { get; set; }
+        public string VmId { get; set; } = "";
+        public string SnapshotName { get; set; } = "";
+        public string VolumeName { get; set; } = "";
+        public string StorageName { get; set; } = "";
+        public string ClusterName { get; set; } = "";
         public DateTime TimeStamp { get; set; }
+
+        // ← New fields:
+        public int ClusterId { get; set; }
+        public int PrimaryControllerId { get; set; }
+        public int? SecondaryControllerId { get; set; }
+
+        public bool IsOnPrimary { get; set; }
+        public bool IsOnSecondary { get; set; }
     }
     public enum RestoreType
     {
@@ -108,6 +95,8 @@ namespace BareProx.Models
     public class RestoreFormViewModel
     {
         public int BackupId { get; set; }
+        public int ClusterId { get; set; }
+        public string Target { get; set; } = string.Empty;
         public string VmName { get; set; } = string.Empty;
         public string VmId { get; set; } = string.Empty;
         public string VolumeName { get; set; } = string.Empty;

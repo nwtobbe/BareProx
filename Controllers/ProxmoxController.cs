@@ -3,9 +3,6 @@ using BareProx.Models;
 using BareProx.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 
 namespace BareProx.Controllers
 {
@@ -13,17 +10,18 @@ namespace BareProx.Controllers
     {
         private readonly ApplicationDbContext _context;
         private readonly ProxmoxService _proxmoxService;
-        private readonly INetappService _netappService;
+        private readonly ILogger<ProxmoxController> _logger;
 
-        public ProxmoxController(ApplicationDbContext context, ProxmoxService proxmoxService, INetappService netappService)
+        public ProxmoxController(
+            ApplicationDbContext context,
+            ProxmoxService proxmoxService,
+            ILogger<ProxmoxController> logger)
         {
             _context = context;
             _proxmoxService = proxmoxService;
-            _netappService = netappService;
+            _logger = logger;
         }
 
-        // GET: Proxmox/ListVMs
-        // GET: Proxmox/ListVMs
         public async Task<IActionResult> ListVMs()
         {
             // 1) Load cluster
@@ -57,9 +55,25 @@ namespace BareProx.Controllers
                 return View(new List<StorageWithVMsDto>());
             }
 
-            // 4) Query Proxmox for VM lists
-            var storageVmMap = await _proxmoxService
-                .GetVmsByStorageListAsync(cluster, selectedStorageNames);
+            // 4) Query Proxmox for VM lists, with error handling
+            Dictionary<string, List<ProxmoxVM>> storageVmMap;
+            try
+            {
+                storageVmMap = await _proxmoxService
+                    .GetVmsByStorageListAsync(cluster, selectedStorageNames);
+            }
+            catch (ServiceUnavailableException ex)
+            {
+                _logger.LogWarning(ex, "Unable to reach Proxmox cluster");
+                ViewBag.Warning = ex.Message;
+                return View(new List<StorageWithVMsDto>());
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unexpected error querying Proxmox");
+                ViewBag.Warning = "An unexpected error occurred while fetching VM lists.";
+                return View(new List<StorageWithVMsDto>());
+            }
 
             // 5) Build DTOs & filter out empty storages
             var model = storageVmMap
@@ -99,21 +113,14 @@ namespace BareProx.Controllers
             }
 
             foreach (var dto in model)
-            {
                 dto.IsReplicable = replicable.Contains(dto.StorageName);
-            }
 
             // 7) If no DTOs made it through, warn
             if (!model.Any())
-            {
                 ViewBag.Warning = "No VMs found on the selected storage.";
-            }
 
             // 8) Render
             return View(model);
         }
-
-
-
     }
 }

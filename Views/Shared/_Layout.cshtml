@@ -1,6 +1,11 @@
 ﻿@using Microsoft.AspNetCore.Identity
 @inject SignInManager<IdentityUser> SignInManager
-
+@if (TempData["ErrorMessage"] is string errMsg)
+{
+    <div class="alert alert-danger">
+        <strong>Connection error:</strong> @errMsg
+    </div>
+}
 <!DOCTYPE html>
 <html lang="en">
 <head>

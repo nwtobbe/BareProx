@@ -198,6 +198,35 @@ namespace BareProx.Services
                 job.Status = "Snapshot created";
                 await _context.SaveChangesAsync();
 
+                // 5b) Persist BackupRecord(s)
+                foreach (var vm in vms)
+                {
+                    var config = await _proxmoxService.GetVmConfigAsync(cluster, vm.HostName, vm.Id);
+
+                    await _backupRepository.StoreBackupInfoAsync(new BackupRecord
+                    {
+                        JobId = job.Id,
+                        VMID = vm.Id,
+                        VmName = vm.Name,
+                        HostName = vm.HostName,
+                        StorageName = storageName,
+                        Label = label,
+                        RetentionCount = retentionCount,
+                        RetentionUnit = retentionUnit,
+                        TimeStamp = DateTime.UtcNow,
+                        ControllerId = netappControllerId,
+                        SnapshotName = snapshotResult.SnapshotName,
+                        ConfigurationJson = config,
+                        IsApplicationAware = isApplicationAware,
+                        EnableIoFreeze = enableIoFreeze,
+                        UseProxmoxSnapshot = useProxmoxSnapshot,
+                        WithMemory = withMemory,
+                        ScheduleId = scheduleId,
+                        ReplicateToSecondary = replicateToSecondary
+                    });
+                }
+
+
                 // ─────────────── populate JobId here ───────────────
                 _context.NetappSnapshots.Add(new NetappSnapshot
                 {
@@ -301,6 +330,18 @@ namespace BareProx.Services
                     }
 
                     // 6e) Final verification & finish
+                    var toUpdate = await _context.BackupRecords
+                        .Where(br => br.JobId == job.Id)
+                        .ToListAsync();
+                    foreach (var rec in toUpdate)
+                    {
+                        rec.ControllerId = secondaryControllerId;  // now point at secondary
+                        rec.ReplicateToSecondary = true;                 // mark it
+                                                                         // optionally update timestamp or snapshot name if it changed
+                                                                         // rec.TimeStamp = DateTime.UtcNow;
+                    }
+                    await _context.SaveChangesAsync();
+
                     job.Status = "Replication completed";
                     await _context.SaveChangesAsync();
                     job.Status = "Replication completed";
@@ -312,33 +353,7 @@ namespace BareProx.Services
                 if (job.Status == "Cancelled")
                     return await FailJobAsync(job, "Job was cancelled.");
 
-                // 8) Persist BackupRecord(s)
-                foreach (var vm in vms)
-                {
-                    var config = await _proxmoxService.GetVmConfigAsync(cluster, vm.HostName, vm.Id);
 
-                    await _backupRepository.StoreBackupInfoAsync(new BackupRecord
-                    {
-                        JobId = job.Id,
-                        VMID = vm.Id,
-                        VmName = vm.Name,
-                        HostName = vm.HostName,
-                        StorageName = storageName,
-                        Label = label,
-                        RetentionCount = retentionCount,
-                        RetentionUnit = retentionUnit,
-                        TimeStamp = DateTime.UtcNow,
-                        ControllerId = netappControllerId,
-                        SnapshotName = snapshotResult.SnapshotName,
-                        ConfigurationJson = config,
-                        IsApplicationAware = isApplicationAware,
-                        EnableIoFreeze = enableIoFreeze,
-                        UseProxmoxSnapshot = useProxmoxSnapshot,
-                        WithMemory = withMemory,
-                        ScheduleId = scheduleId,
-                        ReplicateToSecondary = replicateToSecondary
-                    });
-                }
 
                 // 9) Finish job
                 job.Status = "Completed";

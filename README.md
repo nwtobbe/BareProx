@@ -1,10 +1,7 @@
 # BareProx 2025, What Netapp did not want to give you
 
 Docker compose
-
 Authentication failed error page?
-Timezones under settings
-Fix in restorecontroller ClusterName = "ProxMox",
 Add schedules + run
 Add select storage svm:s for primary, volumes to use
 	and use it in functions
@@ -16,8 +13,6 @@ Fix add cluster
 	Automatically add all nodes to the cluster by one ip
 	Add scheduled task to check access
 
-Add lock for snapshots / clones
-fix install db / first run
 secondary...
 tps...
 mail
@@ -31,6 +26,11 @@ Missing snapshots?
 
 
 Done.
+fix install db / first run
+Add lock for snapshots / clones
+Timezones under settings
+Fix in restorecontroller ClusterName = "ProxMox",
+Added Self signed certificate creation
 Fixed local Timezone for snapshots
 New date/time formatting for snapshots
 Added UserManagement

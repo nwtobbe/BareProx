@@ -1,69 +1,67 @@
 ﻿@model List<BareProx.Models.JobViewModel>
-
 @{
     ViewData["Title"] = "Job Status";
-
-    string GetRowClass(string status) => status switch
-    {
-        "Completed" => "table-success",
-        "Failed" => "table-danger",
-        "Cancelled" => "table-warning",
-        "Running" => "table-info",
-        _ => ""
-    };
 }
 
 <h2>Running & Recent Jobs</h2>
 
-@if (Model.Any())
-{
-    <table class="table table-striped">
-        <thead>
-            <tr>
-                <th>Type</th>
-                <th>VM</th>
-                <th>Status</th>
-                <th>Started</th>
-                <th>Completed</th>
-                <th>Error</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-            @foreach (var job in Model)
-            {
-                <tr class="@GetRowClass(job.Status)">
-                    <td>@job.Type</td>
-                    <td>@job.RelatedVm</td>
-                    <td>@job.Status</td>
-                    <td>@job.StartedAtLocal.ToString("yyyy-MM-dd HH:mm")</td>
-                    <td>
-                        @(job.CompletedAtLocal.HasValue
-                            ? job.CompletedAtLocal.Value.ToString("yyyy-MM-dd HH:mm")
-                            : "-")
-                    </td>
-                    <td>@(string.IsNullOrEmpty(job.ErrorMessage) ? "-" : job.ErrorMessage)</td>
-                    <td>
-                        @if (job.Status == "Running")
-                        {
-                            <a asp-controller="Jobs"
-                               asp-action="Cancel"
-                               asp-route-id="@job.Id"
-                               class="btn btn-sm btn-danger">
-                                Cancel
-                            </a>
-                        }
-                        else
-                        {
-                            <span class="text-muted">-</span>
-                        }
-                    </td>
-                </tr>
-            }
-        </tbody>
-    </table>
+<div class="row mb-3">
+  <div class="col-auto">
+    <select id="statusFilter" class="form-select form-select-sm">
+      <option value="">All Statuses</option>
+      <option>Running</option>
+      <option>Completed</option>
+      <option>Failed</option>
+      <option>Cancelled</option>
+    </select>
+  </div>
+  <div class="col-auto">
+    <input id="searchBox"
+           type="text"
+           class="form-control form-control-sm"
+           placeholder="Search type or VM…" />
+  </div>
+</div>
+
+<div id="jobsContainer">
+  @await Html.PartialAsync("_JobsTable", Model)
+</div>
+
+@section Scripts {
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <script>
+    (function() {
+      let currentSort = { col: 'StartedAt', asc: false };
+
+      function loadTable() {
+        $.get('@Url.Action("Table")', {
+            status: $('#statusFilter').val(),
+            search: $('#searchBox').val().trim(),
+            sortColumn: currentSort.col,
+            asc: currentSort.asc
+          },
+          html => { $('#jobsContainer').html(html); }
+        );
+      }
+
+      // Filter & search
+      $('#statusFilter, #searchBox').on('change keyup', loadTable);
+
+      // Sorting by header click
+      $('#jobsContainer').on('click', 'th[data-column]', function() {
+        const col = $(this).data('column');
+        currentSort.asc = (currentSort.col === col) ? !currentSort.asc : true;
+        currentSort.col = col;
+        loadTable();
+      });
+
+      // Auto-refresh every 15 seconds
+      setInterval(loadTable, 15000);
+
+      // Initial load
+      loadTable();
+    })();
+  </script>
 }
-else
-{
-    <p>No jobs found.</p>
-}
+
+
