@@ -31,7 +31,7 @@
 
                 <div class="collapse navbar-collapse" id="navbarNav">
                     @* only show the main menus when logged in *@
-                    @if (!SignInManager.IsSignedIn(User))
+                    @if (SignInManager.IsSignedIn(User))
                     {
                         <ul class="navbar-nav me-auto mb-2 mb-lg-0">
 
