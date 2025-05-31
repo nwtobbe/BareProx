@@ -41,4 +41,13 @@
     <Folder Include="Migrations\" />
   </ItemGroup>
 
+	<PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+		<DefineConstants>DEBUG;TRACE</DefineConstants>
+	</PropertyGroup>
+
+	<PropertyGroup Condition="'$(Configuration)' == 'Release'">
+		<DefineConstants>TRACE</DefineConstants>
+		<!-- Ensure DEBUG is NOT defined here -->
+	</PropertyGroup>
+
 </Project>

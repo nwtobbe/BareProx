@@ -1,20 +1,46 @@
 # syntax=docker/dockerfile:1.4
 
-# 1. Build stage
+### 1) Build stage using .NET SDK
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
-COPY . .
+# Copy solution and project files
+COPY BareProx.sln ./
+COPY BareProx.csproj ./
+
+# Restore dependencies
 RUN dotnet restore
-RUN dotnet publish -c Release -o /app/publish
 
-# 2. Runtime stage
-FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
+# Copy the entire project (everything in the current dir)
+COPY . ./
+
+# Set working directory to project root
+WORKDIR /src
+
+# Publish self-contained for linux-x64
+RUN dotnet publish BareProx.csproj -c Release -r linux-x64 --self-contained true -p:PublishTrimmed=true>
+
+### 2) Runtime stage
+FROM debian:bookworm-slim AS runtime
 WORKDIR /app
-COPY --from=build /app/publish .
 
-EXPOSE 80
-ENV ASPNETCORE_URLS=http://+:80 \
+# Install minimal dependencies needed by self-contained .NET app
+RUN apt-get update && apt-get install -y \
+    libicu72 \
+    libssl3 \
+    tzdata \
+ && rm -rf /var/lib/apt/lists/*
+
+# Copy published app
+COPY --from=build /app/publish ./
+
+# Expose HTTP and HTTPS ports
+EXPOSE 80 443
+
+# Environment setup
+ENV ASPNETCORE_URLS="http://+:80;https://+:443" \
+    DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false \
+    DOTNET_EnableDiagnostics=0 \
     DOTNET_ENVIRONMENT=Production
-
-ENTRYPOINT ["dotnet", "BareProx.dll"]
+# Run the app
+ENTRYPOINT ["./BareProx"]
