@@ -235,17 +235,24 @@ builder.Services.AddSingleton<IAppTimeZoneService, AppTimeZoneService>();
 builder.Services.AddControllersWithViews();
 builder.Services.AddRazorPages();
 
-// --- Lock down --- Fix _LoginPartial.cshtml to enable lockout and uncomment this section
-//if (isConfigured)
-//{
 
-//    builder.Services.AddAuthorization(options =>
-//    {
-//        options.FallbackPolicy = new AuthorizationPolicyBuilder()
-//            .RequireAuthenticatedUser()
-//            .Build();
-//    });
-//}
+
+#if DEBUG
+builder.Logging.SetMinimumLevel(LogLevel.Debug);
+#else
+//---Lock down-- - Fix _LoginPartial.cshtml to enable lockout and uncomment this section
+if (isConfigured)
+{
+
+    builder.Services.AddAuthorization(options =>
+    {
+        options.FallbackPolicy = new AuthorizationPolicyBuilder()
+            .RequireAuthenticatedUser()
+            .Build();
+    });
+}
+builder.Logging.SetMinimumLevel(LogLevel.Warning);
+#endif
 
 // 4) Configure Kestrel to use the SelfSignedCertificateService for HTTPS
 builder.WebHost.ConfigureKestrel(options =>
