@@ -10,5 +10,11 @@
       "library": "datatables.net-bs5@1.13.6",
       "destination": "wwwroot/lib/datatables-bs5"
     }
-  ]
+  ,
+{
+  "provider": "cdnjs",
+  "library": "jquery@3.7.1",
+  "destination": "wwwroot/lib/jquery/"
+}
+]
 }

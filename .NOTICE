@@ -1,0 +1,15 @@
+BareProx
+========
+
+Backup and Restore Automation for Proxmox using NetApp
+
+Author: Tobias Modig  
+License: GNU General Public License v3.0 (GPL-3.0)
+
+This product includes software developed by Tobias Modig.
+
+This software is provided "as-is" without any warranties or guarantees.
+Redistribution and modification are permitted under the terms of the GPLv3 license.
+See the LICENSE file for details.
+
+If you distribute a modified version of this software, you must include a prominent notice stating that you have changed the files.

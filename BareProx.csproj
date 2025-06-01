@@ -50,4 +50,13 @@
 		<!-- Ensure DEBUG is NOT defined here -->
 	</PropertyGroup>
 
+	<Target Name="GenerateVersionInfo" BeforeTargets="BeforeBuild">
+		<Exec Command="powershell -ExecutionPolicy Bypass -File Tools\GenerateVersionInfo.ps1" />
+	</Target>
+
+	<PropertyGroup>
+		<GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+		<Deterministic>false</Deterministic>
+	</PropertyGroup>
+
 </Project>

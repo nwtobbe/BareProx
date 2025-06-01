@@ -31,14 +31,22 @@ RUN apt-get update && apt-get install -y \
     tzdata \
  && rm -rf /var/lib/apt/lists/*
 
-# Copy published app
+ # Create a non-root user and group
+RUN groupadd --gid 1001 bareprox && \
+    useradd --uid 1001 --gid 1001 --shell /bin/bash --create-home bareprox
+
+# Copy published app and set ownership
 COPY --from=build /app/publish ./
+RUN chown -R bareprox:bareprox /app
+
+# Switch to the bareprox user
+USER bareprox
 
 # Expose HTTP and HTTPS ports
-EXPOSE 80 443
+EXPOSE 443
 
 # Environment setup
-ENV ASPNETCORE_URLS="http://+:80;https://+:443" \
+ENV ASPNETCORE_URLS="https://+:443" \
     DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false \
     DOTNET_EnableDiagnostics=0 \
     DOTNET_ENVIRONMENT=Production

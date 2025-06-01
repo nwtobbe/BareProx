@@ -1,14 +1,14 @@
-version: "3.8"
-
-
 services:
   web:
     build: .
-    container_name: bareprox-web
+    container_name: bareprox
     restart: unless-stopped
     ports:
-      - "80:80"          # host:container
       - "443:443"
     volumes:
-      - ./config:/config   # persists appsettings.json & DatabaseConfig.json
-      - ./data:/data
+      - /var/bareprox/config:/config  # config
+      - /var/bareprox/data:/data    # db
+
+        # sudo mkdir -p /var/bareprox/config
+        # sudo mkdir -p /var/bareprox/data
+        # sudo chown -R $(whoami):$(whoami) /var/bareprox

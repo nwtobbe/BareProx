@@ -1,5 +1,6 @@
 using BareProx.Models;
 using Microsoft.AspNetCore.Mvc;
+using System.Reflection;
 using System.Threading.Tasks;
 
 
@@ -13,5 +14,12 @@ using System.Threading.Tasks;
     {
         return View();
     }
+    public IActionResult About()
+    {
+        var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString();
+        ViewData["Version"] = version;
+        return View();
+    }
+    public IActionResult Help() => View();
 }
 

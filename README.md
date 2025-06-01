@@ -1,4 +1,43 @@
 # BareProx 2025, What Netapp did not want to give you
+sudo useradd --system --create-home --shell /bin/bash bareprox
+sudo usermod -aG docker bareprox
+
+sudo mkdir -p /var/bareprox/config
+sudo mkdir -p /var/bareprox/data
+sudo chown -R bareprox:bareprox /var/bareprox
+
+sudo su - bareprox
+cd /path/to/BareProx/
+docker compose up -d
+
+sudo nano /etc/systemd/system/bareprox.service
+
+[Unit]
+Description=BareProx Docker Compose App
+Requires=docker.service
+After=docker.service
+
+[Service]
+WorkingDirectory=/home/bareprox/bareprox   # Adjust to your actual compose folder
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose down
+Restart=always
+User=bareprox
+Group=bareprox
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+
+sudo systemctl daemon-reexec
+sudo systemctl daemon-reload
+sudo systemctl enable bareprox.service
+sudo systemctl start bareprox.service
+
+systemctl status bareprox.service
+
+
+apt-get install git ca-certificates curl gnupg lsb-release
 
 Docker compose
 Authentication failed error page?
@@ -26,6 +65,7 @@ Missing snapshots?
 
 
 Done.
+AutoBuildVersion
 fix install db / first run
 Add lock for snapshots / clones
 Timezones under settings

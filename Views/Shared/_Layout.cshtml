@@ -31,7 +31,7 @@
 
                 <div class="collapse navbar-collapse" id="navbarNav">
                     @* only show the main menus when logged in *@
-                    @if (SignInManager.IsSignedIn(User))
+                    @if (!SignInManager.IsSignedIn(User))
                     {
                         <ul class="navbar-nav me-auto mb-2 mb-lg-0">
 
@@ -137,7 +137,16 @@
                         </ul>
                     }
                     <!-- Login partial -->
-                    <partial name="_LoginPartial" />
+                    <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
+                        <li class="nav-item">
+                            <a class="nav-link text-dark" asp-controller="Home" asp-action="About">About</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-dark" asp-controller="Home" asp-action="Help">Help</a>
+                        </li>
+
+                        <partial name="_LoginPartial" />
+                    </ul>
                 </div>
             </div>
         </nav>
