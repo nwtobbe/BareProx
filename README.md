@@ -4,7 +4,9 @@ sudo usermod -aG docker bareprox
 
 sudo mkdir -p /var/bareprox/config
 sudo mkdir -p /var/bareprox/data
-sudo chown -R bareprox:bareprox /var/bareprox
+# sudo chown -R bareprox:bareprox /var/bareprox
+sudo chown -R 1001:1001 /var/bareprox/config
+sudo chown -R 1001:1001 /var/bareprox/data
 
 sudo su - bareprox
 cd /path/to/BareProx/

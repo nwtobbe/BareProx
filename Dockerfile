@@ -18,7 +18,7 @@ COPY . ./
 WORKDIR /src
 
 # Publish self-contained for linux-x64
-RUN dotnet publish BareProx.csproj -c Release -r linux-x64 --self-contained true -p:PublishTrimmed=true -o /app/publish
+RUN dotnet publish BareProx.csproj -c Release -r linux-x64 --self-contained true -p:PublishTrimmed=false -o /app/publish
 
 ### 2) Runtime stage
 FROM debian:bookworm-slim AS runtime
