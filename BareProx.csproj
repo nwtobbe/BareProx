@@ -50,7 +50,7 @@
 		<!-- Ensure DEBUG is NOT defined here -->
 	</PropertyGroup>
 
-	<Target Name="GenerateVersionInfo" BeforeTargets="BeforeBuild">
+	<Target Name="GenerateVersionInfo" BeforeTargets="BeforeBuild" Condition="'$(OS)' == 'Windows_NT'">
 		<Exec Command="powershell -ExecutionPolicy Bypass -File Tools\GenerateVersionInfo.ps1" />
 	</Target>
 

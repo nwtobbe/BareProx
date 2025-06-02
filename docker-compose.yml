@@ -1,6 +1,6 @@
 services:
   web:
-    build: .
+    image: nwtobbe/bareprox:latest
     container_name: bareprox
     restart: unless-stopped
     ports:
