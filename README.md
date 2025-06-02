@@ -37,7 +37,7 @@ sudo systemctl start bareprox.service
 systemctl status bareprox.service
 
 
-apt-get install git ca-certificates curl gnupg lsb-release
+apt-get install sudo ca-certificates curl gnupg lsb-release
 
 Docker compose
 Authentication failed error page?
@@ -53,6 +53,7 @@ Fix add cluster
 	Add scheduled task to check access
 
 secondary...
+	Partially implemented
 tps...
 mail
 logging
@@ -65,6 +66,7 @@ Missing snapshots?
 
 
 Done.
+Fixed minor issue with schedules.
 AutoBuildVersion
 fix install db / first run
 Add lock for snapshots / clones

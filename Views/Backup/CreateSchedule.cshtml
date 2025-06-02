@@ -173,6 +173,10 @@
     </div>
 </form>
 
+<script>
+    const volumeMeta = @Html.Raw(JsonSerializer.Serialize(Model.VolumeMeta));
+</script>
+
 @section Scripts {
     <script>
         // ── Global helper (must be outside DOMContentLoaded) ─────────────────
@@ -342,21 +346,36 @@
                 });
             }
 
-            if (storageSel) {
-                storageSel.addEventListener('change', function() {
-                    if (!replicateBox) return;
-                    var val = storageSel.value;
-                    if (replicable.indexOf(val) !== -1) {
-                        replicateBox.classList.remove('d-none');
-                    } else {
-                        replicateBox.classList.add('d-none');
-                        var cb = replicateBox.querySelector('input');
-                        if (cb) cb.checked = false;
-                    }
-                });
-                // initialize on load
-                storageSel.dispatchEvent(new Event('change'));
-            }
+        if (storageSel) {
+            storageSel.addEventListener('change', function () {
+                if (!replicateBox) return;
+
+                var val = storageSel.value;
+
+                // Set replicate checkbox visibility
+                if (replicable.indexOf(val) !== -1) {
+                    replicateBox.classList.remove('d-none');
+                } else {
+                    replicateBox.classList.add('d-none');
+                    var cb = replicateBox.querySelector('input');
+                    if (cb) cb.checked = false;
+                }
+
+                // Set hidden ClusterId and ControllerId
+                var clusterInput = document.getElementById('ClusterId');
+                var controllerInput = document.getElementById('ControllerId');
+                if (volumeMeta[val]) {
+                    clusterInput.value = volumeMeta[val].ClusterId;
+                    controllerInput.value = volumeMeta[val].ControllerId;
+                } else {
+                    clusterInput.value = "";
+                    controllerInput.value = "";
+                }
+            });
+
+            // initialize on load
+            storageSel.dispatchEvent(new Event('change'));
+        }
 
             if (form) {
                 form.addEventListener('submit', function(e) {

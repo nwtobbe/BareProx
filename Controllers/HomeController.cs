@@ -17,7 +17,13 @@ using System.Threading.Tasks;
     public IActionResult About()
     {
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString();
+        var licensePath = Path.Combine(Directory.GetCurrentDirectory(), "LICENSE");
+        var licenseText = System.IO.File.Exists(licensePath)
+            ? System.IO.File.ReadAllText(licensePath)
+            : "License file not found.";
+
         ViewData["Version"] = version;
+        ViewData["LicenseText"] = licenseText;
         return View();
     }
     public IActionResult Help() => View();
