@@ -7,55 +7,25 @@ sudo mkdir -p /var/bareprox/data
 # sudo chown -R bareprox:bareprox /var/bareprox
 sudo chown -R 1001:1001 /var/bareprox/config
 sudo chown -R 1001:1001 /var/bareprox/data
+systemctl enable docker
 
 sudo su - bareprox
 cd /path/to/BareProx/
 docker compose up -d
-
-sudo nano /etc/systemd/system/bareprox.service
-
-[Unit]
-Description=BareProx Docker Compose App
-Requires=docker.service
-After=docker.service
-
-[Service]
-WorkingDirectory=/home/bareprox/bareprox   # Adjust to your actual compose folder
-ExecStart=/usr/bin/docker compose up -d
-ExecStop=/usr/bin/docker compose down
-Restart=always
-User=bareprox
-Group=bareprox
-TimeoutStartSec=0
-
-[Install]
-WantedBy=multi-user.target
-
-sudo systemctl daemon-reexec
-sudo systemctl daemon-reload
-sudo systemctl enable bareprox.service
-sudo systemctl start bareprox.service
-
-systemctl status bareprox.service
-
-
 apt-get install sudo ca-certificates curl gnupg lsb-release
 
-Docker compose
+
+# ---------------------- Fix
+
 Authentication failed error page?
 Add schedules + run
-Add select storage svm:s for primary, volumes to use
-	and use it in functions
-Add select storage svms: for secondary, volumes to use
-	and user it in functions
-Fix create backup so you only can select volumes that have nfs and are in use by proxmox
 
 Fix add cluster
 	Automatically add all nodes to the cluster by one ip
 	Add scheduled task to check access
 
 secondary...
-	Partially implemented
+	Partially implemented, no restore from secondary yet
 tps...
 mail
 logging
@@ -68,15 +38,26 @@ Missing snapshots?
 
 
 Done.
+Fixed edit storage on netapp, return to correct page when clicking on save
+Fixed view under edit and create sched.
+Fixed account page
+Fixed when creating backup, only select that are marked as used in proxmox and storage
+Fixed timeschedule for hourly.
+Docker compose + build instructions
 Fixed minor issue with schedules.
 AutoBuildVersion
 fix install db / first run
 Add lock for snapshots / clones
 Timezones under settings
 Fix in restorecontroller ClusterName = "ProxMox",
+Add select storage svm:s for primary, volumes to use
+	and use it in functions
+Add select storage svms: for secondary, volumes to use
+	and user it in functions
 Added Self signed certificate creation
 Fixed local Timezone for snapshots
 New date/time formatting for snapshots
+Fix create backup so you only can select volumes that have nfs and are in use by proxmox
 Added UserManagement
 Added paths for first run creation
 	volumes:

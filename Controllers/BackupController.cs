@@ -127,13 +127,22 @@ namespace BareProx.Controllers
                     replicableVolumes.Add(primary.VolumeName);
             }
 
-            // 6) Flatten into SelectListItems
-            var storageOptions = combinedStorage.Keys
-                .OrderBy(s => s)
-                .Select(s => new SelectListItem { Text = s, Value = s })
+            // 6a) Build a HashSet of “allowed” storage names from SelectedNetappVolumes
+            var selectedVolumeNames = selectedVolumes
+                .Select(v => v.VolumeName)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            // 6b) Only include those combinedStorage keys that (1) are in selectedVolumeNames
+            //      and (2) actually have at least one VM attached (Value.Any())
+            var storageOptions = combinedStorage
+                .Where(kvp => selectedVolumeNames.Contains(kvp.Key) && kvp.Value.Any())
+                .OrderBy(kvp => kvp.Key)
+                .Select(kvp => new SelectListItem { Text = kvp.Key, Value = kvp.Key })
                 .ToList();
 
+            // 6c) Build AllVms list, but only for those same “allowed” storage names:
             var allVms = combinedStorage
+                .Where(kvp => selectedVolumeNames.Contains(kvp.Key) && kvp.Value.Any())
                 .SelectMany(kvp => kvp.Value.Select(vmInfo =>
                     new SelectListItem
                     {
@@ -358,13 +367,22 @@ namespace BareProx.Controllers
                     replicableVolumes.Add(primary.VolumeName);
             }
 
-            // 4) Flatten lists
-            var storageOptions = combinedStorage.Keys
-                .OrderBy(s => s)
-                .Select(s => new SelectListItem { Text = s, Value = s })
+            // 6a) Build a HashSet of “allowed” storage names from SelectedNetappVolumes
+            var selectedVolumeNames = selectedVolumes
+                .Select(v => v.VolumeName)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            // 6b) Only include those combinedStorage keys that (1) are in selectedVolumeNames
+            //      and (2) actually have at least one VM attached (Value.Any())
+            var storageOptions = combinedStorage
+                .Where(kvp => selectedVolumeNames.Contains(kvp.Key) && kvp.Value.Any())
+                .OrderBy(kvp => kvp.Key)
+                .Select(kvp => new SelectListItem { Text = kvp.Key, Value = kvp.Key })
                 .ToList();
 
+            // 6c) Build AllVms list, but only for those same “allowed” storage names:
             var allVms = combinedStorage
+                .Where(kvp => selectedVolumeNames.Contains(kvp.Key) && kvp.Value.Any())
                 .SelectMany(kvp => kvp.Value.Select(vmInfo =>
                     new SelectListItem
                     {

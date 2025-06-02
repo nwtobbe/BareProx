@@ -293,7 +293,8 @@
 
           if (ccRadio) ccRadio.addEventListener('change', toggleAppAware);
           if (aaRadio) aaRadio.addEventListener('change', toggleAppAware);
-
+                    // ── Call once on load so that if Model.IsApplicationAware == true, the panel shows immediately
+          toggleAppAware();
           if (ioFreezeCb) {
             ioFreezeCb.addEventListener('change', function() {
               if (ioFreezeCb.checked && proxSnapCb && proxOpts) {
@@ -378,6 +379,7 @@
               if (cId)    cId.value    = m.ClusterId || '';
               if (ctrl)  ctrl.value   = m.ControllerId || '';
             });
+          }
           }
         });
     </script>

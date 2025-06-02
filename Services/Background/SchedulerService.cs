@@ -137,7 +137,29 @@ namespace BareProx.Services.Background
             switch (sched.Schedule)
             {
                 case "Hourly":
-                // … your existing hourly logic …
+                    // Example: interpret Frequency = "8-17" as hours of the day.
+                    if (string.IsNullOrWhiteSpace(sched.Frequency))
+                        return false;
+
+                    // Parse “8-17” → startHour=8, endHour=17
+                    var parts = sched.Frequency.Split('-', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length != 2
+                        || !int.TryParse(parts[0], out var startHour)
+                        || !int.TryParse(parts[1], out var endHour))
+                    {
+                        return false;
+                    }
+
+                    // Only run on the hour (minute=0, second < IntervalSeconds window)
+                    if (now.Minute != 0)
+                        return false;
+                    // Only run if within [startHour, endHour)
+                    if (now.Hour < startHour || now.Hour >= endHour)
+                        return false;
+
+                    // Only once per hour (LastRun before the top‐of‐hour)
+                    var thisHour = new DateTime(now.Year, now.Month, now.Day, now.Hour, 0, 0);
+                    return sched.LastRun == null || sched.LastRun.Value < thisHour;
 
                 case "Daily":
                 case "Weekly":
