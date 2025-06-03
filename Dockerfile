@@ -1,64 +1,54 @@
 ﻿# syntax=docker/dockerfile:1.4
 
-########################################
-# 1) BUILD STAGE 
-########################################
+### 1) Build stage using .NET SDK
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
-# 1.1) Copy only the solution & .csproj(s) first, to leverage layer caching.
-#      If you modify a .cs file later, Docker will NOT re-run 'dotnet restore',
-#      because the .csproj layer hasn’t changed.
-COPY BareProx.sln            ./
-COPY BareProx.csproj         ./
+# Copy solution and project files
+COPY BareProx.sln ./
+COPY BareProx.csproj ./
 
-# If you have additional projects or shared props/NuGet.config, copy them here:
-# COPY SharedLib/SharedLib.csproj    SharedLib/
-# COPY NuGet.config                  ./
-# COPY Directory.Build.props         ./
+# Restore dependencies
+RUN dotnet restore
 
-# 1.2) Restore dependencies (this layer is cached until .csproj or NuGet.config changes)
-RUN dotnet restore --use-current-runtime
+# Copy the entire project (everything in the current dir)
+COPY . ./
 
-# 1.3) Now that restore is done, copy the rest of the source code (all .cs, .cshtml, etc.)
-COPY . .
+# Set working directory to project root
+WORKDIR /src
 
-# 1.4) Publish as a self-contained Linux-x64 app, with trimming enabled.
-#      We set PublishTrimmed=true to aggressively strip out unused DLLs/runtimes.
-RUN dotnet publish \
-        BareProx.csproj \
-        -c Release \
-        -r linux-x64 \
-        --self-contained true \
-        -p:PublishTrimmed=false \
-        -o /app/publish
+# Publish self-contained for linux-x64
+RUN dotnet publish BareProx.csproj -c Release -r linux-x64 --self-contained true -p:PublishTrimmed=false -o /app/publish
 
-########################################
-# 2) RUNTIME STAGE 
-########################################
+### 2) Runtime stage
 FROM debian:bookworm-slim AS runtime
 WORKDIR /app
 
-# 2.1) You can run in “invariant globalization” mode to avoid pulling in tzdata, ICU, etc.
-#      That means your app won’t do culture‐specific formatting unless you embed ICU data,
-#      but for most APIs it’s fine. If you do need full globalization, you’d install 'tzdata', 'icu', etc.
-ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true
-ENV DOTNET_EnableDiagnostics=0
-ENV ASPNETCORE_URLS="https://+:443"
-ENV DOTNET_ENVIRONMENT=Production
+# Install minimal dependencies needed by self-contained .NET app
+RUN apt-get update && apt-get install -y \
+    libicu72 \
+    libssl3 \
+    tzdata \
+ && rm -rf /var/lib/apt/lists/*
 
-# 2.2) Copy the trimmed, self-contained binaries from the build stage
+ # Create a non-root user and group
+RUN groupadd --gid 1001 bareprox && \
+    useradd --uid 1001 --gid 1001 --shell /bin/bash --create-home bareprox
+
+# Copy published app and set ownership
 COPY --from=build /app/publish ./
+RUN chown -R bareprox:bareprox /app
 
-# 2.3) Create a non-root user and chown the /app folder
-RUN groupadd --gid 1001 bareprox \
- && useradd  --uid 1001 --gid 1001 --shell /bin/bash --create-home bareprox \
- && chown -R bareprox:bareprox /app
-
+# Switch to the bareprox user
 USER bareprox
 
-# 2.4) Expose only the port you need (443 for HTTPS)
+# Expose HTTP and HTTPS ports
 EXPOSE 443
 
-# 2.5) Launch the executable
+# Environment setup
+ENV ASPNETCORE_URLS="https://+:443" \
+    DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false \
+    DOTNET_EnableDiagnostics=0 \
+    DOTNET_ENVIRONMENT=Production
+# Run the app
 ENTRYPOINT ["./BareProx"]
