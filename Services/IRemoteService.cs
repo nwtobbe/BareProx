@@ -24,11 +24,14 @@ namespace BareProx.Services
     {
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IEncryptionService _encryptionService;
+        private readonly ILogger<RemoteApiClient> _logger;
 
-        public RemoteApiClient(IHttpClientFactory httpClientFactory, IEncryptionService encryptionService)
+
+        public RemoteApiClient(IHttpClientFactory httpClientFactory, IEncryptionService encryptionService, ILogger<RemoteApiClient> logger)
         {
             _httpClientFactory = httpClientFactory;
             _encryptionService = encryptionService;
+            _logger = logger;
         }
 
         public Task<HttpClient> CreateAuthenticatedClientAsync(string username, string encryptedPassword, string baseUrl, string clientName, bool isEncrypted = true, string? tokenHeaderName = null, string? tokenValue = null)
@@ -66,12 +69,13 @@ namespace BareProx.Services
     public class EncryptionService : IEncryptionService
     {
         private readonly string _key;
-
-        public EncryptionService(IConfiguration config)
+        private readonly ILogger<EncryptionService> _logger;
+        public EncryptionService(IConfiguration config, ILogger<EncryptionService> logger)
         {
             _key = config["Encryption:Key"] ?? throw new InvalidOperationException("Missing Encryption key in configuration.");
             if (_key.Length != 32)
                 throw new InvalidOperationException("Encryption key must be exactly 32 characters long.");
+            _logger = logger;
         }
 
         public string Encrypt(string plainText)
@@ -116,26 +120,32 @@ namespace BareProx.Services
                 var decrypted = decryptor.TransformFinalBlock(cipher, 0, cipher.Length);
                 return Encoding.UTF8.GetString(decrypted);
             }
-            catch (FormatException fe)
+            catch (FormatException fe) when (LogAndContinue(fe, LogLevel.Warning, "Invalid Base64 in encrypted text. Returning original input."))
             {
                 //_logger.LogWarning(fe, "Invalid Base64 in encrypted text. Returning original input.");
                 return cipherText;
             }
-            catch (OverflowException oe)
+            catch (OverflowException oe) when (LogAndContinue(oe, LogLevel.Warning, "Numeric overflow during decryption. Returning original input."))
             {
                 //_logger.LogError(oe, "Arithmetic overflow during decryption. Returning original input.");
                 return cipherText;
             }
-            catch (CryptographicException ce)
+            catch (CryptographicException ce) when (LogAndContinue(ce, LogLevel.Error, "Cryptographic error during decryption. Returning original input."))
             {
                 //_logger.LogError(ce, "Cryptographic error during decryption. Returning original input.");
                 return cipherText;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (LogAndContinue(ex, LogLevel.Error, "Unexpected error during decryption. Returning original input."))
             {
                 //_logger.LogError(ex, "Unexpected error during decryption. Returning original input.");
                 return cipherText;
             }
+        }
+        // Helper that logs and returns false so the catch body still runs
+        private bool LogAndContinue(Exception ex, LogLevel level, string message)
+        {
+            _logger.Log(level, ex, message);
+            return false;
         }
     }
 

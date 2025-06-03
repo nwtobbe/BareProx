@@ -1,4 +1,5 @@
 ﻿@model BareProx.Models.SettingsPageViewModel
+
 @if (TempData["RestartRequired"] != null)
 {
     <div class="alert alert-warning">
@@ -9,6 +10,7 @@
         </form>
     </div>
 }
+
 @{
     ViewBag.Title = "Application Configuration";
 }
@@ -30,14 +32,14 @@
     @Html.AntiForgeryToken()
 
     <div class="form-group mb-3">
-        @Html.LabelFor(m => m.Config.TimeZoneId)
+        @Html.LabelFor(m => m.Config.TimeZoneWindows)
         @Html.DropDownListFor(
-                m => m.Config.TimeZoneId,
+                m => m.Config.TimeZoneWindows,
                 Model.TimeZones,
                 "— select time zone —",
                 new { @class = "form-control" })
         @Html.ValidationMessageFor(
-                m => m.Config.TimeZoneId,
+                m => m.Config.TimeZoneWindows,
                 "", new { @class = "text-danger" })
     </div>
 
@@ -75,9 +77,9 @@ else
 
 <hr />
 
-<!-- ============================================
+<!-- ===========================================
      Section C: Regenerate Certificate Form
-     ============================================ -->
+     =========================================== -->
 <h4>Regenerate Self-Signed Certificate</h4>
 @using (Html.BeginForm("RegenerateCert", "Settings", FormMethod.Post))
 {

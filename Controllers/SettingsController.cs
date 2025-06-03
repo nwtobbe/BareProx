@@ -65,7 +65,7 @@ namespace BareProx.Controllers
         [HttpGet]
         public IActionResult Config()
         {
-            // 1) Load or create the JSON config file (for DefaultTimeZone)
+            // 1) Load or create the JSON config file
             JObject cfg;
             if (System.IO.File.Exists(_configFile))
             {
@@ -76,79 +76,47 @@ namespace BareProx.Controllers
             {
                 cfg = new JObject();
             }
-            // 1) Read stored time zone (string), or null if not present
-            var storedTzId = (string)cfg["DefaultTimeZone"];
 
-            TimeZoneInfo tz = null;
+            // 2) Read stored Windows‐style and IANA‐style time zones (if present)
+            var storedWindows = (string?)cfg["ConfigSettings"]?["TimeZoneWindows"];
+            var storedIana = (string?)cfg["ConfigSettings"]?["TimeZoneIana"];
 
-            if (!string.IsNullOrWhiteSpace(storedTzId))
+            // 3) Determine which Windows ID to select in the dropdown
+            //    If storedWindows is nonempty, use it.
+            //    Else if storedIana is nonempty, convert it → Windows.
+            //    Else fallback to Local machine’s zone, converted → Windows if needed.
+            string selectedWindowsId;
+            if (!string.IsNullOrWhiteSpace(storedWindows))
             {
-                // Try to interpret exactly as‐is
+                selectedWindowsId = storedWindows.Trim();
+            }
+            else if (!string.IsNullOrWhiteSpace(storedIana))
+            {
                 try
                 {
-                    tz = TimeZoneInfo.FindSystemTimeZoneById(storedTzId);
+                    selectedWindowsId = TZConvert.IanaToWindows(storedIana.Trim());
                 }
-                catch (TimeZoneNotFoundException)
+                catch
                 {
-                    // If that fails, try to convert Windows->IANA or IANA->Windows and retry
-                    string altId = null;
-
-                    if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-                    {
-                        // We’re on Windows: maybe the stored ID is IANA, so convert to Windows
-                        try
-                        {
-                            altId = TZConvert.IanaToWindows(storedTzId);
-                        }
-                        catch
-                        {
-                            // ignore
-                        }
-                    }
-                    else
-                    {
-                        // We’re on Linux/macOS: maybe the stored ID is Windows, so convert to IANA
-                        try
-                        {
-                            altId = TZConvert.WindowsToIana(storedTzId);
-                        }
-                        catch
-                        {
-                            // ignore
-                        }
-                    }
-
-                    if (!string.IsNullOrWhiteSpace(altId))
-                    {
-                        try
-                        {
-                            tz = TimeZoneInfo.FindSystemTimeZoneById(altId);
-                        }
-                        catch
-                        {
-                            // still failed—leave tz=null
-                        }
-                    }
+                    // if conversion fails, fallback
+                    selectedWindowsId = GetLocalWindowsId();
                 }
             }
-
-            if (tz == null)
+            else
             {
-                // Either nothing was stored, or we couldn’t parse/convert it
-                tz = TimeZoneInfo.Local;
+                selectedWindowsId = GetLocalWindowsId();
             }
 
-            var currentTz = tz.Id;
-
-            // 3) Get current certificate details
+            // 4) Get current certificate details
             var cert = _certService.CurrentCertificate;
 
-            // 4) Build the composite view model
+            // 5) Build the composite view model
             var vm = new SettingsPageViewModel
             {
                 Config = new ConfigSettingsViewModel
                 {
-                    TimeZoneId = currentTz
+                    TimeZoneWindows = selectedWindowsId,
+                    TimeZoneIana = storedIana ?? ""
                 },
                 Regenerate = new RegenerateCertViewModel
                 {
@@ -162,13 +130,11 @@ namespace BareProx.Controllers
                 }
             };
 
-            // 5) Build the Time Zone dropdown
-            var zones = TimeZoneInfo.GetSystemTimeZones()
-                         .Select(z => new { z.Id, z.DisplayName });
-            vm.TimeZones = new SelectList(zones, "Id", "DisplayName", vm.Config.TimeZoneId);
+            // 6) Build the Time Zone dropdown
+            vm.TimeZones = BuildTimeZoneSelectList(selectedWindowsId);
 
             return View("Config", vm);
-        } 
+        }
 
         // ========================================================
         // POST: /Settings/Config
@@ -178,29 +144,174 @@ namespace BareProx.Controllers
         [ValidateAntiForgeryToken]
         public IActionResult Config([Bind(Prefix = "Config")] ConfigSettingsViewModel configVm)
         {
-            // 1) Validate only the Config submodel
             if (!ModelState.IsValid)
             {
-                // Re‐build the composite and return view with errors
                 var pageVm = BuildSettingsPageViewModel();
                 pageVm.Config = configVm;
-                var zones = TimeZoneInfo.GetSystemTimeZones()
-                             .Select(z => new { z.Id, z.DisplayName });
-                pageVm.TimeZones = new SelectList(zones, "Id", "DisplayName", configVm.TimeZoneId);
+                pageVm.TimeZones = BuildTimeZoneSelectList(configVm.TimeZoneWindows);
                 return View("Config", pageVm);
             }
 
-            // 2) Save the chosen time zone into /config/appsettings.json
+            // 1) Translate Windows → IANA
+            string ianaId;
+            try
+            {
+                ianaId = TZConvert.WindowsToIana(configVm.TimeZoneWindows.Trim());
+            }
+            catch
+            {
+                ianaId = "";
+            }
+
+            // 2) Load (or create) the root JObject
             JObject cfg = System.IO.File.Exists(_configFile)
                 ? JObject.Parse(System.IO.File.ReadAllText(_configFile))
                 : new JObject();
 
-            cfg["DefaultTimeZone"] = configVm.TimeZoneId;
+            // 3) Remove any old top‐level keys if they exist
+            if (cfg["TimeZoneWindows"] != null)
+                cfg.Remove("TimeZoneWindows");
+            if (cfg["TimeZoneIana"] != null)
+                cfg.Remove("TimeZoneIana");
+
+            // 4) Make sure "ConfigSettings" exists
+            if (cfg["ConfigSettings"] == null || cfg["ConfigSettings"].Type != JTokenType.Object)
+            {
+                cfg["ConfigSettings"] = new JObject();
+            }
+
+            // 5) Write under "ConfigSettings" only
+            var section = (JObject)cfg["ConfigSettings"];
+            section["TimeZoneWindows"] = configVm.TimeZoneWindows.Trim();
+            section["TimeZoneIana"] = ianaId;
+
+            // 6) Persist back to /config/appsettings.json
             System.IO.File.WriteAllText(_configFile, cfg.ToString());
 
-            TempData["Success"] = $"Default time zone \"{configVm.TimeZoneId}\" updated.";
-
+            TempData["Success"] = $"Default time zone “{configVm.TimeZoneWindows}” saved.";
             return RedirectToAction(nameof(Config));
+        }
+
+        // ========================================================
+        // Helper: rebuild the composite page model (for validation errors)
+        // ========================================================
+        private SettingsPageViewModel BuildSettingsPageViewModel()
+        {
+            // Re‐run the GET logic to fetch current state
+            JObject cfg;
+            if (System.IO.File.Exists(_configFile))
+            {
+                var text = System.IO.File.ReadAllText(_configFile);
+                cfg = JObject.Parse(text);
+            }
+            else
+            {
+                cfg = new JObject();
+            }
+
+            var storedWindows = (string)cfg["DefaultTimeZoneWindows"];
+            var storedIana = (string)cfg["DefaultTimeZoneIana"];
+
+            string selectedWindowsId;
+            if (!string.IsNullOrWhiteSpace(storedWindows))
+            {
+                selectedWindowsId = storedWindows.Trim();
+            }
+            else if (!string.IsNullOrWhiteSpace(storedIana))
+            {
+                try
+                {
+                    selectedWindowsId = TZConvert.IanaToWindows(storedIana.Trim());
+                }
+                catch
+                {
+                    selectedWindowsId = GetLocalWindowsId();
+                }
+            }
+            else
+            {
+                selectedWindowsId = GetLocalWindowsId();
+            }
+
+            var cert = _certService.CurrentCertificate;
+
+            var vm = new SettingsPageViewModel
+            {
+                Config = new ConfigSettingsViewModel
+                {
+                    TimeZoneWindows = selectedWindowsId,
+                    TimeZoneIana = storedIana ?? ""
+                },
+                Regenerate = new RegenerateCertViewModel
+                {
+                    CurrentSubject = cert?.Subject,
+                    CurrentNotBefore = cert?.NotBefore,
+                    CurrentNotAfter = cert?.NotAfter,
+                    CurrentThumbprint = cert?.Thumbprint,
+                    RegenSubjectName = cert?.Subject ?? "CN=localhost",
+                    RegenValidDays = 365,
+                    RegenSANs = "localhost"
+                }
+            };
+
+            vm.TimeZones = BuildTimeZoneSelectList(selectedWindowsId);
+            return vm;
+        }
+
+        // Helper: build a SelectList for all time zones
+        private IEnumerable<SelectListItem> BuildTimeZoneSelectList(string selectedWindowsId)
+        {
+            var allZones = TimeZoneInfo.GetSystemTimeZones();
+            var items = allZones.Select(tzInfo =>
+            {
+                string windowsId, ianaId;
+
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    windowsId = tzInfo.Id;
+                    ianaId = TZConvert.WindowsToIana(tzInfo.Id);
+                }
+                else
+                {
+                    ianaId = tzInfo.Id;
+                    windowsId = TZConvert.IanaToWindows(tzInfo.Id);
+                }
+
+                var display = $"{tzInfo.DisplayName}  [{ianaId}]";
+
+                return new SelectListItem
+                {
+                    Text = display,
+                    Value = windowsId,
+                    Selected = string.Equals(windowsId, selectedWindowsId, StringComparison.OrdinalIgnoreCase)
+                };
+            })
+            .OrderBy(x => x.Text)
+            .ToList();
+
+            return items;
+        }
+
+        // Helper: get the local machine’s “Windows” ID (or convert from IANA if on Linux)
+        private string GetLocalWindowsId()
+        {
+            var local = TimeZoneInfo.Local.Id; // On Linux, this is IANA; on Windows, this is Windows.
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                return local;
+            }
+            else
+            {
+                try
+                {
+                    return TZConvert.IanaToWindows(local);
+                }
+                catch
+                {
+                    // If conversion fails, just return the IANA as a fallback
+                    return local;
+                }
+            }
         }
 
         // ========================================================
@@ -250,52 +361,7 @@ namespace BareProx.Controllers
             TempData["RestartRequired"] = true;
             return RedirectToAction(nameof(Config));
         }
-        // ========================================================
-        // Helper: rebuild the composite page model (for validation errors)
-        // ========================================================
-        private SettingsPageViewModel BuildSettingsPageViewModel()
-        {
-            // Re‐run the GET logic to fetch current state
-            JObject cfg;
-            if (System.IO.File.Exists(_configFile))
-            {
-                var text = System.IO.File.ReadAllText(_configFile);
-                cfg = JObject.Parse(text);
-            }
-            else
-            {
-                cfg = new JObject();
-            }
 
-            var currentTz = (string)cfg["DefaultTimeZone"]
-                            ?? TimeZoneInfo.Local.Id;
-
-            var cert = _certService.CurrentCertificate;
-
-            var vm = new SettingsPageViewModel
-            {
-                Config = new ConfigSettingsViewModel
-                {
-                    TimeZoneId = currentTz
-                },
-                Regenerate = new RegenerateCertViewModel
-                {
-                    CurrentSubject = cert?.Subject,
-                    CurrentNotBefore = cert?.NotBefore,
-                    CurrentNotAfter = cert?.NotAfter,
-                    CurrentThumbprint = cert?.Thumbprint,
-                    RegenSubjectName = cert?.Subject ?? "CN=localhost",
-                    RegenValidDays = 365,
-                    RegenSANs = "localhost"
-                }
-            };
-
-            var zones = TimeZoneInfo.GetSystemTimeZones()
-                         .Select(z => new { z.Id, z.DisplayName });
-            vm.TimeZones = new SelectList(zones, "Id", "DisplayName", vm.Config.TimeZoneId);
-
-            return vm;
-        }
 
         [HttpPost]
         [ValidateAntiForgeryToken]

@@ -1,122 +1,254 @@
 ﻿@model BareProx.Models.CleanupPageViewModel
 
-@if (ViewBag.Warning is string warningMessage)
+@if (!string.IsNullOrEmpty(Model.WarningMessage))
 {
     <div class="alert alert-warning">
-        <strong>⚠ Warning:</strong> @warningMessage
+        <strong>⚠ Warning:</strong> @Model.WarningMessage
     </div>
 }
 
-<h2>Cleanup Flex-Clones</h2>
+<h1>Cleanup Flex‐Clones & Snapshots</h1>
 
-<h4>In-Use Clones</h4>
-@if (!Model.InUse.Any())
+@foreach (var clusterVm in Model.Clusters)
 {
-    <p><em>None.</em></p>
-}
-else
-{
-    <table class="table table-sm">
-        <thead>
-            <tr><th>Volume</th><th>Mount IP</th><th>VMs</th></tr>
-        </thead>
-        <tbody>
-            @foreach (var item in Model.InUse)
-            {
-                <tr class="table-warning">
-                    <td>@item.VolumeName</td>
-                    <td>@item.MountIp</td>
-                    <td>
-                        <ul class="mb-0">
-                            @foreach (var vm in item.AttachedVms)
+    var clusterId = clusterVm.ClusterName.Replace(" ", "-");
+    <section id="cluster-@clusterId" class="mb-5">
+        <h2>Cluster: @clusterVm.ClusterName</h2>
+
+        <!-- In‐Use Clones -->
+        <h4>In‐Use Clones</h4>
+        @if (!clusterVm.InUse.Any())
+        {
+            <p><em>None.</em></p>
+        }
+        else
+        {
+            <table class="table table-sm">
+                <thead>
+                    <tr>
+                        <th>Volume</th>
+                        <th>Mount IP</th>
+                        <th>VMs</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var item in clusterVm.InUse)
+                    {
+                        <tr class="table-warning">
+                            <td>@item.VolumeName</td>
+                            <td>@item.MountIp</td>
+                            <td>
+                                <ul class="mb-0">
+                                    @foreach (var vm in item.AttachedVms)
+                                    {
+                                        <li>@vm.Name (@vm.Id) on @vm.HostName</li>
+                                    }
+                                </ul>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+
+        <hr />
+
+        <!-- Orphaned Clones -->
+        <h4>Orphaned Clones</h4>
+        @if (!clusterVm.Orphaned.Any())
+        {
+            <p id="no-orphans-@clusterId"><em>None.</em></p>
+        }
+        else
+        {
+            <form id="csrf-form-@clusterId">
+                @Html.AntiForgeryToken()
+            </form>
+
+            <table class="table table-sm" id="orphaned-table-@clusterId">
+                <thead>
+                    <tr>
+                        <th>Volume</th>
+                        <th>Node</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var item in clusterVm.Orphaned)
+                    {
+                        <tr data-volume="@item.VolumeName" data-ip="@item.MountIp">
+                            <td>@item.VolumeName</td>
+                            <td>@item.MountIp</td>
+                            <td>
+                                <button type="button" class="btn btn-sm btn-danger cleanup-btn">
+                                    💣 Delete
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+
+        <hr />
+
+        <!-- Orphaned Snapshots (one table per primary volume) -->
+        <h4>Orphaned Snapshots</h4>
+        @foreach (var volInfo in clusterVm.Volumes)
+        {
+            var escapedVol = Uri.EscapeDataString(volInfo.VolumeName);
+            <section id="volume-@escapedVol" class="mb-4">
+                <h5>Volume: @volInfo.VolumeName</h5>
+
+                @if (!volInfo.OrphanedSnapshots.Any())
+                {
+                    <p><em>None for this volume.</em></p>
+                }
+                else
+                {
+                    <!-- CSRF token for this volume's snapshot table -->
+                    <form id="csrf-form-snap-@escapedVol">
+                        @Html.AntiForgeryToken()
+                    </form>
+
+                    <table class="table table-sm" id="snapshot-table-@escapedVol">
+                        <thead>
+                            <tr>
+                                <th>Snapshot</th>
+                                <th>In‐Use VMs</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var snap in volInfo.OrphanedSnapshots)
                             {
-                                <li>@vm.Name (@vm.Id) on @vm.HostName</li>
+                                <tr data-snapshot="@snap.SnapshotName" data-volume="@volInfo.VolumeName">
+                                    <td>@snap.SnapshotName</td>
+                                    <td>
+                                        @if (snap.CloneAttachedVms?.Any() == true)
+                                        {
+                                            <ul class="mb-0">
+                                                @foreach (var vm in snap.CloneAttachedVms)
+                                                {
+                                                    <li>@vm.Name (@vm.Id) on @vm.HostName</li>
+                                                }
+                                            </ul>
+                                        }
+                                        else
+                                        {
+                                            <em>None</em>
+                                        }
+                                    </td>
+                                    <td>
+                                        <button type="button" class="btn btn-sm btn-danger snapshot-delete-btn">
+                                            🗑 Delete
+                                        </button>
+                                    </td>
+                                </tr>
                             }
-                        </ul>
-                    </td>
-                </tr>
-            }
-        </tbody>
-    </table>
-}
-
-<hr />
-
-<h4>Orphaned Clones</h4>
-@if (!Model.Orphaned.Any())
-{
-    <p id="no-orphans"><em>None.</em></p>
-}
-else
-{
-    <form id="csrf-form">
-        @Html.AntiForgeryToken()
-    </form>
-
-    <table class="table table-sm" id="orphaned-table">
-        <thead>
-            <tr><th>Volume</th><th>Node</th><th>Action</th></tr>
-        </thead>
-        <tbody>
-            @foreach (var item in Model.Orphaned)
-            {
-                <tr data-volume="@item.VolumeName" data-ip="@item.MountIp">
-                    <td>@item.VolumeName</td>
-                    <td>@item.MountIp</td>
-                    <td>
-                        <button type="button" class="btn btn-sm btn-danger cleanup-btn">
-                            💣 Delete
-                        </button>
-                    </td>
-                </tr>
-            }
-        </tbody>
-    </table>
+                        </tbody>
+                    </table>
+                }
+            </section>
+        }
+    </section>
 }
 
 @section Scripts {
     <script>
+        // Delete handler for “Orphaned Clones → Cleanup”
         document.querySelectorAll(".cleanup-btn").forEach(button => {
-            button.addEventListener("click", async function () {
-                const row = button.closest("tr");
-                const volumeName = row.dataset.volume;
-                const mountIp = row.dataset.ip;
+            button.addEventListener("click", async () => {
+                const row       = button.closest("tr");
+                const volume    = row.dataset.volume;
+                const mountIp   = row.dataset.ip;
+                const section   = row.closest("section[id^='cluster-']");
+                const token     = section.querySelector("form input[name='__RequestVerificationToken']").value;
 
-                const token = document.querySelector("#csrf-form input[name='__RequestVerificationToken']")?.value;
-
-                button.disabled = true;
+                button.disabled    = true;
                 button.textContent = "⏳ Working...";
 
-                        const response = await fetch('@Url.Action("Cleanup", "Cleanup")', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'RequestVerificationToken': token
-            },
-            body: new URLSearchParams({
-                volumeName: volumeName,
-                mountIp: mountIp
-            })
-        }).catch(err => {
-            alert("Network error: " + err.message);
-            button.disabled = false;
-            button.textContent = "💣 Delete";
-        });
+                const response = await fetch('@Url.Action("Cleanup", "Cleanup")', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'RequestVerificationToken': token
+                    },
+                    body: new URLSearchParams({
+                        volumeName: volume,
+                        mountIp:    mountIp
+                    })
+                }).catch(err => {
+                    alert("Network error: " + err.message);
+                    button.disabled    = false;
+                    button.textContent = "💣 Delete";
+                });
 
-                if (response.ok) {
+                if (response && response.ok) {
                     row.remove();
-                    if (document.querySelectorAll("#orphaned-table tbody tr").length === 0) {
-                        document.getElementById("orphaned-table").remove();
+                    // If that was the last row in this table:
+                    const table = section.querySelector("#orphaned-table-" + section.id.replace("cluster-", ""));
+                    if (!table.querySelectorAll("tbody tr").length) {
+                        table.remove();
                         const marker = document.createElement("p");
-                        marker.id = "no-orphans";
+                        marker.id        = "no-orphans-" + section.id.replace("cluster-", "");
                         marker.innerHTML = "<em>None.</em>";
-                        document.querySelector("hr").insertAdjacentElement("afterend", marker);
+                        section.querySelector("hr").insertAdjacentElement("afterend", marker);
                     }
                 } else {
-                    button.disabled = false;
+                    button.disabled    = false;
                     button.textContent = "💣 Delete";
                     const error = await response.text();
-                    alert("Failed to delete volume.\n\n" + error);
+                    alert("Failed to delete clone.\n\n" + error);
+                }
+            });
+        });
+
+        // Delete handler for “Orphaned Snapshots → CleanupSnapshot”
+        document.querySelectorAll(".snapshot-delete-btn").forEach(button => {
+            button.addEventListener("click", async () => {
+                const row          = button.closest("tr");
+                const snapshotName = row.dataset.snapshot;
+                const volumeName   = row.dataset.volume;
+                const escapedVol   = encodeURIComponent(volumeName);
+                const section      = row.closest("section[id^='volume-']");
+                const token        = section.querySelector("form input[name='__RequestVerificationToken']").value;
+
+                button.disabled    = true;
+                button.textContent = "⏳ Working...";
+
+                const response = await fetch('@Url.Action("CleanupSnapshot", "Cleanup")', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'RequestVerificationToken': token
+                    },
+                    body: new URLSearchParams({
+                        volumeName:   volumeName,
+                        snapshotName: snapshotName
+                    })
+                }).catch(err => {
+                    alert("Network error: " + err.message);
+                    button.disabled    = false;
+                    button.textContent = "🗑 Delete";
+                });
+
+                if (response && response.ok) {
+                    row.remove();
+                    // If that was the last row in this snapshot table:
+                    const table = section.querySelector("#snapshot-table-" + escapedVol);
+                    if (!table.querySelectorAll("tbody tr").length) {
+                        table.remove();
+                        const marker = document.createElement("p");
+                        marker.id        = "no-snapshots-" + escapedVol;
+                        marker.innerHTML = "<em>None.</em>";
+                        section.insertAdjacentElement("beforeend", marker);
+                    }
+                } else {
+                    button.disabled    = false;
+                    button.textContent = "🗑 Delete";
+                    const error = await response.text();
+                    alert("Failed to delete snapshot.\n\n" + error);
                 }
             });
         });

@@ -33,12 +33,10 @@ logging
 More logging add categories and sorting, scavange with janitor
 extra verifications
 
-Missing snapshots?
-
-
 
 Done.
-Fixed timezone on debian
+Added Orphaned snapshots
+Fixed timezone on debian, again and again
 Fixed edit schedule again
 Disabled clean orpahned snapshots from primarey storage
 Added rename files when doing an inplace restore.

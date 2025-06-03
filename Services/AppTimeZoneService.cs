@@ -1,7 +1,6 @@
 ﻿using Microsoft.Extensions.Options;
 using BareProx.Models;
 using TimeZoneConverter;
-using System.Runtime.InteropServices;
 
 namespace BareProx.Services
 {
@@ -12,46 +11,52 @@ namespace BareProx.Services
         public AppTimeZoneService(IOptionsMonitor<ConfigSettings> cfg)
             => _cfg = cfg;
 
-        private string NormalizeTimeZoneId(string savedId)
+        private TimeZoneInfo ResolveTimeZone(string ianaCandidate, string windowsCandidate)
         {
-            if (string.IsNullOrWhiteSpace(savedId))
-                return TimeZoneInfo.Local.Id;
-
-            // 1) Try “as‐is” first
-            try
+            // 1) If the IANA field is non‐empty, try it directly
+            if (!string.IsNullOrWhiteSpace(ianaCandidate))
             {
-                var tz = TimeZoneInfo.FindSystemTimeZoneById(savedId);
-                return tz.Id;
-            }
-            catch (TimeZoneNotFoundException)
-            {
-                // 2) If that failed, convert “other style” → OS style
-                string alternate = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-                    ? TZConvert.IanaToWindows(savedId)
-                    : TZConvert.WindowsToIana(savedId);
-
                 try
                 {
-                    var tz2 = TimeZoneInfo.FindSystemTimeZoneById(alternate);
-                    return tz2.Id;
+                    // If this is already a valid IANA on Linux (or Windows),
+                    // TZConvert will return the correct TimeZoneInfo.
+                    return TZConvert.GetTimeZoneInfo(ianaCandidate);
                 }
                 catch
                 {
-                    // 3) Final fallback to local
-                    return TimeZoneInfo.Local.Id;
+                    // If it’s invalid, we’ll fall back and try the Windows one below.
                 }
             }
+
+            // 2) If IANA failed or was empty, try the Windows field
+            if (!string.IsNullOrWhiteSpace(windowsCandidate))
+            {
+                try
+                {
+                    // On Windows this will just do FindSystemTimeZoneById("W. Europe Standard Time").
+                    // On Linux it will convert "W. Europe Standard Time"→"Europe/…"
+                    // and return a valid IANA TimeZoneInfo.
+                    return TZConvert.GetTimeZoneInfo(windowsCandidate);
+                }
+                catch
+                {
+                    // If that also fails, we fall back to Local.
+                }
+            }
+
+            // 3) If neither worked (both empty/invalid), just use the local machine’s zone
+            return TimeZoneInfo.Local;
         }
 
         public TimeZoneInfo AppTimeZone
         {
             get
             {
-                // Grab the raw string from config
-                var storedId = _cfg.CurrentValue.DefaultTimeZone;
-                // Normalize to an ID that actually exists on this OS
-                var validId = NormalizeTimeZoneId(storedId);
-                return TimeZoneInfo.FindSystemTimeZoneById(validId);
+                var cfgVal = _cfg.CurrentValue;
+                return ResolveTimeZone(
+                    cfgVal.TimeZoneIana,
+                    cfgVal.TimeZoneWindows
+                );
             }
         }
 

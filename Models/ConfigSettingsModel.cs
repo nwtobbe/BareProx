@@ -41,14 +41,30 @@ namespace BareProx.Models
     }
     public class ConfigSettings
     {
-        public string DefaultTimeZone { get; set; } = TimeZoneInfo.Local.Id;
+        // This used to be “DefaultTimeZone”
+        public string TimeZoneWindows { get; set; } = "";
+
+        // New field for IANA names
+        public string TimeZoneIana { get; set; } = "";
+
+        // (…other settings …)
     }
 
     public class ConfigSettingsViewModel
     {
+        // This is what the user actually selects in the dropdown:
+        // the Windows‐style time-zone ID. 
+        // We mark it [Required] so that validation will fail if nothing is chosen.
         [Display(Name = "Time Zone")]
-        [Required]
-        public string TimeZoneId { get; set; }
+        [Required(ErrorMessage = "Please select a time zone.")]
+        public string TimeZoneWindows { get; set; }
+
+        // We also expose an IANA field in the ViewModel, 
+        // but mark it [BindNever] so that it isn’t bound from the form.
+        // Instead, your POST handler will call TZConvert.WindowsToIana(...) 
+        // and fill this in before persisting.
+        [BindNever]
+        public string TimeZoneIana { get; set; } = "";
     }
 
     /// <summary>

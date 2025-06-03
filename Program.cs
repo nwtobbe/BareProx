@@ -47,8 +47,11 @@ if (!File.Exists(appSettingsPath))
           "Microsoft.AspNetCore": "Warning"
         }
       },
+          "ConfigSettings": {
+      "TimeZoneWindows": "W. Europe Standard Time",
+      "TimeZoneIana":    "Europe/Berlin"
+    },
       "AllowedHosts": "*",
-      "DefaultTimeZone": "W. Europe Standard Time",
       "CertificateOptions": {
       "OutputFolder": "/config/Certs",
       "PfxFileName": "selfsigned.pfx",
