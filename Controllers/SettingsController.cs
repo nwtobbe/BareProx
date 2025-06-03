@@ -152,7 +152,7 @@ namespace BareProx.Controllers
                 return View("Config", pageVm);
             }
 
-            // 1) Translate Windows → IANA
+            // 1) Translate Windows → IANA (if conversion fails, assume the value is already IANA)
             string ianaId;
             try
             {
@@ -160,7 +160,7 @@ namespace BareProx.Controllers
             }
             catch
             {
-                ianaId = "";
+                ianaId = configVm.TimeZoneWindows.Trim();
             }
 
             // 2) Load (or create) the root JObject
@@ -191,6 +191,7 @@ namespace BareProx.Controllers
             TempData["Success"] = $"Default time zone “{configVm.TimeZoneWindows}” saved.";
             return RedirectToAction(nameof(Config));
         }
+
 
         // ========================================================
         // Helper: rebuild the composite page model (for validation errors)
@@ -268,17 +269,25 @@ namespace BareProx.Controllers
 
                 if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                 {
+                    // On Windows: tzInfo.Id is already a Windows ID
                     windowsId = tzInfo.Id;
                     ianaId = TZConvert.WindowsToIana(tzInfo.Id);
                 }
                 else
                 {
+                    // On Linux: tzInfo.Id is IANA. Try to map; if it fails, just use the IANA as the "value"
                     ianaId = tzInfo.Id;
-                    windowsId = TZConvert.IanaToWindows(tzInfo.Id);
+                    try
+                    {
+                        windowsId = TZConvert.IanaToWindows(tzInfo.Id);
+                    }
+                    catch
+                    {
+                        windowsId = tzInfo.Id;
+                    }
                 }
 
                 var display = $"{tzInfo.DisplayName}  [{ianaId}]";
-
                 return new SelectListItem
                 {
                     Text = display,
@@ -291,6 +300,7 @@ namespace BareProx.Controllers
 
             return items;
         }
+
 
         // Helper: get the local machine’s “Windows” ID (or convert from IANA if on Linux)
         private string GetLocalWindowsId()
