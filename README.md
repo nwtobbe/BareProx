@@ -35,6 +35,7 @@ extra verifications
 
 
 Done.
+Added readd of snapshots magically appearing on secondary.
 Added Orphaned snapshots
 Fixed timezone on debian, again and again
 Fixed edit schedule again

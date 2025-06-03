@@ -62,7 +62,8 @@ namespace BareProx.Services.Background
                 )
                 .ToListAsync(ct);
 
-            foreach (var grp in expired.GroupBy(r => new {
+            foreach (var grp in expired.GroupBy(r => new
+            {
                 r.JobId,
                 r.StorageName,
                 r.SnapshotName,
@@ -165,127 +166,135 @@ namespace BareProx.Services.Background
             var now = DateTime.UtcNow;
 
             // 1) Load all SnapMirror relations up‐front
-            var relations = await db.SnapMirrorRelations
+            var relations = await db.SnapMirrorRelations.ToListAsync(ct);
+
+            // 2) Load every snapshot row you’re currently tracking
+            var trackedSnaps = await db.NetappSnapshots
+                .AsTracking()
                 .ToListAsync(ct);
 
-            // 2) Load every snapshot row you’re tracking
-            var snaps = await db.NetappSnapshots.ToListAsync(ct);
+            // Build a lookup keyed by (JobId, SnapshotName)
+      var trackedLookup = trackedSnaps
+    .ToDictionary(
+        s => new JobSnapKey(s.JobId, s.SnapshotName),
+        s => s,
+        new JobSnapKeyComparer()
+    );
 
-            foreach (var s in snaps)
+            // 3) For each SnapMirror relation (primary→secondary):
+            foreach (var rel in relations)
             {
-                // — primary side —
+                // 3a) List all snapshots on the secondary side
+                var secList = await netapp.GetSnapshotsAsync(
+                    rel.DestinationControllerId,
+                    rel.DestinationVolume);
+
+                // 3b) List all snapshots on the primary side (to set ExistsOnPrimary)
                 var primaryList = await netapp.GetSnapshotsAsync(
-                    s.PrimaryControllerId,
-                    s.PrimaryVolume);
-                s.ExistsOnPrimary = primaryList
-                    .Any(x => x.Equals(s.SnapshotName, StringComparison.OrdinalIgnoreCase));
+                    rel.SourceControllerId,
+                    rel.SourceVolume);
 
-                // — find the relation for this primary volume (if any) —
-                var rel = relations.FirstOrDefault(r =>
-                    r.SourceControllerId == s.PrimaryControllerId &&
-                    r.SourceVolume == s.PrimaryVolume);
-
-                if (rel != null)
+                // 3c) For every snapshot on the secondary volume…
+                foreach (var snapName in secList)
                 {
-                    // 3) List snapshots on the secondary volume
-                    var secList = await netapp.GetSnapshotsAsync(
-                        rel.DestinationControllerId,
-                        rel.DestinationVolume);
+                    // Look up the JobId by querying BackupRecords (which store StorageName+SnapshotName)
+                    var matchingJobId = await db.BackupRecords
+                        .Where(r =>
+                            r.StorageName == rel.SourceVolume
+                            && r.SnapshotName == snapName)
+                        .Select(r => r.JobId)
+                        .FirstOrDefaultAsync(ct);
 
-                    var foundOnSecondary = secList
-                        .Any(x => x.Equals(s.SnapshotName, StringComparison.OrdinalIgnoreCase));
+                    if (matchingJobId == 0)
+                        continue; // no matching BackupRecord → skip
 
-                    if (foundOnSecondary)
+                    // Build a JobSnapKey for dictionary lookup
+                    var key = new JobSnapKey(matchingJobId, snapName);
+
+                    if (trackedLookup.TryGetValue(key, out var existingSnap))
                     {
-                        // 4) Update your DB row with the secondary details
-                        s.ExistsOnSecondary = true;
-                        s.SecondaryControllerId = rel.DestinationControllerId;
-                        s.SecondaryVolume = rel.DestinationVolume;
-                        s.IsReplicated = true;
+                        // 4a) Already tracked → update flags
+                        existingSnap.ExistsOnSecondary = true;
+                        existingSnap.LastChecked = now;
+                        existingSnap.ExistsOnPrimary = primaryList
+                            .Any(x => x.Equals(snapName, StringComparison.OrdinalIgnoreCase));
+
+                        existingSnap.SecondaryControllerId = rel.DestinationControllerId;
+                        existingSnap.SecondaryVolume = rel.DestinationVolume;
+                        existingSnap.IsReplicated = true;
                     }
                     else
                     {
-                        s.ExistsOnSecondary = false;
+                        // 4b) Not yet tracked → insert a new NetappSnapshot
+                        var label = await db.BackupRecords
+                            .Where(r =>
+                                r.JobId == matchingJobId &&
+                                r.StorageName == rel.SourceVolume &&
+                                r.SnapshotName == snapName)
+                            .Select(r => r.RetentionUnit.ToLower())
+                            .FirstOrDefaultAsync(ct)
+                            ?? "not_found";
+
+                        var newSnap = new NetappSnapshot
+                        {
+                            CreatedAt = now,
+                            ExistsOnPrimary = primaryList
+                                .Any(x => x.Equals(snapName, StringComparison.OrdinalIgnoreCase)),
+                            ExistsOnSecondary = true,
+                            IsReplicated = true,
+                            JobId = matchingJobId,
+                            LastChecked = now,
+                            PrimaryControllerId = rel.SourceControllerId,
+                            PrimaryVolume = rel.SourceVolume,
+                            SecondaryControllerId = rel.DestinationControllerId,
+                            SecondaryVolume = rel.DestinationVolume,
+                            SnapmirrorLabel = label,
+                            SnapshotName = snapName
+                        };
+
+                        db.NetappSnapshots.Add(newSnap);
+                        trackedLookup[key] = newSnap;
                     }
                 }
-                else
-                {
-                    // no SnapMirror relation → no secondary
-                    s.ExistsOnSecondary = false;
-                }
-
-                // 5) Always bump your timestamp
-                s.LastChecked = now;
             }
 
+            // 5) Save all updates/inserts at once
             await db.SaveChangesAsync(ct);
         }
 
 
-        /// <summary>
-        /// 3) Delete any orphan snapshots on primary (BP_*) not tracked in NetappSnapshots.
-        /// </summary>
-        private async Task CleanupOrphanPrimarySnapshots(CancellationToken ct)
+
+        private readonly struct JobSnapKey
         {
-            using var scope = _services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var netapp = scope.ServiceProvider.GetRequiredService<INetappService>();
+            public int JobId { get; }
+            public string SnapshotName { get; }
 
-            var primaries = await db.NetappControllers
-                .Where(c => c.IsPrimary)
-                .ToListAsync(ct);
-
-            foreach (var ctrl in primaries)
+            public JobSnapKey(int jobId, string snapshotName)
             {
-                var trackedVolumes = await db.NetappSnapshots
-                    .Where(s => s.PrimaryControllerId == ctrl.Id)
-                    .Select(s => s.PrimaryVolume)
-                    .Distinct()
-                    .ToListAsync(ct);
-
-                foreach (var vol in trackedVolumes)
-                {
-                    var actual = await netapp.GetSnapshotsAsync(ctrl.Id, vol);
-                    var expected = new HashSet<string>(
-                        await db.NetappSnapshots
-                            .Where(s =>
-                                s.PrimaryControllerId == ctrl.Id &&
-                                s.PrimaryVolume == vol)
-                            .Select(s => s.SnapshotName)
-                            .ToListAsync(ct),
-                        StringComparer.OrdinalIgnoreCase);
-
-                    foreach (var snap in actual.Where(n => n.StartsWith("BP_")))
-                    {
-                        if (!expected.Contains(snap))
-                        {
-                            try
-                            {
-                                var del = await netapp.DeleteSnapshotAsync(ctrl.Id, vol, snap);
-                                if (del.Success)
-                                {
-                                    _logger.LogInformation(
-                                        "Deleted orphan primary snapshot {snap} on vol {vol}, ctrl {ctrl}",
-                                        snap, vol, ctrl.Id);
-                                }
-                                else
-                                {
-                                    _logger.LogWarning(
-                                        "Failed deleting orphan {snap} on {vol}, ctrl {ctrl}: {err}",
-                                        snap, vol, ctrl.Id, del.ErrorMessage);
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogError(
-                                    ex,
-                                    "Error deleting orphan snapshot {snap} on {vol}, ctrl {ctrl}",
-                                    snap, vol, ctrl.Id);
-                            }
-                        }
-                    }
-                }
+                JobId = jobId;
+                SnapshotName = snapshotName;
             }
+
+            public override bool Equals(object? obj)
+            {
+                if (obj is not JobSnapKey other) return false;
+                return JobId == other.JobId
+                    && string.Equals(SnapshotName, other.SnapshotName, StringComparison.OrdinalIgnoreCase);
+            }
+
+            public override int GetHashCode()
+                => HashCode.Combine(JobId, SnapshotName?.ToLowerInvariant());
+        }
+
+
+        private class JobSnapKeyComparer : IEqualityComparer<JobSnapKey>
+        {
+            public bool Equals(JobSnapKey x, JobSnapKey y)
+                => x.JobId == y.JobId
+                && string.Equals(x.SnapshotName, y.SnapshotName, StringComparison.OrdinalIgnoreCase);
+
+            public int GetHashCode(JobSnapKey obj)
+                => HashCode.Combine(obj.JobId, obj.SnapshotName?.ToLowerInvariant());
         }
     }
 }
