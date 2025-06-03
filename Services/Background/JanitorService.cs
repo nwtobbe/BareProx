@@ -24,7 +24,7 @@ namespace BareProx.Services.Background
                 {
                     await CleanupExpired(stoppingToken);
                     await TrackNetappSnapshots(stoppingToken);
-                    // await CleanupOrphanPrimarySnapshots(stoppingToken);
+                    await CleanupOrphanedBackupRecords(stoppingToken);
                 }
                 catch (Exception ex)
                 {
@@ -262,7 +262,77 @@ namespace BareProx.Services.Background
             await db.SaveChangesAsync(ct);
         }
 
+        private async Task CleanupOrphanedBackupRecords(CancellationToken ct)
+        {
+            using var scope = _services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var netapp = scope.ServiceProvider.GetRequiredService<INetappService>();
+            var now = DateTime.UtcNow;
 
+            // 1) Load all SnapMirror relations into a lookup
+            var relations = await db.SnapMirrorRelations.ToListAsync(ct);
+            var relLookup = relations.ToDictionary(r => (r.SourceControllerId, r.SourceVolume), r => r);
+
+            // 2) Load all BackupRecords whose retention is still in the future
+            var activeRecs = await db.BackupRecords
+                .Where(r =>
+                    (r.RetentionUnit == "Hours" && r.TimeStamp.AddHours(r.RetentionCount) >= now) ||
+                    (r.RetentionUnit == "Days" && r.TimeStamp.AddDays(r.RetentionCount) >= now) ||
+                    (r.RetentionUnit == "Weeks" && r.TimeStamp.AddDays(r.RetentionCount * 7) >= now)
+                )
+                .ToListAsync(ct);
+
+            var toDeleteRecords = new List<BackupRecord>();
+            var toDeleteJobs = new List<Job>();
+
+            foreach (var rec in activeRecs)
+            {
+                // a) Check primary
+                var primaryList = await netapp.GetSnapshotsAsync(rec.ControllerId, rec.StorageName);
+                bool existsOnPrimary = primaryList
+                    .Any(n => n.Equals(rec.SnapshotName, StringComparison.OrdinalIgnoreCase));
+
+                // b) If not on primary, check secondary (if a relation exists)
+                bool existsOnSecondary = false;
+                if (!existsOnPrimary && relLookup.TryGetValue((rec.ControllerId, rec.StorageName), out var rel))
+                {
+                    var secList = await netapp.GetSnapshotsAsync(
+                        rel.DestinationControllerId,
+                        rel.DestinationVolume);
+
+                    existsOnSecondary = secList
+                        .Any(n => n.Equals(rec.SnapshotName, StringComparison.OrdinalIgnoreCase));
+                }
+
+                // c) If neither primary nor secondary has this snapshot, mark for deletion
+                if (!existsOnPrimary && !existsOnSecondary)
+                {
+                    toDeleteRecords.Add(rec);
+
+                    // If this Job has no other BackupRecords, schedule the Job for deletion too
+                    bool hasOther = await db.BackupRecords
+                        .AnyAsync(r => r.JobId == rec.JobId && r.Id != rec.Id, ct);
+
+                    if (!hasOther)
+                    {
+                        var job = await db.Jobs.FindAsync(new object[] { rec.JobId }, ct);
+                        if (job != null) toDeleteJobs.Add(job);
+                    }
+                }
+            }
+
+            // 3) Delete them all in one batch
+            if (toDeleteRecords.Count > 0)
+            {
+                db.BackupRecords.RemoveRange(toDeleteRecords);
+                db.Jobs.RemoveRange(toDeleteJobs);
+                await db.SaveChangesAsync(ct);
+
+                _logger.LogInformation(
+                    "Removed {RecordCount} orphaned BackupRecords (and {JobCount} Jobs) not found on primary or secondary",
+                    toDeleteRecords.Count, toDeleteJobs.Count);
+            }
+        }
 
         private readonly struct JobSnapKey
         {
