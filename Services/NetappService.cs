@@ -1116,6 +1116,193 @@ namespace BareProx.Services
             return result;
         }
 
+        /// <summary>
+        /// Recursively moves and renames all files under /images/{oldvmid} to /images/{newvmid} on the specified NetApp volume.
+        /// Only files with oldvmid in their name are renamed; directory structure is preserved.
+        /// </summary>
+        public async Task<bool> MoveAndRenameAllVmFilesAsync(
+           string volumeName,
+           int controllerId,
+           string oldvmid,
+           string newvmid)
+        {
+            // 1. Lookup controller and volume UUID
+            var controller = await _context.NetappControllers.FindAsync(controllerId);
+            if (controller == null)
+            {
+                _logger.LogError("NetApp controller not found for ID {ControllerId}", controllerId);
+                return false;
+            }
+            var httpClient = CreateAuthenticatedClient(controller, out var baseUrl);
+
+            var lookupUrl = $"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volumeName)}";
+            var lookupResp = await httpClient.GetAsync(lookupUrl);
+            if (!lookupResp.IsSuccessStatusCode)
+            {
+                _logger.LogError("Failed to lookup volume {VolumeName} for rename: {Status}", volumeName, lookupResp.StatusCode);
+                return false;
+            }
+
+            using var lookupDoc = JsonDocument.Parse(await lookupResp.Content.ReadAsStringAsync());
+            var lookupRecords = lookupDoc.RootElement.GetProperty("records");
+            if (lookupRecords.GetArrayLength() == 0)
+            {
+                _logger.LogError("Volume '{VolumeName}' not found on controller.", volumeName);
+                return false;
+            }
+            var volEntry = lookupRecords[0];
+            var volumeUuid = volEntry.GetProperty("uuid").GetString()!;
+
+
+            // 2. Ensure the destination directory exists: /images/{newvmid}
+            var folderPath = $"images/{newvmid}";
+            var encodedFolderPath = Uri.EscapeDataString(folderPath); // e.g. images%2F113
+            var createDirUrl = $"{baseUrl}storage/volumes/{volumeUuid}/files/{encodedFolderPath}";
+            var createDirBody = new { type = "directory", unix_permissions = 0 };
+            var createDirContent = new StringContent(JsonSerializer.Serialize(createDirBody), Encoding.UTF8, "application/json");
+
+            var createDirResp = await httpClient.PostAsync(createDirUrl, createDirContent);
+            if (createDirResp.IsSuccessStatusCode)
+            {
+                _logger.LogInformation("Created directory {FolderPath}", folderPath);
+            }
+            else
+            {
+                var err = await createDirResp.Content.ReadAsStringAsync();
+                // If it already exists, just log and continue
+                if (err.Contains("\"error\"", StringComparison.OrdinalIgnoreCase) && !err.Contains("already exists", StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogWarning("Failed to create directory {FolderPath}: {Status} {Body}", folderPath, createDirResp.StatusCode, err);
+                }
+            }
+
+            // 3. Collect expected filenames and move files recursively
+            var expectedFiles = new List<string>();
+
+            async Task<bool> MoveFilesRecursive(string oldFolder)
+            {
+                var listUrl = $"{baseUrl}storage/volumes/{volumeUuid}/files/{Uri.EscapeDataString(oldFolder.TrimStart('/'))}";
+                var listResp = await httpClient.GetAsync(listUrl);
+                if (!listResp.IsSuccessStatusCode)
+                {
+                    _logger.LogError("Failed to list NetApp folder {Folder}: {Status}", oldFolder, listResp.StatusCode);
+                    return false;
+                }
+
+                var json = await listResp.Content.ReadAsStringAsync();
+                using var doc = JsonDocument.Parse(json);
+                if (!doc.RootElement.TryGetProperty("records", out var records) || records.ValueKind != JsonValueKind.Array)
+                    return true; // nothing to do
+
+                foreach (var rec in records.EnumerateArray())
+                {
+                    var name = rec.GetProperty("name").GetString();
+                    var type = rec.GetProperty("type").GetString(); // "file" or "directory"
+                    if (string.IsNullOrEmpty(name) || name == "." || name == "..")
+                        continue;
+
+                    if (type == "directory")
+                    {
+                        var subOldPath = $"{oldFolder}/{name}";
+                        var ok = await MoveFilesRecursive(subOldPath);
+                        if (!ok)
+                            return false;
+                    }
+                    else if (type == "file")
+                    {
+                        if (!name.Contains(oldvmid))
+                            continue;
+
+                        var oldFilePath = $"{oldFolder}/{name}";
+                        var newFileName = name.Replace(oldvmid, newvmid);
+                        var newFilePath = oldFilePath
+                            .Replace($"{oldvmid}/", $"{newvmid}/")
+                            .Replace(name, newFileName);
+
+                        // Remove any leading slash
+                        if (oldFilePath.StartsWith("/")) oldFilePath = oldFilePath.Substring(1);
+                        if (newFilePath.StartsWith("/")) newFilePath = newFilePath.Substring(1);
+
+                        expectedFiles.Add(newFileName);
+
+                        var moveUrl = $"{baseUrl}storage/file/moves";
+                        var moveBody = new
+                        {
+                            files_to_move = new
+                            {
+                                sources = new[] {
+                            new {
+                                path = oldFilePath,
+                                volume = new { name = volumeName, uuid = volumeUuid }
+                            }
+                        },
+                                destinations = new[] {
+                            new {
+                                path = newFilePath,
+                                volume = new { name = volumeName, uuid = volumeUuid }
+                            }
+                        }
+                            }
+                        };
+                        var moveContent = new StringContent(JsonSerializer.Serialize(moveBody), Encoding.UTF8, "application/json");
+                        var moveResp = await httpClient.PostAsync(moveUrl, moveContent);
+                        var moveErrBody = await moveResp.Content.ReadAsStringAsync();
+                        if (!moveResp.IsSuccessStatusCode)
+                        {
+                            _logger.LogError("Failed to move NetApp file {OldPath} → {NewPath}: {Status} {Body}",
+                                oldFilePath, newFilePath, moveResp.StatusCode, moveErrBody);
+                            return false;
+                        }
+                        _logger.LogInformation("Moved NetApp file: {OldPath} → {NewPath}", oldFilePath, newFilePath);
+                    }
+                }
+                return true;
+            }
+
+            var moveResult = await MoveFilesRecursive($"/images/{oldvmid}");
+
+            // 4. Poll for the files to appear in the destination folder
+            async Task<bool> WaitForFilesInDestinationAsync(string destFolder, List<string> filesToCheck, int timeoutSeconds = 20)
+            {
+                var encodedDestFolder = Uri.EscapeDataString(destFolder);
+                var url = $"{baseUrl}storage/volumes/{volumeUuid}/files/{encodedDestFolder}";
+
+                for (int i = 0; i < timeoutSeconds; i++)
+                {
+                    var resp = await httpClient.GetAsync(url);
+                    if (resp.IsSuccessStatusCode)
+                    {
+                        var content = await resp.Content.ReadAsStringAsync();
+                        using var doc = JsonDocument.Parse(content);
+                        if (doc.RootElement.TryGetProperty("records", out var records) && records.ValueKind == JsonValueKind.Array)
+                        {
+                            var foundFiles = new HashSet<string>(
+                                records.EnumerateArray()
+                                       .Where(r => r.GetProperty("type").GetString() == "file")
+                                       .Select(r => r.GetProperty("name").GetString() ?? "")
+                            );
+                            if (filesToCheck.All(f => foundFiles.Contains(f)))
+                            {
+                                _logger.LogInformation("All files found in destination after {Seconds}s", i + 1);
+                                return true;
+                            }
+                        }
+                    }
+                    await Task.Delay(1000);
+                }
+
+                _logger.LogWarning(
+                    "Not all files appeared in destination folder {DestFolder} after {Timeout}s: {Files}",
+                    destFolder, timeoutSeconds, string.Join(",", filesToCheck));
+                return false;
+            }
+
+            var waitResult = await WaitForFilesInDestinationAsync($"images/{newvmid}", expectedFiles);
+            return moveResult && waitResult;
+        }
+
+
+
         // ------ Helper Functions ------
 
 

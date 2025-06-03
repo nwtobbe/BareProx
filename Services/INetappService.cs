@@ -16,6 +16,12 @@
         /// Tell NetApp to update (resync) the SnapMirror relationship identified by uuid.
         /// </summary>
         Task<bool> TriggerSnapMirrorUpdateAsync(string relationshipUuid);
+        Task<bool> MoveAndRenameAllVmFilesAsync(
+            string volumeName,
+            int controllerId,
+            string oldvmid,
+            string newvmid);
+
 
         /// <summary>
         /// Fetch the current state of a single SnapMirror relationship by its uuid.

@@ -16,7 +16,7 @@ apt-get install sudo ca-certificates curl gnupg lsb-release
 
 
 # ---------------------- Fix
-
+Fix retention
 Authentication failed error page?
 Add schedules + run
 
@@ -32,12 +32,14 @@ logging
 More logging add categories and sorting, scavange with janitor
 extra verifications
 
-Add rename files via api ontap to restore
 Missing snapshots?
 
 
 
 Done.
+Disabled clean orpahned snapshots from primarey storage
+Added rename files when doing an inplace restore.
+Fixed Restore, cancel
 Fixed edit storage on netapp, return to correct page when clicking on save
 Fixed view under edit and create sched.
 Fixed account page

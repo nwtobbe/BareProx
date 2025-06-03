@@ -61,49 +61,69 @@ namespace BareProx.Controllers
              string sortColumn = "StartedAt",
              bool asc = false)
         {
-            // 1) Grab raw job entities
-            var query = _context.Jobs.AsNoTracking().AsQueryable();
+            // 1) Start with an IQueryable<Job>—no ConvertUtcToApp calls here
+            var query = _context.Jobs
+                .AsNoTracking();
 
-            // 2) Project to your view model
-            var jobs = query
+            // 2) Apply filters (still purely on database‐side properties)
+            if (!string.IsNullOrWhiteSpace(status))
+                query = query.Where(j => j.Status == status);
+
+            if (!string.IsNullOrWhiteSpace(search))
+                query = query.Where(j =>
+                    j.Type.Contains(search) ||
+                    j.RelatedVm.Contains(search));
+
+            // 3) Apply sorting ON THE UTC COLUMNS (StartedAt / CompletedAt)
+            //    We cannot sort on StartedAtLocal, because that requires ConvertUtcToApp.
+            query = (sortColumn, asc) switch
+            {
+                ("Type", true) => query.OrderBy(j => j.Type),
+                ("Type", false) => query.OrderByDescending(j => j.Type),
+                ("RelatedVm", true) => query.OrderBy(j => j.RelatedVm),
+                ("RelatedVm", false) => query.OrderByDescending(j => j.RelatedVm),
+                ("Status", true) => query.OrderBy(j => j.Status),
+                ("Status", false) => query.OrderByDescending(j => j.Status),
+                ("CompletedAt", true) => query.OrderBy(j => j.CompletedAt),
+                ("CompletedAt", false) => query.OrderByDescending(j => j.CompletedAt),
+                // Default: sort by StartedAt UTC
+                _ => asc
+                         ? query.OrderBy(j => j.StartedAt)
+                         : query.OrderByDescending(j => j.StartedAt)
+            };
+
+            // 4) Fetch the Job entities (with only the needed columns—no conversion yet)
+            var rawJobs = await query
+                .Select(j => new
+                {
+                    j.Id,
+                    j.Type,
+                    j.RelatedVm,
+                    j.Status,
+                    j.ErrorMessage,
+                    StartedAtUtc = j.StartedAt,
+                    CompletedAtUtc = j.CompletedAt
+                })
+                .ToListAsync();
+
+            // 5) Now that we’re in‐memory, project into JobViewModel and convert timestamps
+            var vmList = rawJobs
                 .Select(j => new JobViewModel
                 {
                     Id = j.Id,
                     Type = j.Type,
                     RelatedVm = j.RelatedVm,
                     Status = j.Status,
-                    StartedAtLocal = j.StartedAt,
-                    CompletedAtLocal = j.CompletedAt,
-                    ErrorMessage = j.ErrorMessage
-                });
+                    ErrorMessage = j.ErrorMessage,
+                    StartedAtLocal = _tz.ConvertUtcToApp(j.StartedAtUtc),
+                    CompletedAtLocal = j.CompletedAtUtc.HasValue
+                                            ? _tz.ConvertUtcToApp(j.CompletedAtUtc.Value)
+                                            : (DateTime?)null
+                })
+                .ToList();
 
-            // 3) Filter
-            if (!string.IsNullOrWhiteSpace(status))
-                jobs = jobs.Where(j => j.Status == status);
-            if (!string.IsNullOrWhiteSpace(search))
-                jobs = jobs.Where(j =>
-                    j.Type.Contains(search) ||
-                    j.RelatedVm.Contains(search));
-
-            // 4) Sort
-            jobs = (sortColumn, asc) switch
-            {
-                ("Type", true) => jobs.OrderBy(j => j.Type),
-                ("Type", false) => jobs.OrderByDescending(j => j.Type),
-                ("RelatedVm", true) => jobs.OrderBy(j => j.RelatedVm),
-                ("RelatedVm", false) => jobs.OrderByDescending(j => j.RelatedVm),
-                ("Status", true) => jobs.OrderBy(j => j.Status),
-                ("Status", false) => jobs.OrderByDescending(j => j.Status),
-                ("CompletedAt", true) => jobs.OrderBy(j => j.CompletedAtLocal),
-                ("CompletedAt", false) => jobs.OrderByDescending(j => j.CompletedAtLocal),
-                _ => asc
-                                         ? jobs.OrderBy(j => j.StartedAtLocal)
-                                         : jobs.OrderByDescending(j => j.StartedAtLocal)
-            };
-
-            var list = await jobs.ToListAsync();
-
-            return PartialView("_JobsTable", list);
+            return PartialView("_JobsTable", vmList);
         }
+
     }
 }

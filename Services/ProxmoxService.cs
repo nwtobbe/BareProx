@@ -564,11 +564,12 @@ namespace BareProx.Services
 
 
         public async Task<bool> RestoreVmFromConfigAsync(
-      string originalConfigJson,
-      string hostAddress,
-      string newVmName,
-      string cloneStorageName,
-      bool startDisconnected)
+            string originalConfigJson,
+            string hostAddress,
+            string newVmName,
+            string cloneStorageName,
+            int ControllerId,
+            bool startDisconnected)
         {
             // 1) Parse and validate input JSON
             using var rootDoc = JsonDocument.Parse(originalConfigJson);
@@ -633,49 +634,63 @@ namespace BareProx.Services
             }
 
             // 8) Remap **all** disks to our clone storage
-            var diskRegex = new Regex(@"^(scsi|virtio|sata|ide)\d+$", RegexOptions.IgnoreCase);
+                
+            // 8a) Extract old VMID from config (uses payload)
+            string oldVmid = ExtractOldVmidFromConfig(payload);
 
-            // grab every key in payload matching diskX (disk0, disk1…disk99, etc.)
-            var diskKeys = payload.Keys
-                .Where(k => diskRegex.IsMatch(k))
-                .OrderBy(k =>
-                {
-                    // sort by type then index so scsi0, scsi1…virtio0, virtio1… etc.
-                    var m = diskRegex.Match(k);
-                    var type = m.Groups[1].Value.ToLower();
-                    var idx = int.Parse(Regex.Match(k, @"\d+$").Value);
-                    // weight types alphabetically: scsi < sata < virtio < ide
-                    var typeOrder = type switch
-                    {
-                        "scsi" => 0,
-                        "sata" => 1,
-                        "virtio" => 2,
-                        "ide" => 3,
-                        _ => 4
-                    };
-                    return typeOrder * 100 + idx;
-                })
-                .ToList();
+            // 8b) Rename all files/folders in storage
+            await _netappService.MoveAndRenameAllVmFilesAsync(
+                volumeName: cloneStorageName,
+                controllerId: ControllerId,
+                oldvmid: oldVmid,
+                newvmid: vmid);
 
-            foreach (var diskKey in diskKeys)
-            {
-                var diskVal = payload[diskKey];
-                if (!diskVal.Contains(":"))
-                    continue;
+            // 8c) Update disk paths in config payload
+            UpdateDiskPathsInConfig(payload, oldVmid, vmid, cloneStorageName);
 
-                // diskVal = e.g. "local:vm-100-disk-0.qcow2,discard=on,iothread=1"
-                var parts = diskVal.Split(new[] { ':' }, 2);
-                var diskDef = parts[1];                   // "vm-100-disk-0.qcow2,discard=on,iothread=1"
-                var sub = diskDef.Split(new[] { ',' }, 2);
+            //var diskRegex = new Regex(@"^(scsi|virtio|sata|ide)\d+$", RegexOptions.IgnoreCase);
 
-                var filenameWithExt = sub[0];             // "vm-100-disk-0.qcow2"
-                var options = sub.Length > 1
-                              ? "," + sub[1]              // ",discard=on,iothread=1"
-                              : string.Empty;
+            //// grab every key in payload matching diskX (disk0, disk1…disk99, etc.)
+            //var diskKeys = payload.Keys
+            //    .Where(k => diskRegex.IsMatch(k))
+            //    .OrderBy(k =>
+            //    {
+            //        // sort by type then index so scsi0, scsi1…virtio0, virtio1… etc.
+            //        var m = diskRegex.Match(k);
+            //        var type = m.Groups[1].Value.ToLower();
+            //        var idx = int.Parse(Regex.Match(k, @"\d+$").Value);
+            //        // weight types alphabetically: scsi < sata < virtio < ide
+            //        var typeOrder = type switch
+            //        {
+            //            "scsi" => 0,
+            //            "sata" => 1,
+            //            "virtio" => 2,
+            //            "ide" => 3,
+            //            _ => 4
+            //        };
+            //        return typeOrder * 100 + idx;
+            //    })
+            //    .ToList();
 
-                // remap to cloneStorageName, preserving extension and options
-                payload[diskKey] = $"{cloneStorageName}:{filenameWithExt}{options}";
-            }
+            //foreach (var diskKey in diskKeys)
+            //{
+            //    var diskVal = payload[diskKey];
+            //    if (!diskVal.Contains(":"))
+            //        continue;
+
+            //    // diskVal = e.g. "local:vm-100-disk-0.qcow2,discard=on,iothread=1"
+            //    var parts = diskVal.Split(new[] { ':' }, 2);
+            //    var diskDef = parts[1];                   // "vm-100-disk-0.qcow2,discard=on,iothread=1"
+            //    var sub = diskDef.Split(new[] { ',' }, 2);
+
+            //    var filenameWithExt = sub[0];             // "vm-100-disk-0.qcow2"
+            //    var options = sub.Length > 1
+            //                  ? "," + sub[1]              // ",discard=on,iothread=1"
+            //                  : string.Empty;
+
+            //    // remap to cloneStorageName, preserving extension and options
+            //    payload[diskKey] = $"{cloneStorageName}:{filenameWithExt}{options}";
+            //}
 
             // 9) Ensure a storage parameter is present
             if (!payload.ContainsKey("storage"))
@@ -703,6 +718,73 @@ namespace BareProx.Services
 
 
         }
+
+        private string ExtractOldVmidFromConfig(Dictionary<string, string> payload)
+        {
+            var diskRegex = new Regex(@"^(scsi|virtio|sata|ide)\d+$", RegexOptions.IgnoreCase);
+            foreach (var diskKey in payload.Keys.Where(k => diskRegex.IsMatch(k)))
+            {
+                var diskVal = payload[diskKey];
+                if (!diskVal.Contains(":"))
+                    continue;
+
+                var parts = diskVal.Split(new[] { ':' }, 2);
+                if (parts.Length < 2)
+                    continue;
+
+                var diskPath = parts[1]; // e.g. "101/vm-101-disk-0.qcow2,discard=on,size=32G,ssd=1"
+                                         // Look for pattern /{vmid}/vm-{vmid}- or just vm-{vmid}- in the filename
+                var match = Regex.Match(diskPath, @"(\d+)/vm-(\d+)-");
+                if (match.Success)
+                    return match.Groups[2].Value; // VMID from "vm-101-disk-0.qcow2"
+                                                  // fallback: look for just vm-{vmid}- in the string
+                match = Regex.Match(diskPath, @"vm-(\d+)-");
+                if (match.Success)
+                    return match.Groups[1].Value;
+            }
+            throw new Exception("Could not determine old VMID from disk configuration.");
+        }
+        private void UpdateDiskPathsInConfig(
+           Dictionary<string, string> payload,
+           string oldVmid,
+           string newVmid,
+           string cloneStorageName)
+        {
+            var diskRegex = new Regex(@"^(scsi|virtio|sata|ide)\d+$", RegexOptions.IgnoreCase);
+
+            var diskKeys = payload.Keys
+                .Where(k => diskRegex.IsMatch(k))
+                .ToList();
+
+            foreach (var diskKey in diskKeys)
+            {
+                var diskVal = payload[diskKey];
+                if (!diskVal.Contains(":"))
+                    continue;
+
+                var parts = diskVal.Split(new[] { ':' }, 2);
+                if (parts.Length < 2)
+                    continue;
+
+                var diskDef = parts[1];
+                var sub = diskDef.Split(new[] { ',' }, 2);
+
+                var pathWithFilename = sub[0]; // e.g. "101/vm-101-disk-0.qcow2"
+                var options = sub.Length > 1 ? "," + sub[1] : string.Empty;
+
+                // Update both folder and filename
+                var newPathWithFilename = pathWithFilename
+                    .Replace($"{oldVmid}/", $"{newVmid}/")
+                    .Replace($"vm-{oldVmid}-", $"vm-{newVmid}-");
+
+                // Handle case with no slashes (old VMID is just in filename)
+                if (!newPathWithFilename.Contains($"/{newVmid}/"))
+                    newPathWithFilename = newPathWithFilename.Replace($"vm-{oldVmid}-", $"vm-{newVmid}-");
+
+                payload[diskKey] = $"{cloneStorageName}:{newPathWithFilename}{options}";
+            }
+        }
+
 
         public async Task<bool> RestoreVmFromConfigWithOriginalIdAsync(
     string originalConfigJson,

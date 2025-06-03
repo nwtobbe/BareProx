@@ -161,6 +161,7 @@ namespace BareProx.Services
                             targetHost.HostAddress,
                             model.NewVmName,
                             cloneName,
+                            model.ControllerId,
                             model.StartDisconnected);
                     }
 

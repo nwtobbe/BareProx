@@ -38,7 +38,7 @@ namespace BareProx.Services.Background
             // Unbounded channel to hold work items
             _queue = Channel.CreateUnbounded<Func<CancellationToken, Task>>(new UnboundedChannelOptions
             {
-                SingleReader = true,
+                SingleReader = false,
                 SingleWriter = false
             });
         }
@@ -77,24 +77,59 @@ namespace BareProx.Services.Background
         {
             _logger.LogInformation("Queued Background Service is starting.");
 
+            // Allow up to 4 concurrent background jobs
+            var concurrencyLimiter = new SemaphoreSlim(4, 4);
+            var runningTasks = new List<Task>();
+
             while (!stoppingToken.IsCancellationRequested)
             {
+                Func<CancellationToken, Task> workItem;
                 try
                 {
-                    var workItem = await _taskQueue.DequeueAsync(stoppingToken);
-                    await workItem(stoppingToken);
+                    workItem = await _taskQueue.DequeueAsync(stoppingToken);
                 }
                 catch (OperationCanceledException)
                 {
                     break;
                 }
-                catch (Exception ex)
+
+                // Wait for a free “slot” before starting the next job
+                await concurrencyLimiter.WaitAsync(stoppingToken);
+
+                var task = Task.Run(async () =>
                 {
-                    _logger.LogError(ex, "Error occurred executing background work item.");
-                }
+                    try
+                    {
+                        await workItem(stoppingToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error occurred executing background work item.");
+                    }
+                    finally
+                    {
+                        concurrencyLimiter.Release();
+                    }
+                }, stoppingToken);
+
+                runningTasks.Add(task);
+
+                // Clean up completed tasks so the list doesn’t grow indefinitely
+                runningTasks.RemoveAll(t => t.IsCompleted);
+            }
+
+            // Once we’ve asked to stop, wait for any in-flight workItems to finish
+            try
+            {
+                await Task.WhenAll(runningTasks);
+            }
+            catch
+            {
+                // All exceptions were already logged inside the Task.Run above.
             }
 
             _logger.LogInformation("Queued Background Service is stopping.");
         }
+
     }
 }
