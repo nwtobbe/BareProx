@@ -30,7 +30,7 @@ RUN dotnet publish \
         -c Release \
         -r linux-x64 \
         --self-contained true \
-        -p:PublishTrimmed=true \
+        -p:PublishTrimmed=false \
         -o /app/publish
 
 ########################################
