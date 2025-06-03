@@ -24,7 +24,7 @@ namespace BareProx.Services.Background
                 {
                     await CleanupExpired(stoppingToken);
                     await TrackNetappSnapshots(stoppingToken);
-                    await CleanupOrphanedBackupRecords(stoppingToken);
+                    //await CleanupOrphanedBackupRecords(stoppingToken);
                 }
                 catch (Exception ex)
                 {
