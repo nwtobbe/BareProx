@@ -200,7 +200,39 @@
           var replicable   = (document.getElementById('replicableVolumes')||{value:''}).value.split(',');
           var storageSel   = form?.querySelector('select[name="StorageName"]');
           var snapLabel    = document.getElementById('snapmirrorLabel');
+                  // ── Helper: show/hide the Proxmox-Snapshot subsection ────────────
+        function toggleProxmoxOptions() {
+          if (!proxOpts || !proxSnapCb) return;
+          if (proxSnapCb.checked) {
+            proxOpts.classList.remove('d-none');
+          } else {
+            proxOpts.classList.add('d-none');
+            // Uncheck “WithMemory” if hidden
+            var withMem = document.getElementById('WithMemory');
+            if (withMem) withMem.checked = false;
+          }
+        }
 
+              // Helper to show/hide “Replicate to Secondary” based on current storage
+        function toggleReplicateBox() {
+          if (!storageSel || !replicateBox) return;
+          var val = storageSel.value;
+          if (replicable.indexOf(val) !== -1) {
+            replicateBox.classList.remove('d-none');
+          } else {
+            replicateBox.classList.add('d-none');
+            var cb = replicateBox.querySelector('input');
+            if (cb) cb.checked = false;
+          }
+        }
+
+        // Wire up the storage change event
+        if (storageSel) {
+          storageSel.addEventListener('change', toggleReplicateBox);
+        }
+
+        // ── INITIALIZE ON PAGE LOAD ─────────────────────────
+        toggleReplicateBox(); // Ensure the replicate checkbox is shown/hidden right away
           // ── Name field: only hook if it exists ────────────────────────
           if (nameInput) {
             nameInput.addEventListener('keypress', function(e) {

@@ -10,10 +10,6 @@ using System.Threading.Tasks;
     {
         return View();
     }
-    public IActionResult Privacy()
-    {
-        return View();
-    }
     public IActionResult About()
     {
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString();

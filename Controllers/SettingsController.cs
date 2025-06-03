@@ -7,9 +7,11 @@ using Microsoft.Extensions.Hosting;
 using Newtonsoft.Json.Linq;
 using BareProx.Models;
 using Microsoft.EntityFrameworkCore;
+using TimeZoneConverter;
 
 using DbConfigModel = BareProx.Models.DatabaseConfigModels;
 using Microsoft.AspNetCore.Mvc.Rendering;
+using System.Runtime.InteropServices;
 
 
 namespace BareProx.Controllers
@@ -74,10 +76,69 @@ namespace BareProx.Controllers
             {
                 cfg = new JObject();
             }
+            // 1) Read stored time zone (string), or null if not present
+            var storedTzId = (string)cfg["DefaultTimeZone"];
 
-            // 2) Read stored time zone, or fallback to system local
-            var currentTz = (string)cfg["DefaultTimeZone"]
-                            ?? TimeZoneInfo.Local.Id;
+            TimeZoneInfo tz = null;
+
+            if (!string.IsNullOrWhiteSpace(storedTzId))
+            {
+                // Try to interpret exactly as‐is
+                try
+                {
+                    tz = TimeZoneInfo.FindSystemTimeZoneById(storedTzId);
+                }
+                catch (TimeZoneNotFoundException)
+                {
+                    // If that fails, try to convert Windows->IANA or IANA->Windows and retry
+                    string altId = null;
+
+                    if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                    {
+                        // We’re on Windows: maybe the stored ID is IANA, so convert to Windows
+                        try
+                        {
+                            altId = TZConvert.IanaToWindows(storedTzId);
+                        }
+                        catch
+                        {
+                            // ignore
+                        }
+                    }
+                    else
+                    {
+                        // We’re on Linux/macOS: maybe the stored ID is Windows, so convert to IANA
+                        try
+                        {
+                            altId = TZConvert.WindowsToIana(storedTzId);
+                        }
+                        catch
+                        {
+                            // ignore
+                        }
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(altId))
+                    {
+                        try
+                        {
+                            tz = TimeZoneInfo.FindSystemTimeZoneById(altId);
+                        }
+                        catch
+                        {
+                            // still failed—leave tz=null
+                        }
+                    }
+                }
+            }
+
+            if (tz == null)
+            {
+                // Either nothing was stored, or we couldn’t parse/convert it
+                tz = TimeZoneInfo.Local;
+            }
+
+            var currentTz = tz.Id;
 
             // 3) Get current certificate details
             var cert = _certService.CurrentCertificate;

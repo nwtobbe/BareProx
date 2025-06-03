@@ -6,6 +6,15 @@
         <strong>Connection error:</strong> @errMsg
     </div>
 }
+@{
+    // In DEBUG builds, show the menu when the user is NOT signed in.
+    // In RELEASE builds, show the menu only when the user IS signed in.
+#if DEBUG
+    bool showMenus = !SignInManager.IsSignedIn(User);
+#else
+    bool showMenus = SignInManager.IsSignedIn(User);
+#endif
+}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -31,7 +40,7 @@
 
                 <div class="collapse navbar-collapse" id="navbarNav">
                     @* only show the main menus when logged in *@
-                    @if (SignInManager.IsSignedIn(User))
+                    @if (showMenus)
                     {
                         <ul class="navbar-nav me-auto mb-2 mb-lg-0">
 
@@ -127,12 +136,6 @@
                                         </a>
                                     </li>
                                 </ul>
-                            </li>
-
-                            <li class="nav-item">
-                                <a class="nav-link text-dark" asp-area="" asp-controller="Home" asp-action="Privacy">
-                                    Privacy
-                                </a>
                             </li>
                         </ul>
                     }

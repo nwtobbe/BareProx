@@ -17,6 +17,7 @@ apt-get install sudo ca-certificates curl gnupg lsb-release
 
 # ---------------------- Fix
 Fix retention
+
 Authentication failed error page?
 Add schedules + run
 
@@ -37,6 +38,8 @@ Missing snapshots?
 
 
 Done.
+Fixed timezone on debian
+Fixed edit schedule again
 Disabled clean orpahned snapshots from primarey storage
 Added rename files when doing an inplace restore.
 Fixed Restore, cancel
