@@ -436,7 +436,6 @@ namespace BareProx.Services
         }
 
 
-
         private async Task<bool> SnapshotExistsOnControllerAsync(string volume, string snapshotName, NetappController controller)
         {
             var client = CreateAuthenticatedClient(controller, out var baseUrl);

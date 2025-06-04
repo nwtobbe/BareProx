@@ -167,23 +167,36 @@ namespace BareProx.Services
                     job.Status = "Waiting for Proxmox snapshots";
                     await _context.SaveChangesAsync();
 
-                    foreach (var kv in snapshotTasks)
+                    // Build a list of tasks with their associated VM IDs
+                    var waitTasks = snapshotTasks.Select(kv =>
                     {
                         var vm = vms.First(v => v.Id == kv.Key);
-                        var upid = kv.Value;
+                        // Start the wait task and package the result with the VM info
+                        return new
+                        {
+                            Vm = vm,
+                            Task = _proxmoxService.WaitForTaskCompletionAsync(
+                                cluster, vm.HostName, vm.HostAddress, kv.Value,
+                                TimeSpan.FromMinutes(20),
+                                _logger)
+                        };
+                    }).ToList();
 
-                        var success = await _proxmoxService.WaitForTaskCompletionAsync(
-                            cluster, vm.HostName, vm.HostAddress, upid,
-                            TimeSpan.FromMinutes(20),
-                            _logger);
+                    // Await all tasks in parallel
+                    await Task.WhenAll(waitTasks.Select(x => x.Task));
 
+                    // Check and log failures
+                    foreach (var entry in waitTasks)
+                    {
+                        var success = await entry.Task; // Already completed, this is a synchronous read at this point
                         if (!success)
                         {
                             _logger.LogWarning(
-                                "Snapshot task for VM {VmId} timed out in job {JobId}", vm.Id, job.Id);
+                                "Snapshot task for VM {VmId} timed out in job {JobId}", entry.Vm.Id, job.Id);
                         }
                     }
 
+                    // Update job status
                     job.Status = "Proxmox snapshots completed";
                     await _context.SaveChangesAsync();
                 }

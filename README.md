@@ -35,7 +35,8 @@ extra verifications
 
 
 Done.
-Fixed 401 when waiting for p.snapshots
+Parallellization of waiting for proxmox snapshots.
+Fixed 401 when waiting for proxmox snapshots
 Added readd of snapshots magically appearing on secondary.
 Added Orphaned snapshots
 Fixed timezone on debian, again and again

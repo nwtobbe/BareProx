@@ -165,7 +165,7 @@ namespace BareProx.Services
             }
         }
 
-       
+
         public async Task<Dictionary<string, List<ProxmoxVM>>> GetEligibleBackupStorageWithVMsAsync(
     ProxmoxCluster cluster,
     int netappControllerId,
@@ -486,9 +486,6 @@ namespace BareProx.Services
             return list;
         }
 
-
-
-
         public async Task DeleteSnapshotAsync(
             ProxmoxCluster cluster,
             string host,
@@ -506,8 +503,7 @@ namespace BareProx.Services
             string storageNameFilter)
         {
             // 1) Find the hostAddress for that node
-            var host = cluster.Hosts.FirstOrDefault(h => h.Hostname == nodeName);
-            if (host == null) throw new InvalidOperationException($"Node '{nodeName}' not in cluster.");
+            var host = GetHostByNodeName(cluster, nodeName);
 
             var hostAddress = host.HostAddress;
             var result = new List<ProxmoxVM>();
@@ -559,8 +555,6 @@ namespace BareProx.Services
             return result;
         }
 
-
-
         public async Task<bool> RestoreVmFromConfigAsync(
             string originalConfigJson,
             string hostAddress,
@@ -598,19 +592,7 @@ namespace BareProx.Services
                 return false;
 
             // 5) Flatten existing config into form fields
-            var payload = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var prop in config.EnumerateObject())
-            {
-                switch (prop.Value.ValueKind)
-                {
-                    case JsonValueKind.String:
-                        payload[prop.Name] = prop.Value.GetString()!;
-                        break;
-                    case JsonValueKind.Number:
-                        payload[prop.Name] = prop.Value.GetRawText();
-                        break;
-                }
-            }
+            var payload = FlattenConfig(config);
 
             // 6) Apply our overrides
             payload["name"] = newVmName;
@@ -632,7 +614,7 @@ namespace BareProx.Services
             }
 
             // 8) Remap **all** disks to our clone storage
-                
+
             // 8a) Extract old VMID from config (uses payload)
             string oldVmid = ExtractOldVmidFromConfig(payload);
 
@@ -645,50 +627,6 @@ namespace BareProx.Services
 
             // 8c) Update disk paths in config payload
             UpdateDiskPathsInConfig(payload, oldVmid, vmid, cloneStorageName);
-
-            //var diskRegex = new Regex(@"^(scsi|virtio|sata|ide)\d+$", RegexOptions.IgnoreCase);
-
-            //// grab every key in payload matching diskX (disk0, disk1…disk99, etc.)
-            //var diskKeys = payload.Keys
-            //    .Where(k => diskRegex.IsMatch(k))
-            //    .OrderBy(k =>
-            //    {
-            //        // sort by type then index so scsi0, scsi1…virtio0, virtio1… etc.
-            //        var m = diskRegex.Match(k);
-            //        var type = m.Groups[1].Value.ToLower();
-            //        var idx = int.Parse(Regex.Match(k, @"\d+$").Value);
-            //        // weight types alphabetically: scsi < sata < virtio < ide
-            //        var typeOrder = type switch
-            //        {
-            //            "scsi" => 0,
-            //            "sata" => 1,
-            //            "virtio" => 2,
-            //            "ide" => 3,
-            //            _ => 4
-            //        };
-            //        return typeOrder * 100 + idx;
-            //    })
-            //    .ToList();
-
-            //foreach (var diskKey in diskKeys)
-            //{
-            //    var diskVal = payload[diskKey];
-            //    if (!diskVal.Contains(":"))
-            //        continue;
-
-            //    // diskVal = e.g. "local:vm-100-disk-0.qcow2,discard=on,iothread=1"
-            //    var parts = diskVal.Split(new[] { ':' }, 2);
-            //    var diskDef = parts[1];                   // "vm-100-disk-0.qcow2,discard=on,iothread=1"
-            //    var sub = diskDef.Split(new[] { ',' }, 2);
-
-            //    var filenameWithExt = sub[0];             // "vm-100-disk-0.qcow2"
-            //    var options = sub.Length > 1
-            //                  ? "," + sub[1]              // ",discard=on,iothread=1"
-            //                  : string.Empty;
-
-            //    // remap to cloneStorageName, preserving extension and options
-            //    payload[diskKey] = $"{cloneStorageName}:{filenameWithExt}{options}";
-            //}
 
             // 9) Ensure a storage parameter is present
             if (!payload.ContainsKey("storage"))
@@ -712,8 +650,6 @@ namespace BareProx.Services
                 Console.WriteLine($"Error restoring VM: {ex}");
                 return false;
             }
-
-
 
         }
 
@@ -814,19 +750,7 @@ namespace BareProx.Services
             var vmid = originalVmId.ToString();
 
             // 5) Flatten existing config into form fields
-            var payload = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var prop in config.EnumerateObject())
-            {
-                switch (prop.Value.ValueKind)
-                {
-                    case JsonValueKind.String:
-                        payload[prop.Name] = prop.Value.GetString()!;
-                        break;
-                    case JsonValueKind.Number:
-                        payload[prop.Name] = prop.Value.GetRawText();
-                        break;
-                }
-            }
+            var payload = FlattenConfig(config);
 
             // 6) Set overrides explicitly
             payload["vmid"] = vmid;
@@ -885,8 +809,6 @@ namespace BareProx.Services
                 return false;
             }
         }
-
-
 
         public async Task<bool> MountNfsStorageViaApiAsync(
     ProxmoxCluster cluster,
@@ -973,9 +895,7 @@ namespace BareProx.Services
             string storageName)
         {
             // Find the host entry for this node
-            var host = cluster.Hosts.FirstOrDefault(h => h.Hostname == nodeName);
-            if (host == null)
-                throw new InvalidOperationException($"Node '{nodeName}' not found in cluster.");
+            var host = GetHostByNodeName(cluster, nodeName);
 
             // Build the DELETE URL
             var url = $"https://{host.HostAddress}:8006/api2/json/storage/{storageName}";
@@ -1047,7 +967,7 @@ namespace BareProx.Services
                             Storage = storageName,
                             Type = "nfs",
                             Path = path,
-                            Node = host.Hostname
+                            Node = host?.Hostname ?? ""
                         });
                     }
                 }
@@ -1062,8 +982,32 @@ namespace BareProx.Services
         }
 
 
+        // --- Helper Functions ---
 
+        private static Dictionary<string, string> FlattenConfig(JsonElement config)
+        {
+            var payload = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var prop in config.EnumerateObject())
+            {
+                switch (prop.Value.ValueKind)
+                {
+                    case JsonValueKind.String:
+                        payload[prop.Name] = prop.Value.GetString()!;
+                        break;
+                    case JsonValueKind.Number:
+                        payload[prop.Name] = prop.Value.GetRawText();
+                        break;
+                }
+            }
+            return payload;
+        }
 
-
+        private static ProxmoxHost GetHostByNodeName(ProxmoxCluster cluster, string nodeName)
+        {
+            var host = cluster.Hosts.FirstOrDefault(h => h.Hostname == nodeName);
+            if (host == null)
+                throw new InvalidOperationException($"Node '{nodeName}' not found in cluster.");
+            return host;
+        }
     }
 }
