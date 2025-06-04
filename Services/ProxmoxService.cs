@@ -376,16 +376,14 @@ namespace BareProx.Services
      TimeSpan timeout,
      ILogger logger)
         {
-            var client = await GetAuthenticatedClientAsync(cluster);
             var url = $"https://{hostAddress}:8006/api2/json/nodes/{node}/tasks/{Uri.EscapeDataString(upid)}/status";
-
             var start = DateTime.UtcNow;
 
             while (DateTime.UtcNow - start < timeout)
             {
                 try
                 {
-                    var resp = await client.GetAsync(url);
+                    var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url);
                     resp.EnsureSuccessStatusCode();
 
                     var json = await resp.Content.ReadAsStringAsync();

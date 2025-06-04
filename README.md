@@ -17,7 +17,7 @@ apt-get install sudo ca-certificates curl gnupg lsb-release
 
 # ---------------------- Fix
 Fix retention
-
+Troubleshoot janitor cleaning up orphaned records
 Authentication failed error page?
 Add schedules + run
 
@@ -35,6 +35,7 @@ extra verifications
 
 
 Done.
+Fixed 401 when waiting for p.snapshots
 Added readd of snapshots magically appearing on secondary.
 Added Orphaned snapshots
 Fixed timezone on debian, again and again

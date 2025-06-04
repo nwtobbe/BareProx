@@ -327,6 +327,12 @@
           if (aaRadio) aaRadio.addEventListener('change', toggleAppAware);
                     // ── Call once on load so that if Model.IsApplicationAware == true, the panel shows immediately
           toggleAppAware();
+
+                  // *** Show 'Include RAM' on initial load if UseProxmoxSnapshot is checked ***
+        if (proxSnapCb && proxSnapCb.checked && proxOpts) {
+            proxOpts.classList.remove('d-none');
+        }
+
           if (ioFreezeCb) {
             ioFreezeCb.addEventListener('change', function() {
               if (ioFreezeCb.checked && proxSnapCb && proxOpts) {
