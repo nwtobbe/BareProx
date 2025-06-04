@@ -1,0 +1,172 @@
+﻿@model List<BareProx.Models.SnapMirrorRelationGraphDto>
+
+@{
+    ViewBag.Title = "SnapMirror Relationships";
+}
+
+<div class="container mt-4">
+    <h2 class="mb-4">SnapMirror Relationships</h2>
+    <div class="row">
+        @if (!Model.Any())
+        {
+            <div class="col-12">
+                <div class="alert alert-info">No SnapMirror relationships found.</div>
+            </div>
+        }
+        @foreach (var rel in Model)
+        {
+            <div class="col-md-6">
+                <div class="card mb-4 shadow-sm">
+                    <!-- Card header: clusters + status badge -->
+                    <div class="card-header d-flex align-items-center justify-content-between" style="background-color: #f9f9f9;">
+                        <div>
+                            <strong>@rel.SourceController</strong>
+                            <span class="mx-2">→</span>
+                            <strong>@rel.DestinationController</strong>
+                        </div>
+                        <span class="badge @(rel.Health == "Healthy" ? "bg-success" : "bg-warning")">
+                            @rel.Health
+                        </span>
+                    </div>
+                    <!-- SVG Volume Replication Graphic -->
+                    <div style="width: 100%; background: #fcfcfc; padding: 0.75rem 0 0.25rem 0;">
+                        <svg height="90" width="100%" viewBox="0 0 700 90" style="vertical-align:middle;">
+                            <!-- Source Volume Disk -->
+                            <g>
+                                <ellipse cx="80" cy="35" rx="35" ry="28" fill="#2986cc" />
+                                <text x="80" y="39" text-anchor="middle" dominant-baseline="middle" fill="white" font-size="20" font-weight="bold">R/W</text>
+                            </g>
+                            <!-- Arrow shaft -->
+                            <line x1="120" y1="35" x2="580" y2="35" stroke="#2986cc" stroke-width="12" />
+                            <!-- Pointy arrowhead pointing RIGHT -->
+                            <polygon points="560,55 560,15 590,35" fill="#2986cc" />
+                            <!-- Replication type above arrow -->
+                            <text x="350" y="25" text-anchor="middle" fill="#555" font-size="17">
+                                @(!string.IsNullOrEmpty(rel.PolicyType) ? rel.PolicyType : "")
+                            </text>
+                            <!-- Destination Volume Disk -->
+                            <g>
+                                <ellipse cx="630" cy="35" rx="35" ry="28" fill="#2986cc" />
+                                <text x="630" y="39" text-anchor="middle" dominant-baseline="middle" fill="white" font-size="20" font-weight="bold">R/O</text>
+                            </g>
+                            <!-- Volume names UNDER the disks -->
+                            <text x="80" y="85" text-anchor="middle" fill="#333" font-size="14">@rel.SourceVolume</text>
+                            <text x="610" y="85" text-anchor="middle" fill="#333" font-size="14">@rel.DestinationVolume</text>
+                        </svg>
+                    </div>
+                    <!-- Card Body: No more "Source Volume" or "Destination Volume" rows -->
+                    <div class="card-body">
+                        <div class="mb-2">
+                            <span class="fw-bold">Lag:</span>
+                            <span class="badge bg-secondary">@rel.LagTime</span>
+                        </div>
+                        <div class="mb-2">
+                            <span class="fw-bold">Snapshots:</span>
+                            <div class="d-flex">
+                                <div>
+                                    <span class="text-muted">Primary</span>:
+                                    <span class="badge bg-primary">H: @rel.HourlySnapshotsPrimary</span>
+                                    <span class="badge bg-primary">D: @rel.DailySnapshotsPrimary</span>
+                                    <span class="badge bg-primary">W: @rel.WeeklySnapshotsPrimary</span>
+                                </div>
+                                <div class="ms-4">
+                                    <span class="text-muted">Secondary</span>:
+                                    <span class="badge bg-secondary">H: @rel.HourlySnapshotsSecondary/@rel.HourlyRetention</span>
+                                    <span class="badge bg-secondary">D: @rel.DailySnapshotsSecondary/@rel.DailyRetention</span>
+                                    <span class="badge bg-secondary">W: @rel.WeeklySnapshotsSecondary/@rel.WeeklyRetention</span>
+                                    @if (!string.IsNullOrEmpty(rel.PolicyName))
+                                    {
+                                        var lockedText = string.IsNullOrWhiteSpace(rel.LockedPeriod) ? "" : $"<br/>Locked: {FormatIso8601Duration(rel.LockedPeriod)}";
+                                        var tooltip = $"Policy: {rel.PolicyName}<br/>" +
+                                        $"Type: {rel.PolicyType}<br/>" +
+                                        "Retention:<br/>" +
+                                        $"&nbsp;&nbsp;Hourly: {rel.HourlyRetention}<br/>" +
+                                        $"&nbsp;&nbsp;Daily: {rel.DailyRetention}<br/>" +
+                                        $"&nbsp;&nbsp;Weekly: {rel.WeeklyRetention}" +
+                                        lockedText;
+                                        <div class="mt-1">
+                                            <span class="fw-bold">Policy:</span>
+                                            <span class="badge bg-dark"
+                                                  data-bs-toggle="tooltip"
+                                                  data-bs-html="true"
+                                                  title="@tooltip">
+                                                @rel.PolicyName
+                                            </span>
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mt-3 d-flex gap-2">
+                            <button class="btn btn-sm btn-primary update-btn"
+                                    data-relationuuid="@rel.RelationUuid">
+                                Update Now
+                            </button>
+                            <a class="btn btn-sm btn-outline-info"
+                               href="@Url.Action("Snapshots", "Wafl")">
+                                Show Snapshots
+                            </a>
+                        </div>
+                        <div class="update-result mt-2 text-info" style="display:none;"></div>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+</div>
+
+@functions {
+    public string FormatIso8601Duration(string isoDuration)
+    {
+        if (string.IsNullOrEmpty(isoDuration)) return "";
+        var regex = new System.Text.RegularExpressions.Regex(@"^P((?<days>\d+)D)?(T((?<hours>\d+)H)?((?<minutes>\d+)M)?((?<seconds>\d+)S)?)?$");
+        var match = regex.Match(isoDuration);
+        if (!match.Success) return isoDuration;
+        var parts = new List<string>();
+        if (int.TryParse(match.Groups["days"].Value, out var days) && days > 0) parts.Add($"{days}d");
+        if (int.TryParse(match.Groups["hours"].Value, out var hours) && hours > 0) parts.Add($"{hours}h");
+        if (int.TryParse(match.Groups["minutes"].Value, out var minutes) && minutes > 0) parts.Add($"{minutes}m");
+        if (int.TryParse(match.Groups["seconds"].Value, out var seconds) && seconds > 0) parts.Add($"{seconds}s");
+        return string.Join(" ", parts);
+    }
+}
+
+@section Scripts {
+    <script>
+        $(document).ready(function () {
+            $('.update-btn').click(function () {
+                var btn = $(this);
+                var resultBox = btn.closest('.card-body').find('.update-result');
+                btn.prop('disabled', true);
+                resultBox.text('').hide();
+
+                $.ajax({
+                    url: '@Url.Action("UpdateSnapMirror", "Wafl")',
+                    method: 'POST',
+                    data: {
+                        relationUuid: btn.data('relationuuid')
+                    },
+                    success: function (res) {
+                        if (res.success) {
+                            resultBox.text(res.message).show().removeClass('text-danger').addClass('text-success');
+                        } else {
+                            resultBox.text(res.message).show().removeClass('text-success').addClass('text-danger');
+                        }
+                    },
+                    error: function () {
+                        resultBox.text('Unexpected error.').show().removeClass('text-success').addClass('text-danger');
+                    },
+                    complete: function () {
+                        btn.prop('disabled', false);
+                    }
+                });
+            });
+
+            // Enable Bootstrap tooltips (with HTML support)
+            var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+            tooltipTriggerList.forEach(function (el) {
+                new bootstrap.Tooltip(el);
+            });
+        });
+    </script>
+}

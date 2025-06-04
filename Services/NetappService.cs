@@ -327,9 +327,11 @@ namespace BareProx.Services
             var client = CreateAuthenticatedClient(controller, out var baseUrl);
 
             // Updated query string to match what your actual API returns
+            //var url = $"{baseUrl}snapmirror/relationships?return_timeout=120" +
+            //          "&fields=source.path,destination.path,policy.name,policy.type,policy.uuid,state,lag_time,uuid,healthy" +
+            //          "&max_records=1000";
             var url = $"{baseUrl}snapmirror/relationships?return_timeout=120" +
-                      "&fields=source.path,destination.path,policy.name,policy.type,policy.uuid,state,lag_time,uuid,healthy" +
-                      "&max_records=1000";
+          "&fields=*";
 
             var resp = await client.GetAsync(url);
             if (!resp.IsSuccessStatusCode)
@@ -345,14 +347,49 @@ namespace BareProx.Services
 
             foreach (var entry in records.EnumerateArray())
             {
-                var srcPath = entry.GetProperty("source").GetProperty("path").GetString() ?? "";
-                var dstPath = entry.GetProperty("destination").GetProperty("path").GetString() ?? "";
-                var policyName = entry.GetProperty("policy").GetProperty("name").GetString() ?? "";
-                var policyType = entry.GetProperty("policy").GetProperty("type").GetString() ?? "";
+                var src = entry.GetProperty("source");
+                var dst = entry.GetProperty("destination");
+                var policy = entry.GetProperty("policy");
+
+                var srcPath = src.GetProperty("path").GetString() ?? "";
+                var dstPath = dst.GetProperty("path").GetString() ?? "";
+                var policyName = policy.GetProperty("name").GetString() ?? "";
+                var policyType = policy.GetProperty("type").GetString() ?? "";
+                var policyUuid = policy.TryGetProperty("uuid", out var polUuid) ? polUuid.GetString() : null;
+
                 var state = entry.GetProperty("state").GetString() ?? "";
                 var lagTime = entry.TryGetProperty("lag_time", out var lagProp) ? lagProp.GetString() : null;
                 var healthy = entry.TryGetProperty("healthy", out var healthyProp) && healthyProp.GetBoolean();
                 var uuid = entry.GetProperty("uuid").GetString() ?? "";
+
+                var exportedSnapshot = entry.TryGetProperty("exported_snapshot", out var expSnapProp) ? expSnapProp.GetString() : null;
+                var totalTransferDuration = entry.TryGetProperty("total_transfer_duration", out var totTrDur) ? totTrDur.GetString() : null;
+                var totalTransferBytes = entry.TryGetProperty("total_transfer_bytes", out var totTrBytes) ? totTrBytes.GetInt64() : (long?)null;
+                var lastTransferType = entry.TryGetProperty("last_transfer_type", out var ltType) ? ltType.GetString() : null;
+                var lastTransferCompressionRatio = entry.TryGetProperty("last_transfer_network_compression_ratio", out var ltRatio) ? ltRatio.GetString() : null;
+                var backoffLevel = entry.TryGetProperty("backoff_level", out var backoffProp) ? backoffProp.GetString() : null;
+
+                // Nested objects
+                var srcClusterName = src.TryGetProperty("cluster", out var srcCluster) && srcCluster.TryGetProperty("name", out var scn) ? scn.GetString() : null;
+                var dstClusterName = dst.TryGetProperty("cluster", out var dstCluster) && dstCluster.TryGetProperty("name", out var dcn) ? dcn.GetString() : null;
+                var srcSvmName = src.TryGetProperty("svm", out var srcSvm) && srcSvm.TryGetProperty("name", out var ssvm) ? ssvm.GetString() : null;
+                var dstSvmName = dst.TryGetProperty("svm", out var dstSvm) && dstSvm.TryGetProperty("name", out var dsvm) ? dsvm.GetString() : null;
+
+                // Transfer details (optional, just store the string fields in DB)
+                string? lastTransferState = null;
+                string? lastTransferDuration = null;
+                DateTime? lastTransferEndTime = null;
+                if (entry.TryGetProperty("transfer", out var transferProp) && transferProp.ValueKind == JsonValueKind.Object)
+                {
+                    lastTransferState = transferProp.TryGetProperty("state", out var ls) ? ls.GetString() : null;
+                    lastTransferDuration = transferProp.TryGetProperty("total_duration", out var ld) ? ld.GetString() : null;
+                    if (transferProp.TryGetProperty("end_time", out var le))
+                    {
+                        var endTimeStr = le.GetString();
+                        if (DateTime.TryParse(endTimeStr, out var parsed))
+                            lastTransferEndTime = parsed;   // lastTransferEndTime is DateTime?
+                    }
+                }
 
                 // Extract volume names from paths: "clustername:volumename"
                 var srcVol = srcPath.Contains(':') ? srcPath.Split(':')[1] : srcPath;
@@ -369,7 +406,23 @@ namespace BareProx.Services
                     state = state,
                     lag_time = lagTime,
                     healthy = healthy,
-                    Uuid = uuid
+                    Uuid = uuid,
+
+                    SourceClusterName = srcClusterName,
+                    DestinationClusterName = dstClusterName,
+                    SourceSvmName = srcSvmName,
+                    DestinationSvmName = dstSvmName,
+                    PolicyUuid = policyUuid,
+                    PolicyType = policyType,
+                    ExportedSnapshot = exportedSnapshot,
+                    TotalTransferDuration = totalTransferDuration,
+                    TotalTransferBytes = totalTransferBytes,
+                    LastTransferType = lastTransferType,
+                    LastTransferCompressionRatio = lastTransferCompressionRatio,
+                    BackoffLevel = backoffLevel,
+                    LastTransferState = lastTransferState,
+                    LastTransferEndTime = lastTransferEndTime,
+                    LastTransferDuration = lastTransferDuration
                 });
             }
 
@@ -412,17 +465,34 @@ namespace BareProx.Services
 
                     if (existing != null)
                     {
-                        // Update existing fields
-                        existing.SourceControllerId = relation.SourceControllerId;
-                        existing.SourceVolume = relation.SourceVolume;
-                        existing.DestinationVolume = relation.DestinationVolume;
-                        existing.DestinationControllerId = relation.DestinationControllerId;
-                        existing.RelationshipType = relation.RelationshipType;
-                        existing.state = relation.state;
-                        existing.Uuid = relation.Uuid;
-                        existing.lag_time = relation.lag_time;
-                        existing.SourceControllerId = NetappVolumes.FirstOrDefault(c => c.VolumeName == relation.SourceVolume)?.NetappControllerId ?? 0;
-                        // etc... Add more fields if needed
+                        
+                            // Set all updatable fields
+                            existing.Uuid = relation.Uuid;
+                            existing.SourceControllerId = NetappVolumes.FirstOrDefault(c => c.VolumeName == relation.SourceVolume)?.NetappControllerId ?? 0;
+                            existing.SourceVolume = relation.SourceVolume;
+                            existing.DestinationControllerId = relation.DestinationControllerId;
+                            existing.DestinationVolume = relation.DestinationVolume;
+                            existing.RelationshipType = relation.RelationshipType;
+                            existing.SnapMirrorPolicy = relation.SnapMirrorPolicy;
+                            existing.state = relation.state;
+                            existing.lag_time = relation.lag_time;
+                            existing.healthy = relation.healthy;
+                            existing.SourceClusterName = relation.SourceClusterName;
+                            existing.DestinationClusterName = relation.DestinationClusterName;
+                            existing.SourceSvmName = relation.SourceSvmName;
+                            existing.DestinationSvmName = relation.DestinationSvmName;
+                            existing.LastTransferState = relation.LastTransferState;
+                            existing.LastTransferEndTime = relation.LastTransferEndTime;
+                            existing.LastTransferDuration = relation.LastTransferDuration;
+                            existing.PolicyUuid = relation.PolicyUuid;
+                            existing.PolicyType = relation.PolicyType;
+                            existing.ExportedSnapshot = relation.ExportedSnapshot;
+                            existing.TotalTransferDuration = relation.TotalTransferDuration;
+                            existing.TotalTransferBytes = relation.TotalTransferBytes;
+                            existing.LastTransferType = relation.LastTransferType;
+                            existing.LastTransferCompressionRatio = relation.LastTransferCompressionRatio;
+                            existing.BackoffLevel = relation.BackoffLevel;
+                        
                     }
                     else
                     {
@@ -1300,6 +1370,49 @@ namespace BareProx.Services
             return moveResult && waitResult;
         }
 
+        public async Task<SnapMirrorPolicy?> SnapMirrorPolicyGet(int controllerId, string policyUuid)
+        {
+            var controller = await _context.NetappControllers.FindAsync(controllerId);
+            if (controller == null)
+                throw new Exception($"NetApp controller {controllerId} not found.");
+
+            var client = CreateAuthenticatedClient(controller, out var baseUrl);
+            var url = $"{baseUrl}snapmirror/policies/{policyUuid}?fields=*";
+            var resp = await client.GetAsync(url);
+
+            if (!resp.IsSuccessStatusCode)
+                return null;
+
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            var entry = doc.RootElement;
+
+            var policy = new SnapMirrorPolicy
+            {
+                Uuid = entry.GetProperty("uuid").GetString() ?? "",
+                Name = entry.GetProperty("name").GetString() ?? "",
+                Scope = entry.TryGetProperty("scope", out var scopeProp) ? scopeProp.GetString() ?? "" : "",
+                Type = entry.TryGetProperty("type", out var typeProp) ? typeProp.GetString() ?? "" : "",
+                NetworkCompressionEnabled = entry.TryGetProperty("network_compression_enabled", out var ncProp) && ncProp.GetBoolean(),
+                Throttle = entry.TryGetProperty("throttle", out var thrProp) ? thrProp.GetInt32() : 0,
+                Retentions = new List<SnapMirrorPolicyRetention>()
+            };
+
+            if (entry.TryGetProperty("retention", out var retentionProp) && retentionProp.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var ret in retentionProp.EnumerateArray())
+                {
+                    policy.Retentions.Add(new SnapMirrorPolicyRetention
+                    {
+                        Label = ret.TryGetProperty("label", out var label) ? label.GetString() ?? "" : "",
+                        Count = int.TryParse(ret.TryGetProperty("count", out var countProp) ? countProp.GetString() : "0", out var cntVal) ? cntVal : 0,
+                        Preserve = ret.TryGetProperty("preserve", out var pres) && pres.GetBoolean(),
+                        Warn = ret.TryGetProperty("warn", out var warn) ? warn.GetInt32() : 0,
+                        Period = ret.TryGetProperty("period", out var per) ? per.GetString() : null
+                    });
+                }
+            }
+            return policy;
+        }
 
 
         // ------ Helper Functions ------

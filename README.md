@@ -19,7 +19,6 @@ apt-get install sudo ca-certificates curl gnupg lsb-release
 Fix retention
 Troubleshoot janitor cleaning up orphaned records
 Authentication failed error page?
-Add schedules + run
 
 Fix add cluster
 	Automatically add all nodes to the cluster by one ip
@@ -35,13 +34,15 @@ extra verifications
 
 
 Done.
+Moved around in _Layout
+Added Snapmirror
 Parallellization of waiting for proxmox snapshots.
 Fixed 401 when waiting for proxmox snapshots
 Added readd of snapshots magically appearing on secondary.
 Added Orphaned snapshots
 Fixed timezone on debian, again and again
 Fixed edit schedule again
-Disabled clean orpahned snapshots from primarey storage
+Disabled clean orphaned snapshots from primary storage
 Added rename files when doing an inplace restore.
 Fixed Restore, cancel
 Fixed edit storage on netapp, return to correct page when clicking on save
@@ -59,7 +60,7 @@ Fix in restorecontroller ClusterName = "ProxMox",
 Add select storage svm:s for primary, volumes to use
 	and use it in functions
 Add select storage svms: for secondary, volumes to use
-	and user it in functions
+	and use it in functions
 Added Self signed certificate creation
 Fixed local Timezone for snapshots
 New date/time formatting for snapshots

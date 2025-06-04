@@ -3,6 +3,7 @@ using System;
 using BareProx.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace BareProx.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250604110627_AddSnapMirrorDetails")]
+    partial class AddSnapMirrorDetails
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.5");
@@ -383,74 +386,6 @@ namespace BareProx.Migrations
                     b.ToTable("SelectedNetappVolumes");
                 });
 
-            modelBuilder.Entity("BareProx.Models.SnapMirrorPolicy", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<bool>("NetworkCompressionEnabled")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("Scope")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("Throttle")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("Type")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("Uuid")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("Uuid")
-                        .IsUnique();
-
-                    b.ToTable("SnapMirrorPolicies");
-                });
-
-            modelBuilder.Entity("BareProx.Models.SnapMirrorPolicyRetention", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("Count")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("Label")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("Period")
-                        .HasColumnType("TEXT");
-
-                    b.Property<bool>("Preserve")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("SnapMirrorPolicyId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("Warn")
-                        .HasColumnType("INTEGER");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("SnapMirrorPolicyId");
-
-                    b.ToTable("SnapMirrorPolicyRetentions");
-                });
-
             modelBuilder.Entity("BareProx.Models.SnapMirrorRelation", b =>
                 {
                     b.Property<int>("Id")
@@ -759,17 +694,6 @@ namespace BareProx.Migrations
                     b.Navigation("Cluster");
                 });
 
-            modelBuilder.Entity("BareProx.Models.SnapMirrorPolicyRetention", b =>
-                {
-                    b.HasOne("BareProx.Models.SnapMirrorPolicy", "Policy")
-                        .WithMany("Retentions")
-                        .HasForeignKey("SnapMirrorPolicyId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Policy");
-                });
-
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<string>", b =>
                 {
                     b.HasOne("Microsoft.AspNetCore.Identity.IdentityRole", null)
@@ -824,11 +748,6 @@ namespace BareProx.Migrations
             modelBuilder.Entity("BareProx.Models.ProxmoxCluster", b =>
                 {
                     b.Navigation("Hosts");
-                });
-
-            modelBuilder.Entity("BareProx.Models.SnapMirrorPolicy", b =>
-                {
-                    b.Navigation("Retentions");
                 });
 #pragma warning restore 612, 618
         }

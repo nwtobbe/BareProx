@@ -353,10 +353,7 @@ namespace BareProx.Services
                                                                          // optionally update timestamp or snapshot name if it changed
                                                                          // rec.TimeStamp = DateTime.UtcNow;
                     }
-                    await _context.SaveChangesAsync();
 
-                    job.Status = "Replication completed";
-                    await _context.SaveChangesAsync();
                     job.Status = "Replication completed";
                     await _context.SaveChangesAsync();
                 }

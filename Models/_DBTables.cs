@@ -87,17 +87,36 @@ namespace BareProx.Models
     public class SnapMirrorRelation
     {
         public int Id { get; set; }
-        public string Uuid { get; set; }   // the NetApp relationship UUID
+        public string Uuid { get; set; } = null!;                  // Relationship UUID (PK on NetApp)
         public int SourceControllerId { get; set; }
         public string SourceVolume { get; set; } = null!;
         public int DestinationControllerId { get; set; }
         public string DestinationVolume { get; set; } = null!;
+
         public string RelationshipType { get; set; } = "vault";
         public string? SnapMirrorPolicy { get; set; }
         public string? state { get; set; }
-        public string? lag_time { get; set; } // or TimeSpan?
+        public string? lag_time { get; set; }
         public bool healthy { get; set; }
 
+        // --- NEW FIELDS ---
+        public string? SourceClusterName { get; set; }
+        public string? DestinationClusterName { get; set; }
+        public string? SourceSvmName { get; set; }
+        public string? DestinationSvmName { get; set; }
+        public string? LastTransferState { get; set; }
+        public DateTime? LastTransferEndTime { get; set; }
+        public string? LastTransferDuration { get; set; }
+        public string? PolicyUuid { get; set; }
+        public string? PolicyType { get; set; }
+        public string? ExportedSnapshot { get; set; }
+        public string? TotalTransferDuration { get; set; }
+        public long? TotalTransferBytes { get; set; }
+        public string? LastTransferType { get; set; }
+        public string? LastTransferCompressionRatio { get; set; }
+        public string? BackoffLevel { get; set; }
+
+        // --- Unmapped transfer details for one-off API responses ---
         [JsonPropertyName("transfer")]
         [NotMapped]
         public TransferInfo? transfer { get; set; }
@@ -164,4 +183,34 @@ namespace BareProx.Models
         // Optional: serialized payload (config, labels, paths)
         public string? PayloadJson { get; set; }
     }
+
+    public class SnapMirrorPolicy
+    {
+        public int Id { get; set; }
+        public string Uuid { get; set; } = null!;
+        public string Name { get; set; } = null!;
+        public string Scope { get; set; } = null!; // "cluster", "svm", etc
+        public string Type { get; set; } = null!;  // "async", etc
+        public bool NetworkCompressionEnabled { get; set; }
+        public int Throttle { get; set; }
+
+        // JSON serialized retention, or normalized as a related table (see below)
+        public List<SnapMirrorPolicyRetention> Retentions { get; set; } = new();
+
+        // Optionally, add created/updated timestamps, etc.
+    }
+
+    public class SnapMirrorPolicyRetention
+    {
+        public int Id { get; set; }
+        public int SnapMirrorPolicyId { get; set; }
+        public SnapMirrorPolicy Policy { get; set; } = null!;
+
+        public string Label { get; set; } = null!;     // "daily", "hourly", "weekly"
+        public int Count { get; set; }
+        public bool Preserve { get; set; }
+        public int Warn { get; set; }
+        public string? Period { get; set; }            // e.g. "P10M" for retention locking
+    }
+
 }

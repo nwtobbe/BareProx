@@ -154,7 +154,7 @@ namespace BareProx.Services.Background
                     if (now.Minute != 0)
                         return false;
                     // Only run if within [startHour, endHour)
-                    if (now.Hour < startHour || now.Hour >= endHour)
+                    if (now.Hour < startHour || now.Hour > endHour)
                         return false;
 
                     // Only once per hour (LastRun before the top‐of‐hour)

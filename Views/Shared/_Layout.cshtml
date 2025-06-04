@@ -54,7 +54,7 @@
 
                             <li class="nav-item">
                                 <a class="nav-link text-dark" asp-area="" asp-controller="Proxmox" asp-action="ListVMs">
-                                    Proxmox Storage
+                                    Proxmox
                                 </a>
                             </li>
 
@@ -63,41 +63,39 @@
                                     Backup
                                 </a>
                             </li>
-
-                            <!-- Restore dropdown -->
+                            <li class="nav-item">
+                                <a class="nav-link text-dark" asp-area="" asp-controller="Restore" asp-action="Index">
+                                    Restore
+                                </a>
+                            </li>
+                            <!-- Netapp dropdown -->
                             <li class="nav-item dropdown">
                                 <a class="nav-link dropdown-toggle text-dark"
                                 href="#"
-                                id="restoreDropdown"
+                                id="netappDropdown"
                                 role="button"
                                 data-bs-toggle="dropdown"
                                 aria-expanded="false">
-                                    Restore
+                                    Netapp
                                 </a>
-                                <ul class="dropdown-menu" aria-labelledby="restoreDropdown">
+                                <ul class="dropdown-menu" aria-labelledby="netappDropdown">
                                     <li>
                                         <a class="dropdown-item"
                                         asp-area=""
-                                        asp-controller="Restore"
-                                        asp-action="Index">
-                                            Restore VM
+                                        asp-controller="Wafl"
+                                        asp-action="Snapshots">
+                                            Snapshots
                                         </a>
                                     </li>
                                     <li>
                                         <a class="dropdown-item"
                                         asp-area=""
-                                        asp-controller="Cleanup"
-                                        asp-action="Index">
-                                            Cleanup
+                                        asp-controller="Wafl"
+                                        asp-action="SnapMirrorGraph">
+                                            Snapmirror
                                         </a>
                                     </li>
                                 </ul>
-                            </li>
-
-                            <li class="nav-item">
-                                <a class="nav-link text-dark" asp-area="" asp-controller="Wafl" asp-action="Snapshots">
-                                    Snapshots
-                                </a>
                             </li>
 
                             <!-- Settings Dropdown -->
@@ -133,6 +131,13 @@
                                         asp-controller="Settings"
                                         asp-action="Proxmox">
                                             Proxmox
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <a class="dropdown-item"
+                                           asp-controller="Cleanup"
+                                           asp-action="Index">
+                                            Cleanup
                                         </a>
                                     </li>
                                 </ul>

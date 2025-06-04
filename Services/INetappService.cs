@@ -11,7 +11,8 @@
             Task<List<VserverDto>> GetVserversAndVolumesAsync(int netappControllerId);
             Task<List<NetappMountInfo>> GetVolumesWithMountInfoAsync(int netappControllerId);
             Task<SnapshotResult> CreateSnapshotAsync(int clusterId, string StorageName, string snapmirrorLabel);
-            Task<FlexCloneResult> CloneVolumeFromSnapshotAsync(string volumeName, string snapshotName, string cloneName, int controllerId);
+        Task<SnapMirrorPolicy?> SnapMirrorPolicyGet(int controllerId, string policyUuid);
+        Task<FlexCloneResult> CloneVolumeFromSnapshotAsync(string volumeName, string snapshotName, string cloneName, int controllerId);
         /// <summary>
         /// Tell NetApp to update (resync) the SnapMirror relationship identified by uuid.
         /// </summary>
