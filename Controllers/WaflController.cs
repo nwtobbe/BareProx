@@ -1,4 +1,24 @@
-﻿using BareProx.Data;
+﻿/*
+ * BareProx - Backup and Restore Automation for Proxmox using NetApp
+ *
+ * Copyright (C) 2025 Tobias Modig
+ *
+ * This file is part of BareProx.
+ *
+ * BareProx is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * BareProx is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -22,11 +42,13 @@ namespace BareProx.Controllers
             _netappService = netappService;
             _proxmoxService = proxmoxService;
         }
-        public async Task<IActionResult> Snapshots()
+
+        public async Task<IActionResult> Snapshots(CancellationToken ct)
         {
+            // 1) Load cluster
             var cluster = await _context.ProxmoxClusters
-                .Include(c => c.Hosts)
-                .FirstOrDefaultAsync();
+                                        .Include(c => c.Hosts)
+                                        .FirstOrDefaultAsync(ct);
 
             if (cluster == null)
             {
@@ -34,14 +56,18 @@ namespace BareProx.Controllers
                 return View(new List<NetappControllerTreeDto>());
             }
 
-            var netappControllers = await _context.NetappControllers.ToListAsync();
+            // 2) Load all NetApp controllers
+            var netappControllers = await _context.NetappControllers
+                                                  .ToListAsync(ct);
             if (!netappControllers.Any())
             {
                 ViewBag.Warning = "No NetApp controllers are configured.";
                 return View(new List<NetappControllerTreeDto>());
             }
 
-            var selectedVolumes = await _context.SelectedNetappVolumes.ToListAsync();
+            // 3) Load all selected volumes
+            var selectedVolumes = await _context.SelectedNetappVolumes
+                                                .ToListAsync(ct);
             var volumeLookup = selectedVolumes.ToLookup(v => v.NetappControllerId);
 
             var result = new List<NetappControllerTreeDto>();
@@ -54,7 +80,8 @@ namespace BareProx.Controllers
                     Svms = new List<NetappSvmDto>()
                 };
 
-                var groupedBySvm = volumeLookup[controller.Id].GroupBy(v => v.Vserver);
+                var groupedBySvm = volumeLookup[controller.Id]
+                                   .GroupBy(v => v.Vserver);
                 foreach (var svmGroup in groupedBySvm)
                 {
                     var svmDto = new NetappSvmDto
@@ -75,7 +102,9 @@ namespace BareProx.Controllers
                             IsSelected = true
                         };
 
-                        var snapshots = await _netappService.GetSnapshotsAsync(vol.ClusterId, vol.VolumeName);
+                        // 4) Fetch snapshots for this volume (passes ct)
+                        var snapshots = await _netappService
+                            .GetSnapshotsAsync(vol.ClusterId, vol.VolumeName, ct);
                         volumeDto.Snapshots = snapshots;
 
                         svmDto.Volumes.Add(volumeDto);
@@ -89,15 +118,20 @@ namespace BareProx.Controllers
 
             return View(result);
         }
-        public async Task<IActionResult> SnapMirrorGraph()
-        {
-            // Pull everything to memory first
-            var snapshotList = await _context.NetappSnapshots.ToListAsync();
-            var policies = await _context.SnapMirrorPolicies.ToListAsync();
-            var retentions = await _context.SnapMirrorPolicyRetentions.ToListAsync();
-            var relationsRaw = await _context.SnapMirrorRelations.ToListAsync();
 
-            // Build lookup dictionaries for speed
+        public async Task<IActionResult> SnapMirrorGraph(CancellationToken ct)
+        {
+            // 1) Pull everything to memory first (all with ct)
+            var snapshotList = await _context.NetappSnapshots
+                                             .ToListAsync(ct);
+            var policies = await _context.SnapMirrorPolicies
+                                               .ToListAsync(ct);
+            var retentions = await _context.SnapMirrorPolicyRetentions
+                                               .ToListAsync(ct);
+            var relationsRaw = await _context.SnapMirrorRelations
+                                               .ToListAsync(ct);
+
+            // 2) Build lookups
             var policyByUuid = policies.ToDictionary(p => p.Uuid, p => p);
             var retentionsByPolicyId = retentions
                 .GroupBy(r => r.SnapMirrorPolicyId)
@@ -107,15 +141,20 @@ namespace BareProx.Controllers
 
             foreach (var rel in relationsRaw)
             {
-                // Try to get the policy by UUID
-                SnapMirrorPolicy? policy = null;
-                policyByUuid.TryGetValue(rel.PolicyUuid, out policy);
-
+                // 3) Try to get the matching policy
+                policyByUuid.TryGetValue(rel.PolicyUuid, out var policy);
                 int policyId = policy?.Id ?? 0;
-                var relRetentions = retentionsByPolicyId.ContainsKey(policyId) ? retentionsByPolicyId[policyId] : new List<SnapMirrorPolicyRetention>();
 
-                int getRetention(string label) => relRetentions.FirstOrDefault(r => r.Label == label)?.Count ?? 0;
-                string? lockedPeriod = relRetentions.FirstOrDefault(r => r.Period != null)?.Period;
+                // 4) Gather any retention entries for that policy
+                var relRetentions = retentionsByPolicyId
+                    .GetValueOrDefault(policyId, new List<SnapMirrorPolicyRetention>());
+
+                int getRetention(string label)
+                    => relRetentions.FirstOrDefault(r => r.Label == label)?.Count ?? 0;
+
+                // 5) Find any period string among retentions
+                string? lockedPeriod = relRetentions
+                    .FirstOrDefault(r => r.Period != null)?.Period;
 
                 var dto = new SnapMirrorRelationGraphDto
                 {
@@ -135,6 +174,7 @@ namespace BareProx.Controllers
                     WeeklyRetention = getRetention("weekly"),
                     LockedPeriod = FormatIso8601Duration(lockedPeriod),
 
+                    // initialize counts to 0 (to be filled below)
                     HourlySnapshotsPrimary = 0,
                     DailySnapshotsPrimary = 0,
                     WeeklySnapshotsPrimary = 0,
@@ -146,20 +186,26 @@ namespace BareProx.Controllers
                 relations.Add(dto);
             }
 
-            // For each relation, count snapshots in the snapshotList
+            // 6) Count snapshots for each relation
             foreach (var rel in relations)
             {
-                // PRIMARY: Snapshots where PrimaryControllerId/PrimaryVolume matches
+                // PRIMARY side:
                 var primarySnaps = snapshotList
-                    .Where(s => s.PrimaryControllerId == rel.SourceControllerId && s.PrimaryVolume == rel.SourceVolume && s.ExistsOnPrimary == true);
+                    .Where(s =>
+                        s.PrimaryControllerId == rel.SourceControllerId &&
+                        s.PrimaryVolume == rel.SourceVolume &&
+                        s.ExistsOnPrimary == true);
 
                 rel.HourlySnapshotsPrimary = primarySnaps.Count(s => s.SnapmirrorLabel == "hourly");
                 rel.DailySnapshotsPrimary = primarySnaps.Count(s => s.SnapmirrorLabel == "daily");
                 rel.WeeklySnapshotsPrimary = primarySnaps.Count(s => s.SnapmirrorLabel == "weekly");
 
-                // SECONDARY: Snapshots where SecondaryControllerId/DestinationVolume matches
+                // SECONDARY side:
                 var secondarySnaps = snapshotList
-                    .Where(s => s.SecondaryControllerId == rel.DestinationControllerId && s.SecondaryVolume == rel.DestinationVolume && s.ExistsOnSecondary == true);
+                    .Where(s =>
+                        s.SecondaryControllerId == rel.DestinationControllerId &&
+                        s.SecondaryVolume == rel.DestinationVolume &&
+                        s.ExistsOnSecondary == true);
 
                 rel.HourlySnapshotsSecondary = secondarySnaps.Count(s => s.SnapmirrorLabel == "hourly");
                 rel.DailySnapshotsSecondary = secondarySnaps.Count(s => s.SnapmirrorLabel == "daily");
@@ -169,61 +215,85 @@ namespace BareProx.Controllers
             return View(relations);
         }
 
-
         [HttpGet]
-        public async Task<IActionResult> GetSnapshotsForVolume(string volume, int ClusterId)
+        public async Task<IActionResult> GetSnapshotsForVolume(
+            string volume,
+            int ClusterId,
+            CancellationToken ct)
         {
-            var snapshots = await _netappService.GetSnapshotsAsync(ClusterId, volume);
+            var snapshots = await _netappService
+                .GetSnapshotsAsync(ClusterId, volume, ct);
             return Json(new { snapshots });
         }
 
         [HttpGet]
-        public async Task<IActionResult> GetNfsIps(string vserver)
+        public async Task<IActionResult> GetNfsIps(
+            string vserver,
+            CancellationToken ct)
         {
-            var ips = await _netappService.GetNfsEnabledIpsAsync(vserver);
+            var ips = await _netappService
+                .GetNfsEnabledIpsAsync(vserver, ct);
             return Json(new { ips });
         }
 
         [HttpPost]
-        public async Task<IActionResult> MountSnapshot(MountSnapshotViewModel model)
+        public async Task<IActionResult> MountSnapshot(
+            MountSnapshotViewModel model,
+            CancellationToken ct)
         {
             if (!ModelState.IsValid)
                 return BadRequest("Invalid input.");
 
             try
             {
-                // 1. Generate a clone name
+                // 1) Generate a unique clone name
                 var timestamp = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
                 var cloneName = $"restore_{model.VolumeName}_{timestamp}";
 
-                // 2. Clone the snapshot
-                var result = await _netappService.CloneVolumeFromSnapshotAsync(
-                    volumeName: model.VolumeName,
-                    snapshotName: model.SnapshotName,
-                    cloneName: cloneName,
-                    controllerId: _context.NetappControllers.Select(c => c.Id).First());
+                // 2) Clone the snapshot (pass ct to service)
+                var result = await _netappService
+                    .CloneVolumeFromSnapshotAsync(
+                        volumeName: model.VolumeName,
+                        snapshotName: model.SnapshotName,
+                        cloneName: cloneName,
+                        controllerId: _context.NetappControllers
+                                          .Select(c => c.Id)
+                                          .First(),
+                        ct);
 
                 if (!result.Success)
                     return BadRequest("Failed to create FlexClone: " + result.Message);
 
-                // 3. Copy export policy
-                await _netappService.CopyExportPolicyAsync(model.VolumeName, cloneName,
-                    controllerId: _context.NetappControllers.Select(c => c.Id).First());
+                // 3) Copy export policy
+                await _netappService.CopyExportPolicyAsync(
+                    model.VolumeName,
+                    cloneName,
+                    controllerId: _context.NetappControllers
+                                     .Select(c => c.Id)
+                                     .First(),
+                    ct);
 
-                // 4. Set export path (nas.path)
-                var controllerId = _context.NetappControllers.Select(c => c.Id).First();
+                // 4) Lookup the clone’s UUID, then set its export path
+                var controllerId = _context.NetappControllers
+                                           .Select(c => c.Id)
+                                           .First();
 
-                // 🔍 Lookup UUID of the clone volume
-                var volumeInfo = await _netappService.LookupVolumeAsync(result.CloneVolumeName!, controllerId);
+                var volumeInfo = await _netappService
+                    .LookupVolumeAsync(result.CloneVolumeName!, controllerId, ct);
                 if (volumeInfo == null)
                     return StatusCode(500, $"Failed to find UUID for cloned volume '{result.CloneVolumeName}'.");
 
-                // ✅ Set the export path using UUID
-                await _netappService.SetVolumeExportPathAsync(volumeInfo.Uuid, $"/{cloneName}", controllerId);
+                // set nas.path = "/{cloneName}"
+                await _netappService.SetVolumeExportPathAsync(
+                    volumeInfo.Uuid,
+                    $"/{cloneName}",
+                    controllerId,
+                    ct);
 
-
-                // 5. Mount to Proxmox
-                var cluster = await _context.ProxmoxClusters.Include(c => c.Hosts).FirstOrDefaultAsync();
+                // 5) Mount to Proxmox
+                var cluster = await _context.ProxmoxClusters
+                                            .Include(c => c.Hosts)
+                                            .FirstOrDefaultAsync(ct);
                 if (cluster == null)
                     return NotFound("Proxmox cluster not found.");
 
@@ -236,7 +306,8 @@ namespace BareProx.Controllers
                     node: host.Hostname!,
                     storageName: cloneName,
                     serverIp: model.MountIp,
-                    exportPath: $"/{cloneName}");
+                    exportPath: $"/{cloneName}",
+                    ct: ct);
 
                 if (!mountSuccess)
                     return StatusCode(500, "Failed to mount clone on Proxmox.");
@@ -249,12 +320,17 @@ namespace BareProx.Controllers
                 return StatusCode(500, "Mount failed: " + ex.Message);
             }
         }
+
         [HttpPost]
-        public async Task<IActionResult> UpdateSnapMirror(string relationUuid)
+        public async Task<IActionResult> UpdateSnapMirror(
+            string relationUuid,
+            CancellationToken ct)
         {
             try
             {
-                var result = await _netappService.TriggerSnapMirrorUpdateAsync(relationUuid);
+                var result = await _netappService
+                    .TriggerSnapMirrorUpdateAsync(relationUuid, ct);
+
                 if (result)
                     return Json(new { success = true, message = "Update triggered." });
 
@@ -262,7 +338,6 @@ namespace BareProx.Controllers
             }
             catch (Exception ex)
             {
-                // log ex if needed
                 return Json(new { success = false, message = ex.Message });
             }
         }
@@ -272,11 +347,12 @@ namespace BareProx.Controllers
             if (string.IsNullOrEmpty(isoDuration))
                 return "";
 
-            // Example: P1DT1H30M13S or PT53M59S
-            var regex = new Regex(@"^P((?<days>\d+)D)?(T((?<hours>\d+)H)?((?<minutes>\d+)M)?((?<seconds>\d+)S)?)?$");
+            // Match patterns like "P1DT1H30M13S" or "PT53M59S"
+            var regex = new Regex(
+                @"^P((?<days>\d+)D)?(T((?<hours>\d+)H)?((?<minutes>\d+)M)?((?<seconds>\d+)S)?)?$");
             var match = regex.Match(isoDuration);
             if (!match.Success)
-                return isoDuration; // fallback
+                return isoDuration; // fallback if format is unexpected
 
             var parts = new List<string>();
             if (int.TryParse(match.Groups["days"].Value, out var days) && days > 0)
@@ -290,6 +366,5 @@ namespace BareProx.Controllers
 
             return string.Join(" ", parts);
         }
-
     }
 }

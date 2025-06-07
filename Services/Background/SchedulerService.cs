@@ -1,17 +1,28 @@
-﻿using BareProx.Controllers;
+﻿/*
+ * BareProx - Backup and Restore Automation for Proxmox using NetApp
+ *
+ * Copyright (C) 2025 Tobias Modig
+ *
+ * This file is part of BareProx.
+ *
+ * BareProx is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * BareProx is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+using BareProx.Controllers;
 using BareProx.Data;
 using BareProx.Models;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-using System;
-using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
-using System.Net.Http;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace BareProx.Services.Background
 {
@@ -83,10 +94,11 @@ namespace BareProx.Services.Background
 
                 try
                 {
-                    var controller = await _context.NetappControllers.FindAsync(sched.ControllerId);
+                    var controller = await _context.NetappControllers
+                        .FindAsync(new object[] { sched.ControllerId }, ct);
                     var cluster = await _context.ProxmoxClusters
                                                 .Include(c => c.Hosts)
-                                                .FirstOrDefaultAsync(c => c.Id == sched.ClusterId);
+                                                .FirstOrDefaultAsync(c => c.Id == sched.ClusterId, ct);
 
                     if (controller == null || cluster == null)
                     {
@@ -114,7 +126,11 @@ namespace BareProx.Services.Background
                             sched.WithMemory,
                             dontTrySuspend: false,
                             ScheduleID: sched.Id,
-                            ReplicateToSecondary: sched.ReplicateToSecondary
+                            ReplicateToSecondary: sched.ReplicateToSecondary,
+                            enableLocking: false,
+                            lockRetentionCount: null,
+                            lockRetentionUnit: null,
+                            ct
                         );
                     });
 

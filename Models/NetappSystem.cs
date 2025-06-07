@@ -1,4 +1,26 @@
-﻿using System.Text.Json.Serialization;
+﻿/*
+ * BareProx - Backup and Restore Automation for Proxmox using NetApp
+ *
+ * Copyright (C) 2025 Tobias Modig
+ *
+ * This file is part of BareProx.
+ *
+ * BareProx is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * BareProx is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+using Newtonsoft.Json.Converters;
+using Newtonsoft.Json;
+using System.Text.Json.Serialization;
 
 namespace BareProx.Models
 {
@@ -21,6 +43,44 @@ namespace BareProx.Models
     {
         public bool Success { get; set; }
         public string? ErrorMessage { get; set; }
+    }
+    public class SnapshotCreateBody
+    {
+        [JsonProperty("name")]
+        public string Name { get; set; }
+
+        [JsonProperty("snapmirror_label")]
+        public string SnapMirrorLabel { get; set; }
+
+        // Only serialized when not null
+        [JsonProperty("expiry_time", NullValueHandling = NullValueHandling.Ignore)]
+        [Newtonsoft.Json.JsonConverter(typeof(CustomDateTimeConverter))]
+        public DateTime? ExpiryTime { get; set; }
+
+        [JsonProperty("snaplock", NullValueHandling = NullValueHandling.Ignore)]
+        public SnapLockBlock SnapLock { get; set; }
+
+        [JsonProperty("snaplock_expiry_time", NullValueHandling = NullValueHandling.Ignore)]
+        [Newtonsoft.Json.JsonConverter(typeof(CustomDateTimeConverter))]
+        public DateTime? SnapLockExpiryTime { get; set; }
+
+        public class SnapLockBlock
+        {
+            [JsonProperty("expiry_time")]
+            [Newtonsoft.Json.JsonConverter(typeof(CustomDateTimeConverter))]
+            public DateTime ExpiryTime { get; set; }
+        }
+    }
+
+    /// <summary>
+    /// Custom converter that forces "yyyy-MM-dd HH:mm:ss" formatting on DateTime.
+    /// </summary>
+    public class CustomDateTimeConverter : IsoDateTimeConverter
+    {
+        public CustomDateTimeConverter()
+        {
+            DateTimeFormat = "yyyy-MM-dd HH:mm:ss";
+        }
     }
 
     public class FlexCloneResult
@@ -106,14 +166,6 @@ namespace BareProx.Models
         public string MountIp { get; set; }
         public int ClusterId { get; set; }
     }
-
-    //public class VolumeSelection
-    //{
-    //    public int Id { get; set; }
-    //    public string Vserver { get; set; }
-    //    public string VolumeName { get; set; }
-    //    public string SnapshotPolicy { get; set; }
-    //}
 
     public class NetappMountInfo
     {

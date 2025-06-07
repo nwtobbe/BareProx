@@ -1,6 +1,24 @@
-﻿using Microsoft.AspNetCore.Mvc.Rendering;
-using System;
-using System.Collections.Generic;
+﻿/*
+ * BareProx - Backup and Restore Automation for Proxmox using NetApp
+ *
+ * Copyright (C) 2025 Tobias Modig
+ *
+ * This file is part of BareProx.
+ *
+ * BareProx is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * BareProx is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+using Microsoft.AspNetCore.Mvc.Rendering;
 
 namespace BareProx.Models
 {
@@ -8,6 +26,7 @@ namespace BareProx.Models
     {
         public int ClusterId { get; set; }
         public int ControllerId { get; set; }
+        public bool SnapshotLockingEnabled { get; set; }
     }
     public class CreateScheduleRequest
     {
@@ -34,6 +53,9 @@ namespace BareProx.Models
         public bool CanReplicateToSecondary { get; set; }  // set in controller logic
         public bool ReplicateToSecondary { get; set; }     // user input
         public HashSet<string> ReplicableVolumes { get; set; } = new();
+        public bool EnableLocking { get; set; }
+        public int? LockRetentionCount { get; set; }
+        public string? LockRetentionUnit { get; set; } = "Hours";
     }
 
     public class ScheduleEntry
@@ -66,6 +88,9 @@ namespace BareProx.Models
         public bool DontTrySuspend { get; set; }
         public bool ReplicateToSecondary { get; set; }
         public int ScheduleID { get; set; }
+        public bool EnableLocking { get; set; }
+        public int? LockRetentionCount { get; set; }
+        public string? LockRetentionUnit { get; set; } = "Hours";
     }
     public class RestoreViewModel
     {

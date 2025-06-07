@@ -16,24 +16,28 @@ apt-get install sudo ca-certificates curl gnupg lsb-release
 
 
 # ---------------------- Fix
-Fix retention
-Troubleshoot janitor cleaning up orphaned records
 Authentication failed error page?
-
+Add lookup of volumes when doing things.
 Fix add cluster
 	Automatically add all nodes to the cluster by one ip
 	Add scheduled task to check access
 
 secondary...
 	Partially implemented, no restore from secondary yet
-tps...
+
 mail
-logging
+
 More logging add categories and sorting, scavange with janitor
 extra verifications
 
 
 Done.
+Added Snapmirror view
+Added support for SnapLock / Tamper Proof Snapshots
+Added removal of snapmirror relationship if a volume is unselected in settings.
+Added snapshots-functionality for locking in services
+Updated ct:s
+Added Logging to file
 Moved around in _Layout
 Added Snapmirror
 Parallellization of waiting for proxmox snapshots.

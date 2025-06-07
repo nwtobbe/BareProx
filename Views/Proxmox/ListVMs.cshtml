@@ -21,7 +21,8 @@
                     data-storage="@storage.StorageName"
                     data-cluster="@storage.ClusterId"
                     data-controllerid="@storage.NetappControllerId"
-                    data-replicable="@storage.IsReplicable">
+                    data-replicable="@storage.IsReplicable.ToString().ToLower()"
+                    data-snapshotlockingenabled="@(storage.SnapshotLockingEnabled ? "true" : "false")">
                 Backup Now
             </button>
         </div>
@@ -45,9 +46,17 @@
     </div>
 }
 
+<!-- ===========================
+     MODAL (single, shared)
+============================ -->
 <div class="modal fade" id="backupModal" tabindex="-1" aria-labelledby="backupModalLabel" aria-hidden="true">
     <div class="modal-dialog">
-        <form asp-controller="Backup" asp-action="StartBackupNow" method="post" id="backupNowForm">
+        <form asp-controller="Backup"
+              asp-action="StartBackupNow"
+              method="post"
+              id="backupNowForm">
+
+            <!-- Hidden fields populated on modal show -->
             <input type="hidden" name="StorageName" id="modalStorageName" />
             <input type="hidden" name="ClusterId" id="modalClusterId" />
             <input type="hidden" name="ControllerId" id="modalControllerId" />
@@ -63,7 +72,9 @@
                 </div>
 
                 <div class="modal-body">
-                    <!-- Backup Type -->
+                    <!-- ====================
+                         Backup Type
+                         ==================== -->
                     <div class="mb-3">
                         <label class="form-label">Backup Type</label><br />
                         <div class="form-check form-check-inline">
@@ -84,7 +95,8 @@
                                 Application-Aware
                             </label>
                         </div>
-                        <div id="appAwareOptions" class="border rounded p-3 mt-3 bg-light d-none">
+                        <div id="appAwareOptions"
+                             class="border rounded p-3 mt-3 bg-light d-none">
                             <label class="form-label">App-Aware Options</label>
                             <div class="form-check">
                                 <input class="form-check-input"
@@ -106,7 +118,8 @@
                                     Create Proxmox Snapshot
                                 </label>
                             </div>
-                            <div id="proxmoxSnapshotOptions" class="mt-2 ms-3 d-none">
+                            <div id="proxmoxSnapshotOptions"
+                                 class="mt-2 ms-3 d-none">
                                 <div class="form-check">
                                     <input class="form-check-input"
                                            type="checkbox"
@@ -121,7 +134,9 @@
                         </div>
                     </div>
 
-                    <!-- SnapMirror Label -->
+                    <!-- ====================
+                         SnapMirror Label
+                         ==================== -->
                     <div class="mb-3">
                         <label for="LabelSelect" class="form-label">Snapmirror Label</label>
                         <select id="LabelSelect" name="Label" class="form-select">
@@ -132,28 +147,78 @@
                         </select>
                     </div>
 
-                    <!-- Retention -->
+                    <!-- ====================
+                         Retention (max = 256)
+                         ==================== -->
                     <div class="mb-3">
                         <label class="form-label">Retention</label>
                         <div class="input-group">
                             <input type="number"
                                    name="RetentionCount"
+                                   id="RetentionCount"
                                    class="form-control"
                                    min="1"
-                                   max="999"
+                                   max="256"
                                    value="7" />
-                            <select name="RetentionUnit" class="form-select">
+                            <select name="RetentionUnit"
+                                    id="RetentionUnit"
+                                    class="form-select">
                                 <option value="Hours">Hours</option>
                                 <option value="Days" selected>Days</option>
                                 <option value="Weeks">Weeks</option>
                             </select>
                         </div>
                         <small class="form-text text-muted">
-                            How long to keep this snapshot before cleanup.
+                            How long to keep this snapshot before cleanup (1–256).
                         </small>
                     </div>
 
-                    <!-- Replicate to Secondary -->
+                    <!-- ====================
+                         Enable Locking
+                         ==================== -->
+                    <!-- hidden fallback so it always posts false -->
+                    @* <input type="hidden" name="EnableLocking" value="false" /> *@
+
+                    <div class="mb-3 form-check d-none" id="lockingCheckbox">
+                        <input class="form-check-input"
+                               type="checkbox"
+                               name="EnableLocking"
+                               id="EnableLocking"
+                               value="true" />
+                        <label class="form-check-label" for="EnableLocking">
+                            Enable Locking
+                        </label>
+                    </div>
+
+                    <!-- ====================
+                         “Locked for:” inputs
+                         ==================== -->
+                    <div class="mb-3 d-none" id="lockingRetention">
+                        <label class="form-label">Locked for:</label>
+                        <div class="input-group">
+                            <input type="number"
+                                   name="LockRetentionCount"
+                                   id="LockRetentionCount"
+                                   class="form-control"
+                                   min="1"
+                                   max="30"
+                                   value="1" />
+                            <select name="LockRetentionUnit"
+                                    id="LockRetentionUnit"
+                                    class="form-select">
+                                <option value="Hours">Hours</option>
+                                <option value="Days">Days</option>
+                                <option value="Weeks">Weeks</option>
+                            </select>
+                        </div>
+                        <small class="form-text text-muted">
+                            Must be strictly less than the standard retention (and ≤ 30).
+                        </small>
+                    </div>
+
+                    <!-- ====================
+                         Replicate to Secondary
+                         ==================== -->
                     <div class="mb-3 form-check d-none" id="replicateCheckbox">
                         <input class="form-check-input"
                                type="checkbox"
@@ -184,70 +249,125 @@
 @section Scripts {
     <script>
         document.addEventListener("DOMContentLoaded", function () {
-            const appAwareRadios   = document.querySelectorAll("input[name='IsApplicationAware']");
-            const optionsContainer = document.getElementById("appAwareOptions");
-            const proxmoxCheckbox  = document.getElementById("UseProxmoxSnapshot");
-            const proxmoxOptions   = document.getElementById("proxmoxSnapshotOptions");
-            const freezeCheckbox   = document.getElementById("EnableIoFreeze");
-            const replicateBox     = document.getElementById("replicateCheckbox");
-            const replicateToggle  = document.getElementById("ReplicateToSecondaryToggle");
-            const labelSelect      = document.getElementById("LabelSelect");
+            // References
+            const lockingCheckboxContainer  = document.getElementById("lockingCheckbox");
+            const lockingCheckbox           = document.getElementById("EnableLocking");
+            const lockingRetentionContainer = document.getElementById("lockingRetention");
+            const lockCountInput            = document.getElementById("LockRetentionCount");
+            const lockUnitSelect            = document.getElementById("LockRetentionUnit");
+            const retentionCountInput       = document.getElementById("RetentionCount");
+            const retentionUnitSelect       = document.getElementById("RetentionUnit");
 
-            function updateVisibility() {
-                const sel = Array.from(appAwareRadios).find(r => r.checked);
-                optionsContainer.classList.toggle("d-none", sel?.value !== "true");
-            }
-
-            function updateSnapshotOptions() {
-                const useSnap = proxmoxCheckbox.checked;
-                proxmoxOptions.classList.toggle("d-none", !useSnap);
-                if (useSnap && freezeCheckbox.checked) {
-                    freezeCheckbox.checked = false;
+            // Prevent invalid keys in number fields
+            function blockInvalidNumberKeys(evt) {
+                if (["e","E","+","-","."].includes(evt.key)) {
+                    evt.preventDefault();
                 }
             }
+            retentionCountInput.addEventListener("keydown", blockInvalidNumberKeys);
+            lockCountInput.addEventListener("keydown", blockInvalidNumberKeys);
 
-            function handleFreezeToggle() {
-                if (freezeCheckbox.checked && proxmoxCheckbox.checked) {
-                    proxmoxCheckbox.checked = false;
-                    proxmoxOptions.classList.add("d-none");
+            // Convert count/unit → hours
+            function retentionInHours(count, unit) {
+                const c = parseInt(count, 10);
+                if (isNaN(c) || c < 1) return 0;
+                switch (unit) {
+                    case "Hours": return c;
+                    case "Days":  return c * 24;
+                    case "Weeks": return c * 168;
                 }
+                return 0;
             }
 
-            function updateReplicateVisibility(isReplicable) {
-                if (!isReplicable || labelSelect.value === "Manual") {
-                    replicateBox.classList.add("d-none");
-                    replicateToggle.checked = false;
+            // Recalculate max “Locked for” based on main retention
+            function recalcLockingOptions() {
+                const totalHours = retentionInHours(
+                    retentionCountInput.value,
+                    retentionUnitSelect.value
+                );
+
+                if (totalHours <= 1) {
+                    // Too low to lock
+                    lockingCheckbox.checked = false;
+                    lockingCheckbox.disabled = true;
+                    lockingRetentionContainer.classList.add("d-none");
+                    return;
+                }
+
+                // enable the checkbox
+                lockingCheckbox.disabled = false;
+
+                // recompute each unit’s max
+                Array.from(lockUnitSelect.options).forEach(opt => {
+                    const unit = opt.value;
+                    const mul  = unit === "Days" ? 24 :
+                                 unit === "Weeks"? 168 : 1;
+                    let maxCnt = Math.floor((totalHours - 1) / mul);
+                    maxCnt     = Math.min(maxCnt, 30);
+
+                    opt.disabled = maxCnt < 1;
+                    if (unit === lockUnitSelect.value) {
+                        lockCountInput.max = maxCnt;
+                        if (+lockCountInput.value > maxCnt) {
+                            lockCountInput.value = maxCnt;
+                        }
+                    }
+                });
+            }
+
+            // Show/hide the “Locked for” block
+            lockingCheckbox.addEventListener("change", () => {
+                if (lockingCheckbox.checked) {
+                    recalcLockingOptions();
+                    lockingRetentionContainer.classList.remove("d-none");
                 } else {
-                    replicateBox.classList.remove("d-none");
+                    lockingRetentionContainer.classList.add("d-none");
                 }
-            }
-
-            const backupModal = document.getElementById('backupModal');
-            backupModal.addEventListener('show.bs.modal', function (event) {
-                const btn = event.relatedTarget;
-                const isRep = btn.getAttribute('data-replicable')?.toLowerCase() === 'true';
-
-                // reset replicate
-                replicateToggle.checked = false;
-                updateReplicateVisibility(isRep);
-
-                // populate hidden inputs
-                document.getElementById('modalStorageName').value  = btn.dataset.storage;
-                document.getElementById('modalClusterId').value    = btn.dataset.cluster;
-                document.getElementById('modalControllerId').value = btn.dataset.controllerid;
-
-                // reset label to Manual
-                labelSelect.value = "Manual";
-                labelSelect.onchange = () => updateReplicateVisibility(isRep);
             });
 
-            appAwareRadios.forEach(r => r.addEventListener("change", updateVisibility));
-            proxmoxCheckbox.addEventListener("change", updateSnapshotOptions);
-            freezeCheckbox.addEventListener("change", handleFreezeToggle);
+            // Update when main retention changes
+            retentionCountInput.addEventListener("input", recalcLockingOptions);
+            retentionUnitSelect.addEventListener("change", recalcLockingOptions);
+            lockUnitSelect.addEventListener("change", recalcLockingOptions);
 
-            // initial state
-            updateVisibility();
-            updateSnapshotOptions();
+            // When the modal opens, fill hidden fields & toggle locking UI
+            const backupModal = document.getElementById("backupModal");
+            backupModal.addEventListener("show.bs.modal", function (e) {
+                const btn     = e.relatedTarget;
+                const storage = btn.getAttribute("data-storage");
+                const cluster = btn.getAttribute("data-cluster");
+                const ctrlId  = btn.getAttribute("data-controllerid");
+                const canLock = btn.getAttribute("data-snapshotlockingenabled") === "true";
+
+                // populate hidden inputs
+                document.getElementById("modalStorageName").value  = storage;
+                document.getElementById("modalClusterId").value    = cluster;
+                document.getElementById("modalControllerId").value = ctrlId;
+
+                // reset main retention
+                retentionCountInput.value = 7;
+                retentionUnitSelect.value = "Days";
+                retentionCountInput.max   = 256;
+
+                // show/hide locking checkbox
+                if (canLock) {
+                    lockingCheckboxContainer.classList.remove("d-none");
+                    lockingCheckbox.disabled = false;
+                } else {
+                    lockingCheckboxContainer.classList.add("d-none");
+                    lockingCheckbox.checked  = false;
+                    lockingCheckbox.disabled = true;
+                    lockingRetentionContainer.classList.add("d-none");
+                }
+
+                // reset locked-for inputs
+                lockCountInput.value = 1;
+                lockUnitSelect.value = "Hours";
+                lockCountInput.max   = 30;
+
+                // recalc in case user toggles immediately
+                recalcLockingOptions();
+            });
         });
     </script>
 }

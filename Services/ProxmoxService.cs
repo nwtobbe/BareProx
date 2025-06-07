@@ -1,4 +1,24 @@
-﻿using BareProx.Data;
+﻿/*
+ * BareProx - Backup and Restore Automation for Proxmox using NetApp
+ *
+ * Copyright (C) 2025 Tobias Modig
+ *
+ * This file is part of BareProx.
+ *
+ * BareProx is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * BareProx is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+using BareProx.Data;
 using BareProx.Models;
 using Microsoft.EntityFrameworkCore;
 using System.Net;
@@ -28,19 +48,19 @@ namespace BareProx.Services
             _encryptionService = encryptionService;
         }
 
-        public async Task<bool> AuthenticateAndStoreTokenAsync(int clusterId)
+        public async Task<bool> AuthenticateAndStoreTokenAsync(int clusterId, CancellationToken ct)
         {
             var cluster = await _context.ProxmoxClusters
                 .Include(c => c.Hosts)
-                .FirstOrDefaultAsync(c => c.Id == clusterId);
+                .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
 
             if (cluster == null || !cluster.Hosts.Any())
                 return false;
 
-            return await AuthenticateAndStoreTokenAsync(cluster);
+            return await AuthenticateAndStoreTokenAsync(cluster, ct);
         }
 
-        private async Task<bool> AuthenticateAndStoreTokenAsync(ProxmoxCluster cluster)
+        private async Task<bool> AuthenticateAndStoreTokenAsync(ProxmoxCluster cluster, CancellationToken ct)
         {
             var host = cluster.Hosts.First();
             var url = $"https://{host.HostAddress}:8006/api2/json/access/ticket";
@@ -56,10 +76,10 @@ namespace BareProx.Services
 
             try
             {
-                var response = await httpClient.PostAsync(url, content);
+                var response = await httpClient.PostAsync(url, content, ct);
                 if (!response.IsSuccessStatusCode) return false;
 
-                var body = await response.Content.ReadAsStringAsync();
+                var body = await response.Content.ReadAsStringAsync(ct);
                 using var doc = JsonDocument.Parse(body);
                 var data = doc.RootElement.GetProperty("data");
 
@@ -68,28 +88,28 @@ namespace BareProx.Services
                 cluster.LastChecked = DateTime.UtcNow;
                 cluster.LastStatus = "Working";
 
-                await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync(ct);
                 return true;
             }
             catch (Exception ex)
             {
                 cluster.LastStatus = $"Error: {ex.Message}";
                 cluster.LastChecked = DateTime.UtcNow;
-                await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync(ct);
                 return false;
             }
         }
 
-        private async Task<HttpClient> GetAuthenticatedClientAsync(ProxmoxCluster cluster)
+        private async Task<HttpClient> GetAuthenticatedClientAsync(ProxmoxCluster cluster, CancellationToken ct)
         {
             if (string.IsNullOrEmpty(cluster.ApiToken) || string.IsNullOrEmpty(cluster.CsrfToken))
             {
-                var ok = await AuthenticateAndStoreTokenAsync(cluster);
+                var ok = await AuthenticateAndStoreTokenAsync(cluster, ct);
                 if (!ok)
                     throw new Exception("Authentication failed: missing token or CSRF.");
 
                 // reload tokens
-                await _context.Entry(cluster).ReloadAsync();
+                await _context.Entry(cluster).ReloadAsync(ct);
             }
 
             var client = _httpClientFactory.CreateClient("ProxmoxClient");
@@ -109,29 +129,30 @@ namespace BareProx.Services
             ProxmoxCluster cluster,
             HttpMethod method,
             string url,
-            HttpContent content = null)
+            HttpContent content = null,
+            CancellationToken ct = default)
         {
             try
             {
-                var client = await GetAuthenticatedClientAsync(cluster);
+                var client = await GetAuthenticatedClientAsync(cluster, ct);
                 var request = new HttpRequestMessage(method, url) { Content = content };
-                var response = await client.SendAsync(request);
+                var response = await client.SendAsync(request, ct);
                 //string raw = await response.Content.ReadAsStringAsync();
                 //Console.WriteLine($"Snapshot API response ({(int)response.StatusCode}): {raw}");
                 if (response.StatusCode == HttpStatusCode.Unauthorized)
                 {
                     // Re-authenticate and update tokens in DB
-                    var reauth = await AuthenticateAndStoreTokenAsync(cluster);
+                    var reauth = await AuthenticateAndStoreTokenAsync(cluster, ct);
                     if (!reauth)
                         throw new ServiceUnavailableException("Authentication failed: missing token or CSRF.");
 
                     // reload tokens
-                    await _context.Entry(cluster).ReloadAsync();
-                    client = await GetAuthenticatedClientAsync(cluster);
+                    await _context.Entry(cluster).ReloadAsync(ct);
+                    client = await GetAuthenticatedClientAsync(cluster, ct);
 
                     // retry once
                     request = new HttpRequestMessage(method, url) { Content = content };
-                    response = await client.SendAsync(request);
+                    response = await client.SendAsync(request,ct);
                 }
 
                 response.EnsureSuccessStatusCode();
@@ -144,19 +165,19 @@ namespace BareProx.Services
                 _ = _context.ProxmoxClusters
                     .Where(c => c.Id == cluster.Id)
                     .ExecuteUpdateAsync(b => b.SetProperty(c => c.LastStatus, _ => $"Unreachable: {ex.Message}")
-                                             .SetProperty(c => c.LastChecked, _ => DateTime.UtcNow));
+                                             .SetProperty(c => c.LastChecked, _ => DateTime.UtcNow), ct);
                 throw new ServiceUnavailableException(
                     $"Cannot reach Proxmox host at {host}:8006. {ex.Message}", ex);
             }
         }
 
 
-        public async Task<bool> CheckIfVmExistsAsync(ProxmoxCluster cluster, ProxmoxHost host, int vmId)
+        public async Task<bool> CheckIfVmExistsAsync(ProxmoxCluster cluster, ProxmoxHost host, int vmId, CancellationToken ct = default)
         {
             var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/qemu/{vmId}/config";
             try
             {
-                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url);
+                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
                 return resp.IsSuccessStatusCode;
             }
             catch
@@ -169,11 +190,12 @@ namespace BareProx.Services
         public async Task<Dictionary<string, List<ProxmoxVM>>> GetEligibleBackupStorageWithVMsAsync(
     ProxmoxCluster cluster,
     int netappControllerId,
-    List<string>? onlyIncludeStorageNames = null)
+    List<string>? onlyIncludeStorageNames = null,
+    CancellationToken ct = default)
         {
             var storageVmMap = onlyIncludeStorageNames != null
-                ? await GetVmsByStorageListAsync(cluster, onlyIncludeStorageNames)
-                : await GetFilteredStorageWithVMsAsync(cluster.Id, netappControllerId);
+                ? await GetVmsByStorageListAsync(cluster, onlyIncludeStorageNames, ct)
+                : await GetFilteredStorageWithVMsAsync(cluster.Id, netappControllerId, ct);
 
             return storageVmMap
                 .Where(kvp =>
@@ -184,12 +206,13 @@ namespace BareProx.Services
 
         public async Task<Dictionary<string, List<ProxmoxVM>>> GetFilteredStorageWithVMsAsync(
             int clusterId,
-            int netappControllerId)
+            int netappControllerId,
+            CancellationToken ct = default)
         {
             // 1) Load cluster + hosts
             var cluster = await _context.ProxmoxClusters
                 .Include(c => c.Hosts)
-                .FirstOrDefaultAsync(c => c.Id == clusterId);
+                .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
             if (cluster == null)
                 return new Dictionary<string, List<ProxmoxVM>>();
 
@@ -198,8 +221,8 @@ namespace BareProx.Services
             foreach (var host in cluster.Hosts)
             {
                 var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/storage";
-                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url);
-                using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+                using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
                 foreach (var storage in doc.RootElement.GetProperty("data").EnumerateArray())
                 {
                     if (storage.GetProperty("type").GetString() == "nfs")
@@ -228,8 +251,8 @@ namespace BareProx.Services
             {
                 // a) list VMs
                 var vmListUrl = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/qemu";
-                var vmListResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, vmListUrl);
-                using var vmListDoc = JsonDocument.Parse(await vmListResp.Content.ReadAsStringAsync());
+                var vmListResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, vmListUrl, null, ct);
+                using var vmListDoc = JsonDocument.Parse(await vmListResp.Content.ReadAsStringAsync(ct));
                 var vmElems = vmListDoc.RootElement.GetProperty("data").EnumerateArray();
 
                 foreach (var vmElem in vmElems)
@@ -240,7 +263,7 @@ namespace BareProx.Services
                         : $"VM {vmId}";
 
                     // fetch full config
-                    var cfgJson = await GetVmConfigAsync(cluster, host.Hostname, vmId);
+                    var cfgJson = await GetVmConfigAsync(cluster, host.Hostname, vmId, ct);
                     using var cfgDoc = JsonDocument.Parse(cfgJson);
                     var cfgData = cfgDoc.RootElement.GetProperty("data");
 
@@ -282,25 +305,27 @@ namespace BareProx.Services
         public async Task<string> GetVmConfigAsync(
             ProxmoxCluster cluster,
             string host,
-            int vmId)
+            int vmId,
+            CancellationToken ct = default)
         {
             var hostAddress = cluster.Hosts.First(h => h.Hostname == host).HostAddress;
             var url = $"https://{hostAddress}:8006/api2/json/nodes/{host}/qemu/{vmId}/config";
 
-            var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url);
-            return await resp.Content.ReadAsStringAsync();
+            var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+            return await resp.Content.ReadAsStringAsync(ct);
         }
 
         public async Task PauseVmAsync(
             ProxmoxCluster cluster,
             string host,
             string hostaddress,
-            int vmId)
+            int vmId,
+            CancellationToken ct = default)
         {
             // Fetch current status
             var statusUrl = $"https://{hostaddress}:8006/api2/json/nodes/{host}/qemu/{vmId}/status/current";
-            var statusResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, statusUrl);
-            var statusJson = await statusResp.Content.ReadAsStringAsync();
+            var statusResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, statusUrl, null, ct);
+            var statusJson = await statusResp.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(statusJson);
             var current = doc.RootElement.GetProperty("data").GetProperty("status").GetString();
 
@@ -308,7 +333,7 @@ namespace BareProx.Services
             if (string.Equals(current, "running", StringComparison.OrdinalIgnoreCase))
             {
                 var url = $"https://{hostaddress}:8006/api2/json/nodes/{host}/qemu/{vmId}/status/suspend";
-                await SendWithRefreshAsync(cluster, HttpMethod.Post, url);
+                await SendWithRefreshAsync(cluster, HttpMethod.Post, url, null, ct);
             }
         }
 
@@ -316,12 +341,13 @@ namespace BareProx.Services
             ProxmoxCluster cluster,
             string host,
             string hostaddress,
-            int vmId)
+            int vmId, 
+            CancellationToken ct = default)
         {
             // Fetch current status
             var statusUrl = $"https://{hostaddress}:8006/api2/json/nodes/{host}/qemu/{vmId}/status/current";
-            var statusResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, statusUrl);
-            var statusJson = await statusResp.Content.ReadAsStringAsync();
+            var statusResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, statusUrl, null, ct);
+            var statusJson = await statusResp.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(statusJson);
             var current = doc.RootElement.GetProperty("data").GetProperty("status").GetString();
 
@@ -329,7 +355,7 @@ namespace BareProx.Services
             if (string.Equals(current, "paused", StringComparison.OrdinalIgnoreCase))
             {
                 var url = $"https://{hostaddress}:8006/api2/json/nodes/{host}/qemu/{vmId}/status/resume";
-                await SendWithRefreshAsync(cluster, HttpMethod.Post, url);
+                await SendWithRefreshAsync(cluster, HttpMethod.Post, url, null, ct);
             }
         }
 
@@ -341,9 +367,10 @@ namespace BareProx.Services
             string snapshotName,
             string description,
             bool withMemory,
-            bool dontTrySuspend)
+            bool dontTrySuspend,
+            CancellationToken ct = default)
         {
-            var client = await GetAuthenticatedClientAsync(cluster);
+            var client = await GetAuthenticatedClientAsync(cluster, ct);
 
             var url = $"https://{hostAddress}:8006/api2/json/nodes/{node}/qemu/{vmid}/snapshot";
 
@@ -355,10 +382,10 @@ namespace BareProx.Services
             };
 
             var content = new FormUrlEncodedContent(data);
-            var response = await client.PostAsync(url, content);
+            var response = await client.PostAsync(url, content, ct);
             response.EnsureSuccessStatusCode();
 
-            var json = await response.Content.ReadAsStringAsync();
+            var json = await response.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(json);
 
             var upid = doc.RootElement
@@ -374,7 +401,8 @@ namespace BareProx.Services
      string hostAddress,
      string upid,
      TimeSpan timeout,
-     ILogger logger)
+     ILogger logger,
+     CancellationToken ct = default)
         {
             var url = $"https://{hostAddress}:8006/api2/json/nodes/{node}/tasks/{Uri.EscapeDataString(upid)}/status";
             var start = DateTime.UtcNow;
@@ -383,10 +411,10 @@ namespace BareProx.Services
             {
                 try
                 {
-                    var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url);
+                    var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
                     resp.EnsureSuccessStatusCode();
 
-                    var json = await resp.Content.ReadAsStringAsync();
+                    var json = await resp.Content.ReadAsStringAsync(ct);
                     using var doc = JsonDocument.Parse(json);
                     var data = doc.RootElement.GetProperty("data");
 
@@ -416,15 +444,15 @@ namespace BareProx.Services
             return false;
         }
 
-        public async Task<string?> GetVmStatusAsync(ProxmoxCluster cluster, string node, string hostAddress, int vmid)
+        public async Task<string?> GetVmStatusAsync(ProxmoxCluster cluster, string node, string hostAddress, int vmid, CancellationToken ct = default)
         {
-            var client = await GetAuthenticatedClientAsync(cluster);
+            var client = await GetAuthenticatedClientAsync(cluster, ct);
             var url = $"https://{hostAddress}:8006/api2/json/nodes/{node}/qemu/{vmid}/status/current";
 
-            var response = await client.GetAsync(url);
+            var response = await client.GetAsync(url, ct);
             response.EnsureSuccessStatusCode();
 
-            var json = await response.Content.ReadAsStringAsync();
+            var json = await response.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(json);
             return doc.RootElement
                       .GetProperty("data")
@@ -436,14 +464,15 @@ namespace BareProx.Services
             ProxmoxCluster cluster,
             string node,
             string hostAddress,
-            int vmid)
+            int vmid, 
+            CancellationToken ct = default)
         {
-            var client = await GetAuthenticatedClientAsync(cluster);
+            var client = await GetAuthenticatedClientAsync(cluster, ct);
             var url = $"https://{hostAddress}:8006/api2/json/nodes/{node}/qemu/{vmid}/snapshot";
-            var response = await client.GetAsync(url);
+            var response = await client.GetAsync(url, ct);
             response.EnsureSuccessStatusCode();
 
-            var json = await response.Content.ReadAsStringAsync();
+            var json = await response.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(json);
 
             if (!doc.RootElement.TryGetProperty("data", out var dataProp) ||
@@ -491,16 +520,18 @@ namespace BareProx.Services
             string host,
             string hostaddress,
             int vmId,
-            string snapshotName)
+            string snapshotName,
+            CancellationToken ct = default)
         {
             var url = $"https://{hostaddress}:8006/api2/json/nodes/{host}/qemu/{vmId}/snapshot/{snapshotName}";
-            await SendWithRefreshAsync(cluster, HttpMethod.Delete, url);
+            await SendWithRefreshAsync(cluster, HttpMethod.Delete, url, null, ct);
         }
 
         public async Task<List<ProxmoxVM>> GetVmsOnNodeAsync(
             ProxmoxCluster cluster,
             string nodeName,
-            string storageNameFilter)
+            string storageNameFilter,
+            CancellationToken ct = default)
         {
             // 1) Find the hostAddress for that node
             var host = GetHostByNodeName(cluster, nodeName);
@@ -510,8 +541,8 @@ namespace BareProx.Services
 
             // 2) List VMs on that node
             var listUrl = $"https://{hostAddress}:8006/api2/json/nodes/{nodeName}/qemu";
-            var listResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, listUrl);
-            using var listDoc = JsonDocument.Parse(await listResp.Content.ReadAsStringAsync());
+            var listResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, listUrl, null, ct);
+            using var listDoc = JsonDocument.Parse(await listResp.Content.ReadAsStringAsync(ct));
             var vmArray = listDoc.RootElement.GetProperty("data").EnumerateArray();
 
             // regex to find disk lines: scsi0, virtio1, ide2, etc.
@@ -526,8 +557,8 @@ namespace BareProx.Services
 
                 // 3) fetch its full config
                 var cfgUrl = $"https://{hostAddress}:8006/api2/json/nodes/{nodeName}/qemu/{vmid}/config";
-                var cfgResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, cfgUrl);
-                using var cfgDoc = JsonDocument.Parse(await cfgResp.Content.ReadAsStringAsync());
+                var cfgResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, cfgUrl, null, ct);
+                using var cfgDoc = JsonDocument.Parse(await cfgResp.Content.ReadAsStringAsync(ct));
                 var data = cfgDoc.RootElement.GetProperty("data");
 
                 // 4) scan disk entries for our storageNameFilter
@@ -561,7 +592,8 @@ namespace BareProx.Services
             string newVmName,
             string cloneStorageName,
             int ControllerId,
-            bool startDisconnected)
+            bool startDisconnected,
+            CancellationToken ct = default)
         {
             // 1) Parse and validate input JSON
             using var rootDoc = JsonDocument.Parse(originalConfigJson);
@@ -570,7 +602,7 @@ namespace BareProx.Services
 
             // 2) Lookup host
             var host = await _context.ProxmoxHosts
-                .FirstOrDefaultAsync(h => h.HostAddress == hostAddress);
+                .FirstOrDefaultAsync(h => h.HostAddress == hostAddress, ct);
             if (host == null || string.IsNullOrWhiteSpace(host.Hostname))
                 return false;
             var nodeName = host.Hostname;
@@ -578,14 +610,14 @@ namespace BareProx.Services
             // 3) Lookup cluster (for auth context)
             var cluster = await _context.ProxmoxClusters
                 .Include(c => c.Hosts)
-                .FirstOrDefaultAsync();
+                .FirstOrDefaultAsync(ct);
             if (cluster == null || !cluster.Hosts.Any())
                 return false;
 
             // 4) Get next free VMID
             var nextIdUrl = $"https://{hostAddress}:8006/api2/json/cluster/nextid";
-            var idResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, nextIdUrl);
-            var idJson = await idResp.Content.ReadAsStringAsync();
+            var idResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, nextIdUrl, null, ct);
+            var idJson = await idResp.Content.ReadAsStringAsync(ct);
             using var idDoc = JsonDocument.Parse(idJson);
             var vmid = idDoc.RootElement.GetProperty("data").GetString();
             if (string.IsNullOrEmpty(vmid))
@@ -640,8 +672,8 @@ namespace BareProx.Services
 
             try
             {
-                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Post, url, content);
-                var respBody = await resp.Content.ReadAsStringAsync();
+                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Post, url, content, ct);
+                var respBody = await resp.Content.ReadAsStringAsync(ct);
                 Console.WriteLine($"RESTORE VM HTTP {(int)resp.StatusCode}: {respBody}");
                 return resp.IsSuccessStatusCode;
             }
@@ -725,7 +757,8 @@ namespace BareProx.Services
     string hostAddress,
     int originalVmId,
     string storageName,
-    bool startDisconnected)
+    bool startDisconnected,
+    CancellationToken ct = default)
         {
             // 1) Parse and validate input JSON
             using var rootDoc = JsonDocument.Parse(originalConfigJson);
@@ -734,7 +767,7 @@ namespace BareProx.Services
 
             // 2) Lookup host
             var host = await _context.ProxmoxHosts
-                .FirstOrDefaultAsync(h => h.HostAddress == hostAddress);
+                .FirstOrDefaultAsync(h => h.HostAddress == hostAddress, ct);
             if (host == null || string.IsNullOrWhiteSpace(host.Hostname))
                 return false;
             var nodeName = host.Hostname;
@@ -742,7 +775,7 @@ namespace BareProx.Services
             // 3) Lookup cluster (for auth context)
             var cluster = await _context.ProxmoxClusters
                 .Include(c => c.Hosts)
-                .FirstOrDefaultAsync();
+                .FirstOrDefaultAsync(ct);
             if (cluster == null || !cluster.Hosts.Any())
                 return false;
 
@@ -798,8 +831,8 @@ namespace BareProx.Services
 
             try
             {
-                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Post, url, content);
-                var respBody = await resp.Content.ReadAsStringAsync();
+                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Post, url, content, ct);
+                var respBody = await resp.Content.ReadAsStringAsync(ct);
                 Console.WriteLine($"RESTORE VM (Replace) HTTP {(int)resp.StatusCode}: {respBody}");
                 return resp.IsSuccessStatusCode;
             }
@@ -817,7 +850,8 @@ namespace BareProx.Services
     string serverIp,
     string exportPath,
     string content = "images,backup,iso,vztmpl",
-    string options = "vers=3")
+    string options = "vers=3",
+    CancellationToken ct = default)
         {
             var nodeHost = cluster.Hosts.FirstOrDefault(h => h.Hostname == node)?.HostAddress ?? "";
             if (string.IsNullOrEmpty(nodeHost)) return false;
@@ -838,7 +872,7 @@ namespace BareProx.Services
 
             try
             {
-                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Post, url, contentBody);
+                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Post, url, contentBody, ct);
                 return resp.IsSuccessStatusCode;
             }
             catch
@@ -847,15 +881,15 @@ namespace BareProx.Services
             }
         }
         // Shutdown VM
-        public async Task ShutdownAndRemoveVmAsync(ProxmoxCluster cluster, string nodeName, int vmId)
+        public async Task ShutdownAndRemoveVmAsync(ProxmoxCluster cluster, string nodeName, int vmId, CancellationToken ct = default)
         {
             var host = cluster.Hosts.First(h => h.Hostname == nodeName);
             var baseApiUrl = $"https://{host.HostAddress}:8006/api2/json/nodes/{nodeName}/qemu/{vmId}";
 
             // 1) Get current VM status
             var statusUrl = $"{baseApiUrl}/status/current";
-            var statusResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, statusUrl);
-            var statusJson = await statusResp.Content.ReadAsStringAsync();
+            var statusResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, statusUrl, null, ct);
+            var statusJson = await statusResp.Content.ReadAsStringAsync(ct);
             using var statusDoc = JsonDocument.Parse(statusJson);
             var status = statusDoc.RootElement.GetProperty("data").GetProperty("status").GetString();
 
@@ -863,14 +897,14 @@ namespace BareProx.Services
             if (string.Equals(status, "running", StringComparison.OrdinalIgnoreCase))
             {
                 var shutdownUrl = $"{baseApiUrl}/status/stop";
-                await SendWithRefreshAsync(cluster, HttpMethod.Post, shutdownUrl);
+                await SendWithRefreshAsync(cluster, HttpMethod.Post, shutdownUrl, null, ct);
 
                 var sw = Stopwatch.StartNew();
                 var maxWait = TimeSpan.FromMinutes(5);
                 while (sw.Elapsed < maxWait)
                 {
-                    var pollResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, statusUrl);
-                    var pollJson = await pollResp.Content.ReadAsStringAsync();
+                    var pollResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, statusUrl, null, ct);
+                    var pollJson = await pollResp.Content.ReadAsStringAsync(ct);
                     using var pollDoc = JsonDocument.Parse(pollJson);
                     var s = pollDoc.RootElement.GetProperty("data").GetProperty("status").GetString();
                     if (string.Equals(s, "stopped", StringComparison.OrdinalIgnoreCase))
@@ -883,7 +917,7 @@ namespace BareProx.Services
 
             // 3) Delete VM
             var deleteUrl = baseApiUrl;
-            await SendWithRefreshAsync(cluster, HttpMethod.Delete, deleteUrl);
+            await SendWithRefreshAsync(cluster, HttpMethod.Delete, deleteUrl, null, ct);
         }
 
         /// <summary>
@@ -892,7 +926,8 @@ namespace BareProx.Services
         public async Task<bool> UnmountNfsStorageViaApiAsync(
             ProxmoxCluster cluster,
             string nodeName,
-            string storageName)
+            string storageName, 
+            CancellationToken ct = default)
         {
             // Find the host entry for this node
             var host = GetHostByNodeName(cluster, nodeName);
@@ -903,7 +938,7 @@ namespace BareProx.Services
             try
             {
                 // Send the DELETE. SendWithRefreshAsync will retry once on 401.
-                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Delete, url);
+                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Delete, url, null, ct);
                 return resp.IsSuccessStatusCode;
             }
             catch
@@ -915,7 +950,8 @@ namespace BareProx.Services
 
         public async Task<Dictionary<string, List<ProxmoxVM>>> GetVmsByStorageListAsync(
     ProxmoxCluster cluster,
-    List<string> storageNames)
+    List<string> storageNames,
+    CancellationToken ct = default)
         {
             var result = new Dictionary<string, List<ProxmoxVM>>();
 
@@ -925,7 +961,7 @@ namespace BareProx.Services
 
                 foreach (var host in cluster.Hosts)
                 {
-                    var vms = await GetVmsOnNodeAsync(cluster, host.Hostname, storage);
+                    var vms = await GetVmsOnNodeAsync(cluster, host.Hostname, storage, ct);
                     result[storage].AddRange(vms);
                 }
             }
@@ -933,7 +969,7 @@ namespace BareProx.Services
             return result;
         }
 
-        public async Task<List<ProxmoxStorageDto>> GetNfsStorageAsync(ProxmoxCluster cluster)
+        public async Task<List<ProxmoxStorageDto>> GetNfsStorageAsync(ProxmoxCluster cluster, CancellationToken ct = default)
         {
             var result = new List<ProxmoxStorageDto>();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase); // avoid duplicates by name
@@ -944,8 +980,8 @@ namespace BareProx.Services
 
                 try
                 {
-                    var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url);
-                    var json = await resp.Content.ReadAsStringAsync();
+                    var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+                    var json = await resp.Content.ReadAsStringAsync(ct);
                     using var doc = JsonDocument.Parse(json);
 
                     foreach (var item in doc.RootElement.GetProperty("data").EnumerateArray())

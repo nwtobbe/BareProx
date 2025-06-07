@@ -24,6 +24,7 @@ using BareProx.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 
 namespace BareProx.Controllers
 {
@@ -51,19 +52,19 @@ namespace BareProx.Controllers
         }
 
         [HttpGet]
-        public async Task<IActionResult> CreateSchedule()
+        public async Task<IActionResult> CreateSchedule(CancellationToken ct)
         {
             // 1) Load all clusters (with their hosts)
             var clusters = await _context.ProxmoxClusters
                                          .Include(c => c.Hosts)
-                                         .ToListAsync();
+                                         .ToListAsync(ct);
             if (!clusters.Any())
                 return NotFound("No Proxmox clusters configured.");
 
             // 2) Load all primary NetApp controllers
             var primaryControllers = await _context.NetappControllers
                                                    .Where(n => n.IsPrimary)
-                                                   .ToListAsync();
+                                                   .ToListAsync(ct);
             if (!primaryControllers.Any())
                 return NotFound("No primary NetApp controllers configured.");
 
@@ -72,13 +73,17 @@ namespace BareProx.Controllers
 
             // 4) Build metadata: storageName → which cluster/controller first provided it
             var volumeMeta = new Dictionary<string, VolumeMeta>(StringComparer.OrdinalIgnoreCase);
+            var selectedVolumes = await _context.SelectedNetappVolumes.ToListAsync(ct);
+            if (!selectedVolumes.Any())
+                return NotFound("No selected NetApp volumes configured.");
+
 
             foreach (var cluster in clusters)
             {
                 foreach (var controller in primaryControllers)
                 {
                     var map = await _proxmoxService
-                        .GetEligibleBackupStorageWithVMsAsync(cluster, controller.Id);
+                        .GetEligibleBackupStorageWithVMsAsync(cluster, controller.Id, null, ct);
 
                     if (map == null) continue;
 
@@ -98,10 +103,15 @@ namespace BareProx.Controllers
                         // record the first cluster/controller that had this storage
                         if (!volumeMeta.ContainsKey(storageName))
                         {
+                            // Find the SelectedNetappVolume for this storage and controller
+                            var volInfo = selectedVolumes.FirstOrDefault(
+                                v => v.VolumeName == storageName && v.NetappControllerId == controller.Id
+                            );
                             volumeMeta[storageName] = new VolumeMeta
                             {
                                 ClusterId = cluster.Id,
-                                ControllerId = controller.Id
+                                ControllerId = controller.Id,
+                                SnapshotLockingEnabled = volInfo?.SnapshotLockingEnabled == true
                             };
                         }
                     }
@@ -109,8 +119,7 @@ namespace BareProx.Controllers
             }
 
             // 5) Compute replicable volumes (your existing logic)
-            var selectedVolumes = await _context.SelectedNetappVolumes.ToListAsync();
-            var relationships = await _context.SnapMirrorRelations.ToListAsync();
+            var relationships = await _context.SnapMirrorRelations.ToListAsync(ct);
             var replicableVolumes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var rel in relationships)
@@ -167,7 +176,7 @@ namespace BareProx.Controllers
 
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> CreateSchedule(CreateScheduleRequest model)
+        public async Task<IActionResult> CreateSchedule(CreateScheduleRequest model, CancellationToken ct)
         {
             // 0) Conditional ModelState cleanup for Hourly vs Daily/Weekly
             if (model.SingleSchedule != null)
@@ -189,8 +198,8 @@ namespace BareProx.Controllers
             if (!ModelState.IsValid || model.SingleSchedule == null)
             {
                 // a) Fetch clusters + primary controllers
-                var clusters = await _context.ProxmoxClusters.Include(c => c.Hosts).ToListAsync();
-                var primaryControllers = await _context.NetappControllers.Where(n => n.IsPrimary).ToListAsync();
+                var clusters = await _context.ProxmoxClusters.Include(c => c.Hosts).ToListAsync(ct);
+                var primaryControllers = await _context.NetappControllers.Where(n => n.IsPrimary).ToListAsync(ct);
 
                 // b) Build combinedStorage & volumeMeta
                 var combinedStorage = new Dictionary<string, List<ProxmoxVM>>(StringComparer.OrdinalIgnoreCase);
@@ -200,7 +209,7 @@ namespace BareProx.Controllers
                 {
                     foreach (var ctrl in primaryControllers)
                     {
-                        var map = await _proxmoxService.GetEligibleBackupStorageWithVMsAsync(cluster, ctrl.Id);
+                        var map = await _proxmoxService.GetEligibleBackupStorageWithVMsAsync(cluster, ctrl.Id, null, ct);
                         if (map == null) continue;
 
                         foreach (var kv in map)
@@ -225,8 +234,8 @@ namespace BareProx.Controllers
                 }
 
                 // c) Compute replicableVolumes
-                var selectedVolumes = await _context.SelectedNetappVolumes.ToListAsync();
-                var relations = await _context.SnapMirrorRelations.ToListAsync();
+                var selectedVolumes = await _context.SelectedNetappVolumes.ToListAsync(ct);
+                var relations = await _context.SnapMirrorRelations.ToListAsync(ct);
                 var replicableVolumes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 foreach (var rel in relations)
@@ -292,11 +301,22 @@ namespace BareProx.Controllers
                 LastRun = null,
                 ReplicateToSecondary = model.ReplicateToSecondary,
                 ClusterId = model.ClusterId,
-                ControllerId = model.ControllerId
+                ControllerId = model.ControllerId,
+
+                // Locking fields
+                EnableLocking = model.EnableLocking,
+                LockRetentionCount = model.LockRetentionCount,
+                LockRetentionUnit = model.LockRetentionUnit
             };
 
+            if (!model.EnableLocking)
+            {
+                model.LockRetentionCount = null;
+                model.LockRetentionUnit = null;
+            }
+
             _context.BackupSchedules.Add(schedule);
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(ct);
 
             TempData["SuccessMessage"] = "Backup schedule created successfully!";
             return RedirectToAction("Backup");
@@ -306,24 +326,25 @@ namespace BareProx.Controllers
 
         // GET: EditSchedule
         [HttpGet]
-        public async Task<IActionResult> EditSchedule(int id)
+        public async Task<IActionResult> EditSchedule(int id, CancellationToken ct)
         {
-            var schedule = await _context.BackupSchedules.FindAsync(id);
+            var schedule = await _context.BackupSchedules.FindAsync(id, ct);
             if (schedule == null) return NotFound();
 
             // 1) Load all clusters + primary NetApp controllers
-            var clusters = await _context.ProxmoxClusters.Include(c => c.Hosts).ToListAsync();
-            var primaryControllers = await _context.NetappControllers.Where(n => n.IsPrimary).ToListAsync();
+            var clusters = await _context.ProxmoxClusters.Include(c => c.Hosts).ToListAsync(ct);
+            var primaryControllers = await _context.NetappControllers.Where(n => n.IsPrimary).ToListAsync(ct);
 
             // 2) Build combinedStorage & volumeMeta
             var combinedStorage = new Dictionary<string, List<ProxmoxVM>>(StringComparer.OrdinalIgnoreCase);
             var volumeMeta = new Dictionary<string, VolumeMeta>(StringComparer.OrdinalIgnoreCase);
+            var selectedVolumes = await _context.SelectedNetappVolumes.ToListAsync(ct);
 
             foreach (var cluster in clusters)
             {
                 foreach (var controller in primaryControllers)
                 {
-                    var map = await _proxmoxService.GetEligibleBackupStorageWithVMsAsync(cluster, controller.Id);
+                    var map = await _proxmoxService.GetEligibleBackupStorageWithVMsAsync(cluster, controller.Id, null, ct);
                     if (map == null) continue;
 
                     foreach (var kv in map)
@@ -339,10 +360,15 @@ namespace BareProx.Controllers
                         // record first meta
                         if (!volumeMeta.ContainsKey(kv.Key))
                         {
+                            // Lookup volume for locking
+                            var volInfo = selectedVolumes.FirstOrDefault(
+                                v => v.VolumeName == kv.Key && v.NetappControllerId == controller.Id
+                            );
                             volumeMeta[kv.Key] = new VolumeMeta
                             {
                                 ClusterId = cluster.Id,
-                                ControllerId = controller.Id
+                                ControllerId = controller.Id,
+                                SnapshotLockingEnabled = volInfo?.SnapshotLockingEnabled == true
                             };
                         }
                     }
@@ -350,8 +376,7 @@ namespace BareProx.Controllers
             }
 
             // 3) replicableVolumes logic (unchanged)
-            var selectedVolumes = await _context.SelectedNetappVolumes.ToListAsync();
-            var relationships = await _context.SnapMirrorRelations.ToListAsync();
+            var relationships = await _context.SnapMirrorRelations.ToListAsync(ct);
             var replicableVolumes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var rel in relationships)
@@ -403,6 +428,9 @@ namespace BareProx.Controllers
                 UseProxmoxSnapshot = schedule.UseProxmoxSnapshot,
                 WithMemory = schedule.WithMemory,
                 ReplicateToSecondary = schedule.ReplicateToSecondary,
+                EnableLocking = schedule.EnableLocking,
+                LockRetentionCount = schedule.LockRetentionCount,
+                LockRetentionUnit = schedule.LockRetentionUnit,
 
                 ExcludedVmIds = schedule.ExcludedVmIds?.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList()
                                        ?? new List<string>(),
@@ -438,6 +466,12 @@ namespace BareProx.Controllers
                 }
             };
 
+            if (!model.EnableLocking)
+            {
+                model.LockRetentionCount = null;
+                model.LockRetentionUnit = null;
+            }
+
             ViewData["ScheduleId"] = id;
             return View("EditSchedule", model);
         }
@@ -446,12 +480,12 @@ namespace BareProx.Controllers
         // POST: EditSchedule
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> EditSchedule(int id, CreateScheduleRequest model)
+        public async Task<IActionResult> EditSchedule(int id, CreateScheduleRequest model, CancellationToken ct)
         {
             if (!ModelState.IsValid)
                 return View("EditSchedule", model);
 
-            var schedule = await _context.BackupSchedules.FindAsync(id);
+            var schedule = await _context.BackupSchedules.FindAsync(id, ct);
             if (schedule == null) return NotFound();
 
             // 1) Update core fields
@@ -485,7 +519,17 @@ namespace BareProx.Controllers
             schedule.ClusterId = model.ClusterId;
             schedule.ControllerId = model.ControllerId;
 
-            await _context.SaveChangesAsync();
+            // 5) Locking fields
+            schedule.EnableLocking = model.EnableLocking;
+            if (model.EnableLocking)
+            {
+                model.LockRetentionUnit = null;
+                model.LockRetentionCount = null;
+            }
+            schedule.LockRetentionCount = model.LockRetentionCount;
+            schedule.LockRetentionUnit = model.LockRetentionUnit;
+
+            await _context.SaveChangesAsync(ct);
             TempData["SuccessMessage"] = "Backup schedule updated successfully.";
             return RedirectToAction("Backup");
         }
@@ -505,7 +549,7 @@ namespace BareProx.Controllers
 
 
         [HttpPost]
-        public IActionResult StartBackupNow([FromForm] BackupRequest request)
+        public IActionResult StartBackupNow([FromForm] BackupRequest request, CancellationToken ct)
         {
             if (string.IsNullOrEmpty(request.StorageName) || request.RetentionCount < 1 || request.RetentionCount > 999)
                 return BadRequest("Invalid input");
@@ -516,6 +560,12 @@ namespace BareProx.Controllers
 
                 var scopedBackupService = scope.ServiceProvider.GetRequiredService<IBackupService>();
                 var logger = scope.ServiceProvider.GetRequiredService<ILogger<BackupController>>();
+
+                if (!request.EnableLocking)
+                {
+                    request.LockRetentionCount = null;
+                    request.LockRetentionUnit = null;
+                }
 
                 try
                 {
@@ -534,7 +584,12 @@ namespace BareProx.Controllers
                         request.WithMemory,
                         request.DontTrySuspend,
                         request.ScheduleID,
-                        request.ReplicateToSecondary
+                        request.ReplicateToSecondary,
+                        // new locking parameters
+                        request.EnableLocking,
+                        request.LockRetentionCount,
+                        request.LockRetentionUnit,
+                        ct
 
                     );
 

@@ -1,12 +1,29 @@
-﻿using BareProx.Data;
+﻿/*
+ * BareProx - Backup and Restore Automation for Proxmox using NetApp
+ *
+ * Copyright (C) 2025 Tobias Modig
+ *
+ * This file is part of BareProx.
+ *
+ * BareProx is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * BareProx is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.EntityFrameworkCore;
-using System.Threading.Tasks;
-using System.Linq;
-using System;
 
 namespace BareProx.Controllers
 {
@@ -35,21 +52,21 @@ namespace BareProx.Controllers
             _tz = tz;
         }
 
-        public async Task<IActionResult> Index()
+        public async Task<IActionResult> Index(CancellationToken ct)
         {
             // 1) Load all backup‐points
             var backups = await _context.BackupRecords
                                         .OrderByDescending(r => r.TimeStamp)
-                                        .ToListAsync();
+                                        .ToListAsync(ct);
 
             // 2) Load all snapshots, keyed by their JobId
             var snapsByJob = await _context.NetappSnapshots
-                .ToDictionaryAsync(s => s.JobId);
+                                           .ToDictionaryAsync(s => s.JobId, ct);
 
             // 3) Get the Proxmox cluster info
             var proxCluster = await _context.ProxmoxClusters
-                .Select(c => new { c.Id, c.Name })
-                .FirstOrDefaultAsync();
+                                            .Select(c => new { c.Id, c.Name })
+                                            .FirstOrDefaultAsync(ct);
             if (proxCluster == null)
                 return StatusCode(500, "Cluster not configured");
 
@@ -84,18 +101,21 @@ namespace BareProx.Controllers
             return View(vmList);
         }
 
-
-
-
-        public async Task<IActionResult> Restore(int backupId, int clusterId, int controllerId, string target)
+        public async Task<IActionResult> Restore(
+            int backupId,
+            int clusterId,
+            int controllerId,
+            string target,
+            CancellationToken ct)
         {
-            var record = await _context.BackupRecords.FindAsync(backupId);
+            var record = await _context.BackupRecords.FindAsync(new object[] { backupId }, ct);
             if (record == null) return NotFound();
 
             var cluster = await _context.ProxmoxClusters
-            .Include(c => c.Hosts)
-            .FirstOrDefaultAsync(c => c.Id == clusterId);
-            if (cluster == null) return StatusCode(500, "Cluster not configured");
+                                        .Include(c => c.Hosts)
+                                        .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
+            if (cluster == null)
+                return StatusCode(500, "Cluster not configured");
 
             var originalHost = cluster.Hosts.FirstOrDefault(h => h.Hostname == record.HostName);
 
@@ -116,56 +136,84 @@ namespace BareProx.Controllers
                 OriginalHostName = originalHost?.Hostname
             };
             vm.HostOptions = cluster.Hosts
-                .Select(h => new SelectListItem { Value = h.HostAddress, Text = $"{h.Hostname} ({h.HostAddress})" })
-                .ToList();
+                                    .Select(h => new SelectListItem
+                                    {
+                                        Value = h.HostAddress,
+                                        Text = $"{h.Hostname} ({h.HostAddress})"
+                                    })
+                                    .ToList();
 
             return View(vm);
         }
 
         [HttpPost]
-        public async Task<IActionResult> PerformRestore(RestoreFormViewModel model)
+        public async Task<IActionResult> PerformRestore(
+            RestoreFormViewModel model,
+            CancellationToken ct)
         {
-            var backup = await _context.BackupRecords.FindAsync(model.BackupId);
+            var backup = await _context.BackupRecords.FindAsync(new object[] { model.BackupId }, ct);
             if (backup == null) return RedirectToAction(nameof(Index));
 
             var cluster = await _context.ProxmoxClusters
-                .Include(c => c.Hosts)
-                .FirstOrDefaultAsync();
+                                        .Include(c => c.Hosts)
+                                        .FirstOrDefaultAsync(ct);
             if (cluster == null)
             {
                 TempData["Error"] = "Cluster not configured";
                 return RedirectToAction(nameof(Index));
             }
 
-            var origHost = cluster.Hosts.FirstOrDefault(h => h.HostAddress == model.OriginalHostAddress);
+            var origHost = cluster.Hosts
+                                  .FirstOrDefault(h => h.HostAddress == model.OriginalHostAddress);
+
             bool origExists = origHost != null &&
-                await _proxmoxService.CheckIfVmExistsAsync(cluster, origHost, int.Parse(model.VmId));
+                await _proxmoxService.CheckIfVmExistsAsync(
+                    cluster,
+                    origHost,
+                    int.Parse(model.VmId),
+                    ct);
 
             if (model.RestoreType == RestoreType.ReplaceOriginal && !origExists)
                 model.RestoreType = RestoreType.CreateNew;
 
-            var targetHost = cluster.Hosts.FirstOrDefault(h => h.HostAddress == model.HostAddress);
+            var targetHost = cluster.Hosts
+                                     .FirstOrDefault(h => h.HostAddress == model.HostAddress);
             if (targetHost == null)
             {
-                ModelState.AddModelError(nameof(model.HostAddress), "Select a valid host");
+                ModelState.AddModelError(
+                    nameof(model.HostAddress),
+                    "Select a valid host");
+
                 model.HostOptions = cluster.Hosts
-                    .Select(h => new SelectListItem { Value = h.HostAddress, Text = $"{h.Hostname} ({h.HostAddress})" })
-                    .ToList();
+                                          .Select(h => new SelectListItem
+                                          {
+                                              Value = h.HostAddress,
+                                              Text = $"{h.Hostname} ({h.HostAddress})"
+                                          })
+                                          .ToList();
                 return View("Restore", model);
             }
 
-            if (model.RestoreType == RestoreType.CreateNew && string.IsNullOrWhiteSpace(model.NewVmName))
+            if (model.RestoreType == RestoreType.CreateNew &&
+                string.IsNullOrWhiteSpace(model.NewVmName))
             {
-                ModelState.AddModelError(nameof(model.NewVmName), "Enter a name for the new VM");
+                ModelState.AddModelError(
+                    nameof(model.NewVmName),
+                    "Enter a name for the new VM");
+
                 model.HostOptions = cluster.Hosts
-                    .Select(h => new SelectListItem { Value = h.HostAddress, Text = $"{h.Hostname} ({h.HostAddress})" })
-                    .ToList();
+                                          .Select(h => new SelectListItem
+                                          {
+                                              Value = h.HostAddress,
+                                              Text = $"{h.Hostname} ({h.HostAddress})"
+                                          })
+                                          .ToList();
                 return View("Restore", model);
             }
 
-            //model.ControllerId = backup.ControllerId;
-
-            var success = await _restoreService.RunRestoreAsync(model);
+            // If RunRestoreAsync supports CancellationToken, pass `ct` as a second argument.
+            // Otherwise, omit it.
+            var success = await _restoreService.RunRestoreAsync(model, ct);
             TempData["Message"] = success ? "Restore queued" : "Restore failed";
             return RedirectToAction(nameof(Index));
         }

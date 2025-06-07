@@ -1,4 +1,24 @@
-﻿using BareProx.Data;
+﻿/*
+ * BareProx - Backup and Restore Automation for Proxmox using NetApp
+ *
+ * Copyright (C) 2025 Tobias Modig
+ *
+ * This file is part of BareProx.
+ *
+ * BareProx is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * BareProx is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+using BareProx.Data;
 using BareProx.Services;
 using Microsoft.EntityFrameworkCore;
 
@@ -16,14 +36,25 @@ public class SnapMirrorSyncService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+
+        var nextSelectedVolumeUpdate = DateTime.UtcNow;
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
                 using var scope = _services.CreateScope();
                 var netappService = scope.ServiceProvider.GetRequiredService<INetappService>();
-                await netappService.SyncSnapMirrorRelationsAsync();
+                await netappService.SyncSnapMirrorRelationsAsync(stoppingToken);
                 await EnsureSnapMirrorPoliciesAsync(stoppingToken);
+
+                // Check if it's time to update volumes
+                if (DateTime.UtcNow >= nextSelectedVolumeUpdate)
+                {
+                    await netappService.UpdateAllSelectedVolumesAsync(stoppingToken);
+                    nextSelectedVolumeUpdate = DateTime.UtcNow.AddHours(1);
+                }
+
             }
             catch (Exception ex)
             {
@@ -34,7 +65,7 @@ public class SnapMirrorSyncService : BackgroundService
             await Task.Delay(TimeSpan.FromMinutes(2), stoppingToken);
         } 
     }
-         private async Task EnsureSnapMirrorPoliciesAsync(CancellationToken ct)
+    private async Task EnsureSnapMirrorPoliciesAsync(CancellationToken ct)
     {
         using var scope = _services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -66,7 +97,11 @@ public class SnapMirrorSyncService : BackgroundService
             {
                 _logger.LogError(ex, "Failed to sync SnapMirror policy for controller {ControllerId} and policy {PolicyUuid}", pair.DestinationControllerId, pair.PolicyUuid);
             }
-        }
+        } }
+
+
     }
-}
+
+
+
 

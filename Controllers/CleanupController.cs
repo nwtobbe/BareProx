@@ -1,4 +1,24 @@
-﻿using BareProx.Data;
+﻿/*
+ * BareProx - Backup and Restore Automation for Proxmox using NetApp
+ *
+ * Copyright (C) 2025 Tobias Modig
+ *
+ * This file is part of BareProx.
+ *
+ * BareProx is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * BareProx is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -22,14 +42,14 @@ namespace BareProx.Controllers
             _proxmoxService = proxmoxService;
         }
 
-        public async Task<IActionResult> Index()
+        public async Task<IActionResult> Index(CancellationToken ct)
         {
             var pageVm = new CleanupPageViewModel();
 
             // 1) Load all Proxmox clusters including their Hosts
             var clusters = await _context.ProxmoxClusters
                                          .Include(c => c.Hosts)
-                                         .ToListAsync();
+                                         .ToListAsync(ct);
 
             if (clusters.Count == 0)
             {
@@ -39,7 +59,7 @@ namespace BareProx.Controllers
 
             // 2) Find the single primary NetApp controller
             var primaryController = await _context.NetappControllers
-                                                  .FirstOrDefaultAsync(c => c.IsPrimary);
+                                                  .FirstOrDefaultAsync(c => c.IsPrimary, ct);
             if (primaryController == null)
             {
                 pageVm.WarningMessage = "No primary NetApp controller is configured.";
@@ -49,14 +69,14 @@ namespace BareProx.Controllers
             int controllerId = primaryController.Id;
 
             // 3) Fetch the full list of all FlexClones on that controller once:
-            var allClones = await _netappService.ListFlexClonesAsync(controllerId);
+            var allClones = await _netappService.ListFlexClonesAsync(controllerId, ct);
 
             // 4) Build a HashSet of all backup‐recorded snapshots from the DB:
             //    We assume there is a DbSet<BackupRecord> with (VolumeName, SnapshotName) columns.
             //    Replace "BackupRecords" with whatever your actual EF Core DbSet is called.
             var backupRecords = await _context.Set<BackupRecord>()
                 .AsNoTracking()
-                .ToListAsync();
+                .ToListAsync(ct);
 
             var recordedSnapshotsByVolume = backupRecords
                 .GroupBy(r => r.StorageName, StringComparer.OrdinalIgnoreCase)
@@ -84,7 +104,7 @@ namespace BareProx.Controllers
                 {
                     // 5A.1) Determine mount‐IP for this clone
                     var mountInfo = (await _netappService
-                                          .GetVolumesWithMountInfoAsync(controllerId))
+                                          .GetVolumesWithMountInfoAsync(controllerId, ct))
                                     .FirstOrDefault(m => m.VolumeName == cloneName);
                     string? mountIp = mountInfo?.MountIp;
 
@@ -94,7 +114,7 @@ namespace BareProx.Controllers
                     {
                         var nodeName = host.Hostname ?? host.HostAddress!;
                         var vmsOnNode = await _proxmoxService
-                            .GetVmsOnNodeAsync(cluster, nodeName, cloneName);
+                            .GetVmsOnNodeAsync(cluster, nodeName, cloneName, ct);
 
                         if (vmsOnNode?.Any() == true)
                             attachedVMs.AddRange(vmsOnNode);
@@ -131,7 +151,7 @@ namespace BareProx.Controllers
                     };
 
                     // 5B.3) Fetch all snapshot names on storage for this volume
-                    var allSnapshotNamesOnDisk = await _netappService.GetSnapshotsAsync(controllerId, vol)
+                    var allSnapshotNamesOnDisk = await _netappService.GetSnapshotsAsync(controllerId, vol, ct)
                         ?? new List<string>();
 
                     // 5B.4) Which snapshots are already in BackupRecords?
@@ -169,7 +189,7 @@ namespace BareProx.Controllers
                             // 5B.6b) If that clone exists, is it mounted on this cluster?
                             //          Fetch mount info once again, only for this one clone.
                             var singleMount = (await _netappService
-                                                    .GetVolumesWithMountInfoAsync(controllerId))
+                                                    .GetVolumesWithMountInfoAsync(controllerId, ct))
                                               .FirstOrDefault(m => m.VolumeName == cloneForThisSnapshot);
                             info.CloneMountIp = singleMount?.MountIp;
 
@@ -181,7 +201,7 @@ namespace BareProx.Controllers
                                 {
                                     var nodeName = host.Hostname ?? host.HostAddress!;
                                     var vms = await _proxmoxService
-                                        .GetVmsOnNodeAsync(cluster, nodeName, cloneForThisSnapshot);
+                                        .GetVmsOnNodeAsync(cluster, nodeName, cloneForThisSnapshot, ct);
                                     if (vms?.Any() == true)
                                         vmsOnClone.AddRange(vms);
                                 }
@@ -206,7 +226,7 @@ namespace BareProx.Controllers
 
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> Cleanup(string volumeName, string mountIp)
+        public async Task<IActionResult> Cleanup(string volumeName, string mountIp, CancellationToken ct)
         {
             if (string.IsNullOrWhiteSpace(volumeName) || string.IsNullOrWhiteSpace(mountIp))
                 return BadRequest(new { error = "Missing volume or mount IP." });
@@ -214,7 +234,7 @@ namespace BareProx.Controllers
             // Reload cluster + hosts
             var cluster = await _context.ProxmoxClusters
                                         .Include(c => c.Hosts)
-                                        .FirstOrDefaultAsync();
+                                        .FirstOrDefaultAsync(ct);
             if (cluster == null)
                 return NotFound(new { error = "Proxmox cluster not configured." });
 
@@ -227,7 +247,7 @@ namespace BareProx.Controllers
                 try
                 {
                     await _proxmoxService.UnmountNfsStorageViaApiAsync(
-                        cluster, host.Hostname!, volumeName);
+                        cluster, host.Hostname!, volumeName, ct);
                     successfulHost = host;
                     break;
                 }
@@ -269,21 +289,21 @@ namespace BareProx.Controllers
         // — New: DELETE a single snapshot
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> CleanupSnapshot(string volumeName, string snapshotName)
+        public async Task<IActionResult> CleanupSnapshot(string volumeName, string snapshotName, CancellationToken ct)
         {
             if (string.IsNullOrWhiteSpace(volumeName) || string.IsNullOrWhiteSpace(snapshotName))
                 return BadRequest(new { error = "Missing volume or snapshot name." });
 
             var controllerId = await _context.NetappControllers
                                              .Select(c => c.Id)
-                                             .FirstOrDefaultAsync();
+                                             .FirstOrDefaultAsync(ct);
             if (controllerId == 0)
                 return NotFound(new { error = "No NetApp controller configured." });
 
             var result = await _netappService.DeleteSnapshotAsync(
                              controllerId,
                              volumeName,
-                             snapshotName);
+                             snapshotName, ct);
 
             if (!result.Success)
             {

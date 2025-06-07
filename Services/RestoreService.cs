@@ -1,12 +1,29 @@
-﻿using System;
-using System.Linq;
+﻿/*
+ * BareProx - Backup and Restore Automation for Proxmox using NetApp
+ *
+ * Copyright (C) 2025 Tobias Modig
+ *
+ * This file is part of BareProx.
+ *
+ * BareProx is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * BareProx is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
+ */
+
 using System.Text.Json;
-using System.Threading.Tasks;
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services.Background;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
+
 
 namespace BareProx.Services
 {
@@ -29,7 +46,7 @@ namespace BareProx.Services
             _logger = logger;
         }
 
-        public async Task<bool> RunRestoreAsync(RestoreFormViewModel model)
+        public async Task<bool> RunRestoreAsync(RestoreFormViewModel model, CancellationToken ct)
         {
             // 1) Create job record
             var job = new Job
@@ -41,11 +58,11 @@ namespace BareProx.Services
                 StartedAt = DateTime.UtcNow
             };
             _context.Jobs.Add(job);
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(ct);
             var jobId = job.Id;
 
             // 2) Enqueue background work
-            _taskQueue.QueueBackgroundWorkItem(async ct =>
+            _taskQueue.QueueBackgroundWorkItem(async backgroundCt =>
             {
                 using var scope = _scopeFactory.CreateScope();
                 var ctx = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -53,10 +70,10 @@ namespace BareProx.Services
                 var proxmox = scope.ServiceProvider.GetRequiredService<ProxmoxService>();
 
                 // Reload job in new context
-                var backgroundJob = await ctx.Jobs.FindAsync(new object[] { jobId }, ct);
+                var backgroundJob = await ctx.Jobs.FindAsync(new object[] { jobId }, backgroundCt);
                 backgroundJob.Status = "Running";
                 backgroundJob.StartedAt = DateTime.UtcNow;
-                await ctx.SaveChangesAsync(ct);
+                await ctx.SaveChangesAsync(backgroundCt);
 
                 try
                 {
@@ -68,7 +85,9 @@ namespace BareProx.Services
                         model.VolumeName,
                         model.SnapshotName,
                         cloneName,
-                        model.ControllerId);
+                        model.ControllerId,
+                        backgroundCt);
+
                     if (!cloneResult.Success)
                         throw new InvalidOperationException(cloneResult.Message);
 
@@ -76,15 +95,17 @@ namespace BareProx.Services
                     var policyOk = await netapp.CopyExportPolicyAsync(
                         model.VolumeName,
                         cloneName,
-                        model.ControllerId);
+                        model.ControllerId,
+                        backgroundCt);
+
                     if (!policyOk)
                     {
-                        await netapp.DeleteVolumeAsync(cloneName, model.ControllerId);
+                        await netapp.DeleteVolumeAsync(cloneName, model.ControllerId, backgroundCt);
                         throw new InvalidOperationException("Failed to apply export policy.");
                     }
 
                     // 5) Ensure export path is set
-                    var volInfo = await netapp.LookupVolumeAsync(cloneName, model.ControllerId);
+                    var volInfo = await netapp.LookupVolumeAsync(cloneName, model.ControllerId, backgroundCt);
                     if (volInfo == null)
                         throw new InvalidOperationException($"UUID not found for clone '{cloneName}'.");
 
@@ -92,33 +113,38 @@ namespace BareProx.Services
                     var exported = await netapp.SetVolumeExportPathAsync(
                         volInfo.Uuid,
                         exportPath,
-                        model.ControllerId);
+                        model.ControllerId,
+                        backgroundCt);
+
                     if (!exported)
                     {
-                        await netapp.DeleteVolumeAsync(cloneName, model.ControllerId);
+                        await netapp.DeleteVolumeAsync(cloneName, model.ControllerId, backgroundCt);
                         throw new InvalidOperationException($"Failed to export clone '{cloneName}'.");
                     }
 
                     // 6) Mount on target host
-                    var mounts = await netapp.GetVolumesWithMountInfoAsync(model.ControllerId);
+                    var mounts = await netapp.GetVolumesWithMountInfoAsync(model.ControllerId, backgroundCt);
                     var cloneMount = mounts.FirstOrDefault(m =>
-                        m.VolumeName.Equals(cloneName, StringComparison.OrdinalIgnoreCase)
-                    );
+                        m.VolumeName.Equals(cloneName, StringComparison.OrdinalIgnoreCase));
+
                     if (cloneMount == null)
                         throw new InvalidOperationException($"Mount info not found for clone '{cloneName}'.");
 
                     // Load the cluster with hosts
                     var clusterInfo = await ctx.ProxmoxClusters
                         .Include(c => c.Hosts)
-                        .FirstOrDefaultAsync(c => c.Hosts.Any(), ct);
+                        .FirstOrDefaultAsync(c => c.Hosts.Any(), backgroundCt);
+
                     if (clusterInfo == null)
                         throw new InvalidOperationException("Proxmox cluster not found.");
 
                     // Identify original and target hosts
                     var origHost = clusterInfo.Hosts
                         .FirstOrDefault(h => h.HostAddress == model.OriginalHostAddress);
+
                     var targetHost = clusterInfo.Hosts
                         .FirstOrDefault(h => h.HostAddress == model.HostAddress);
+
                     if (targetHost == null)
                         throw new InvalidOperationException("Selected target host not found in cluster.");
 
@@ -129,9 +155,10 @@ namespace BareProx.Services
                         cloneName,
                         cloneMount.MountIp,
                         exportPath);
+
                     if (!mountSuccess)
                     {
-                        await netapp.DeleteVolumeAsync(cloneName, model.ControllerId);
+                        await netapp.DeleteVolumeAsync(cloneName, model.ControllerId, backgroundCt);
                         throw new InvalidOperationException("Failed to mount clone on target host.");
                     }
 
@@ -143,7 +170,8 @@ namespace BareProx.Services
                         await proxmox.ShutdownAndRemoveVmAsync(
                             clusterInfo,
                             origHost.Hostname!,
-                            int.Parse(model.VmId));
+                            int.Parse(model.VmId),
+                            backgroundCt);
 
                         // Restore using original VMID on target host
                         restored = await proxmox.RestoreVmFromConfigWithOriginalIdAsync(
@@ -151,7 +179,8 @@ namespace BareProx.Services
                             targetHost.HostAddress,
                             int.Parse(model.VmId),
                             cloneName,
-                            model.StartDisconnected);
+                            model.StartDisconnected,
+                            backgroundCt);
                     }
                     else
                     {
@@ -159,10 +188,11 @@ namespace BareProx.Services
                         restored = await proxmox.RestoreVmFromConfigAsync(
                             model.OriginalConfig,
                             targetHost.HostAddress,
-                            model.NewVmName,
+                            model.NewVmName!,
                             cloneName,
                             model.ControllerId,
-                            model.StartDisconnected);
+                            model.StartDisconnected,
+                            backgroundCt);
                     }
 
                     if (!restored)
@@ -171,7 +201,7 @@ namespace BareProx.Services
                     // 8) Mark success
                     backgroundJob.Status = "Completed";
                     backgroundJob.CompletedAt = DateTime.UtcNow;
-                    await ctx.SaveChangesAsync(ct);
+                    await ctx.SaveChangesAsync(backgroundCt);
                 }
                 catch (Exception ex)
                 {
@@ -179,7 +209,7 @@ namespace BareProx.Services
                     backgroundJob.Status = "Failed";
                     backgroundJob.ErrorMessage = ex.Message;
                     backgroundJob.CompletedAt = DateTime.UtcNow;
-                    await ctx.SaveChangesAsync(ct);
+                    await ctx.SaveChangesAsync(backgroundCt);
                 }
             });
 

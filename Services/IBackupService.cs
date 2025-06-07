@@ -1,14 +1,28 @@
-﻿using Azure.Core;
+﻿/*
+ * BareProx - Backup and Restore Automation for Proxmox using NetApp
+ *
+ * Copyright (C) 2025 Tobias Modig
+ *
+ * This file is part of BareProx.
+ *
+ * BareProx is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * BareProx is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
+ */
+
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Repositories;
-using Microsoft.AspNetCore.Components.Web;
 using Microsoft.EntityFrameworkCore;
-using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
-using System.Threading.Tasks;
 
 namespace BareProx.Services
 {
@@ -27,7 +41,13 @@ namespace BareProx.Services
             bool withMemory,
             bool dontTrySuspend,
             int ScheduleID,
-            bool ReplicateToSecondary);
+            bool ReplicateToSecondary,
+
+        // ← NEW: locking parameters
+        bool enableLocking,
+        int? lockRetentionCount,
+        string? lockRetentionUnit,
+            CancellationToken ct);
     }
 
     public class BackupService : IBackupService
@@ -74,8 +94,12 @@ namespace BareProx.Services
         bool withMemory,
         bool dontTrySuspend,
         int scheduleId,
-        bool replicateToSecondary   // ← new parameter
-    )
+        bool replicateToSecondary,
+            bool enableLocking,
+            int? lockRetentionCount,
+            string? lockRetentionUnit,
+        CancellationToken ct)
+
         {
             bool ProxSnapCleanup = false; // A checker to use if cleanup has run.
 
@@ -89,12 +113,12 @@ namespace BareProx.Services
                 StartedAt = DateTime.UtcNow
             };
             _context.Jobs.Add(job);
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(ct);
 
             // 2) Discover cluster & VMs
             var cluster = await _context.ProxmoxClusters
                                         .Include(c => c.Hosts)      // so you have host info
-                                        .FirstOrDefaultAsync(c => c.Id == clusterId);
+                                        .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
             if (cluster == null)
                 return await FailJobAsync(job, $"Cluster with ID {clusterId} not found.");
 
@@ -105,13 +129,13 @@ namespace BareProx.Services
             try
             {
                 var storageWithVms = await _proxmoxService
-                    .GetEligibleBackupStorageWithVMsAsync(cluster, netappControllerId);
+                    .GetEligibleBackupStorageWithVMsAsync(cluster, netappControllerId, null, ct);
 
                 if (!storageWithVms.TryGetValue(storageName, out vms) || vms == null || !vms.Any())
-                    return await FailJobAsync(job, $"No VMs found in storage '{storageName}'.");
+                    return await FailJobAsync(job, $"No VMs found in storage '{storageName}'.", ct);
 
                 if (cluster.Hosts == null || !cluster.Hosts.Any())
-                    return await FailJobAsync(job, "Cluster not properly configured.");
+                    return await FailJobAsync(job, "Cluster not properly configured.", ct);
 
                 // 3) Pause VMs if IO-freeze requested
                 if (isApplicationAware && enableIoFreeze)
@@ -121,7 +145,7 @@ namespace BareProx.Services
 
                     vmsWerePaused = true;
                     job.Status = "Paused VMs";
-                    await _context.SaveChangesAsync();
+                    await _context.SaveChangesAsync(ct);
                 }
 
                 // 4) Proxmox snapshots (if requested)
@@ -132,12 +156,12 @@ namespace BareProx.Services
                 if (isApplicationAware && useProxmoxSnapshot)
                 {
                     job.Status = "Creating Proxmox snapshots";
-                    await _context.SaveChangesAsync();
+                    await _context.SaveChangesAsync(ct);
 
                     foreach (var vm in vms)
                     {
                         var status = await _proxmoxService.GetVmStatusAsync(
-                            cluster, vm.HostName, vm.HostAddress, vm.Id);
+                            cluster, vm.HostName, vm.HostAddress, vm.Id, ct);
 
                         if (status == "stopped")
                         {
@@ -150,7 +174,7 @@ namespace BareProx.Services
                             ProxMoxsnapshotName,
                             "Backup created via BareProx",
                             withMemory,
-                            dontTrySuspend
+                            dontTrySuspend, ct
                         );
 
                         if (!string.IsNullOrWhiteSpace(upid))
@@ -165,7 +189,7 @@ namespace BareProx.Services
                     }
 
                     job.Status = "Waiting for Proxmox snapshots";
-                    await _context.SaveChangesAsync();
+                    await _context.SaveChangesAsync(ct);
 
                     // Build a list of tasks with their associated VM IDs
                     var waitTasks = snapshotTasks.Select(kv =>
@@ -178,7 +202,7 @@ namespace BareProx.Services
                             Task = _proxmoxService.WaitForTaskCompletionAsync(
                                 cluster, vm.HostName, vm.HostAddress, kv.Value,
                                 TimeSpan.FromMinutes(20),
-                                _logger)
+                                _logger, ct)
                         };
                     }).ToList();
 
@@ -198,23 +222,29 @@ namespace BareProx.Services
 
                     // Update job status
                     job.Status = "Proxmox snapshots completed";
-                    await _context.SaveChangesAsync();
+                    await _context.SaveChangesAsync(ct);
                 }
 
                 // 5a) Create the NetApp snapshot
                 var snapshotResult = await _netAppService.CreateSnapshotAsync(
-                    netappControllerId, storageName, label);
+                    netappControllerId,
+                    storageName,
+                    label,
+                    snapLocking: enableLocking,
+                    lockRetentionCount: enableLocking ? lockRetentionCount : (int?)null,
+                    lockRetentionUnit: enableLocking ? lockRetentionUnit : null,
+                    ct: ct);
 
                 if (!snapshotResult.Success)
-                    return await FailJobAsync(job, snapshotResult.ErrorMessage);
+                    return await FailJobAsync(job, snapshotResult.ErrorMessage, ct);
 
                 job.Status = "Snapshot created";
-                await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync(ct);
 
                 // 5b) Persist BackupRecord(s)
                 foreach (var vm in vms)
                 {
-                    var config = await _proxmoxService.GetVmConfigAsync(cluster, vm.HostName, vm.Id);
+                    var config = await _proxmoxService.GetVmConfigAsync(cluster, vm.HostName, vm.Id, ct);
 
                     await _backupRepository.StoreBackupInfoAsync(new BackupRecord
                     {
@@ -254,7 +284,7 @@ namespace BareProx.Services
                     LastChecked = _tz.ConvertUtcToApp(DateTime.UtcNow),
                     IsReplicated = false
                 });
-                await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync(ct);
 
                 // 5b) Delete Proxmox Snapshots if used
                 if (useProxmoxSnapshot)
@@ -263,7 +293,8 @@ namespace BareProx.Services
                         cluster,
                         vms,
                         proxmoxSnapshotNames,
-                        shouldCleanup: true
+                        shouldCleanup: true,
+                        ct: ct
                     );
                     ProxSnapCleanup = true; // Mark cleanup as done
                     _logger.LogInformation(
@@ -276,17 +307,17 @@ namespace BareProx.Services
                 {
                     // 6a) Lookup the SnapMirror relation
                     var relation = await _context.SnapMirrorRelations
-                        .FirstOrDefaultAsync(r => r.SourceVolume == storageName);
+                        .FirstOrDefaultAsync(r => r.SourceVolume == storageName, ct);
                     if (relation == null)
-                        return await FailJobAsync(job, $"No SnapMirror relation for '{storageName}'.");
+                        return await FailJobAsync(job, $"No SnapMirror relation for '{storageName}'.", ct);
 
                     // 6b) Trigger an update on the relation
                     job.Status = "Triggering SnapMirror update";
-                    await _context.SaveChangesAsync();
+                    await _context.SaveChangesAsync(ct);
 
-                    var triggered = await _netAppService.TriggerSnapMirrorUpdateAsync(relation.Uuid);
+                    var triggered = await _netAppService.TriggerSnapMirrorUpdateAsync(relation.Uuid, ct);
                     if (!triggered)
-                        return await FailJobAsync(job, "Failed to trigger SnapMirror update.");
+                        return await FailJobAsync(job, "Failed to trigger SnapMirror update.", ct);
 
                     // a) Remember names & volumes for the check
                     var primaryVolume = storageName;
@@ -295,7 +326,7 @@ namespace BareProx.Services
                     var secondaryControllerId = relation.DestinationControllerId;
 
                     job.Status = "Waiting for SnapMirror to catch up";
-                    await _context.SaveChangesAsync();
+                    await _context.SaveChangesAsync(ct);
 
                     var sw = Stopwatch.StartNew();
                     SnapMirrorRelation updated;
@@ -304,7 +335,7 @@ namespace BareProx.Services
                     while (sw.Elapsed < TimeSpan.FromMinutes(120))
                     {
                         await Task.Delay(TimeSpan.FromSeconds(10));
-                         updated = await _netAppService.GetSnapMirrorRelationAsync(relation.Uuid);
+                         updated = await _netAppService.GetSnapMirrorRelationAsync(relation.Uuid, ct);
 
                         // 1) Did SnapMirror say “success”?
                         if (updated.state.Equals("snapmirrored", StringComparison.OrdinalIgnoreCase)
@@ -313,7 +344,8 @@ namespace BareProx.Services
                             // 2) Now confirm *your* snapshot
                             var snaps = await _netAppService.GetSnapshotsAsync(
                                 secondaryControllerId,
-                                secondaryVolume);
+                                secondaryVolume,
+                                ct);
 
                             if (snaps.Any(s =>
                                 string.Equals(s, secondarySnap, StringComparison.OrdinalIgnoreCase)))
@@ -329,7 +361,7 @@ namespace BareProx.Services
                         .FirstOrDefaultAsync(s =>
                             s.SnapshotName == secondarySnap
                          && s.PrimaryVolume == storageName
-                         && s.PrimaryControllerId == netappControllerId);
+                         && s.PrimaryControllerId == netappControllerId, ct);
 
                     if (netappSnap != null)
                     {
@@ -339,13 +371,13 @@ namespace BareProx.Services
                         netappSnap.IsReplicated = true;
                         netappSnap.LastChecked = nowApp;
 
-                        await _context.SaveChangesAsync();
+                        await _context.SaveChangesAsync(ct);
                     }
 
                     // 6e) Final verification & finish
                     var toUpdate = await _context.BackupRecords
                         .Where(br => br.JobId == job.Id)
-                        .ToListAsync();
+                        .ToListAsync(ct);
                     foreach (var rec in toUpdate)
                     {
                         rec.ControllerId = secondaryControllerId;  // now point at secondary
@@ -355,25 +387,25 @@ namespace BareProx.Services
                     }
 
                     job.Status = "Replication completed";
-                    await _context.SaveChangesAsync();
+                    await _context.SaveChangesAsync(ct);
                 }
 
                 // 7) Check for cancellation
-                await _context.Entry(job).ReloadAsync();
+                await _context.Entry(job).ReloadAsync(ct);
                 if (job.Status == "Cancelled")
-                    return await FailJobAsync(job, "Job was cancelled.");
+                    return await FailJobAsync(job, "Job was cancelled.", ct);
 
 
 
                 // 9) Finish job
                 job.Status = "Completed";
                 job.CompletedAt = DateTime.UtcNow;
-                await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync(ct);
                 return true;
             }
             catch (Exception ex)
             {
-                return await FailJobAsync(job, ex.Message);
+                return await FailJobAsync(job, ex.Message, ct);
             }
             finally
             {
@@ -391,7 +423,7 @@ namespace BareProx.Services
 
 
 
-        private async Task UnpauseIfNeeded(ProxmoxCluster cluster, IEnumerable<ProxmoxVM> vms, bool isAppAware, bool ioFreeze, bool vmsWerePaused)
+        private async Task UnpauseIfNeeded(ProxmoxCluster cluster, IEnumerable<ProxmoxVM> vms, bool isAppAware, bool ioFreeze, bool vmsWerePaused, CancellationToken ct = default)
         {
             if (isAppAware && ioFreeze && vmsWerePaused)
             {
@@ -399,7 +431,7 @@ namespace BareProx.Services
                 {
                     try
                     {
-                        await _proxmoxService.UnpauseVmAsync(cluster, vm.HostName, vm.HostAddress, vm.Id);
+                        await _proxmoxService.UnpauseVmAsync(cluster, vm.HostName, vm.HostAddress, vm.Id,ct);
                     }
                     catch { }
                 }
@@ -410,7 +442,8 @@ namespace BareProx.Services
             ProxmoxCluster cluster,
             IEnumerable<ProxmoxVM> vms,
             Dictionary<int, string> snapshotMap,
-            bool shouldCleanup)
+            bool shouldCleanup,
+            CancellationToken ct = default)
         {
             if (!shouldCleanup) return;
 
@@ -420,20 +453,38 @@ namespace BareProx.Services
                 {
                     try
                     {
-                        await _proxmoxService.DeleteSnapshotAsync(cluster, vm.HostName, vm.HostAddress, vm.Id, snap);
+                        await _proxmoxService.DeleteSnapshotAsync(cluster, vm.HostName, vm.HostAddress, vm.Id, snap, ct);
                     }
                     catch { }
                 }
             }
         }
 
-        private async Task<bool> FailJobAsync(Job job, string message)
+        private async Task<bool> FailJobAsync(Job job, string message, CancellationToken ct = default)
         {
             job.Status = "Failed";
             job.ErrorMessage = message;
             job.CompletedAt = DateTime.UtcNow;
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(ct);
             return false;
+        }
+        private async Task<bool> CheckJobCancellationAsync(Job job, CancellationToken ct)
+        {
+            // Reload the latest row from the database
+            await _context.Entry(job).ReloadAsync(ct);
+
+            // If somebody set Status = "Cancelled", we abort
+            if (job.Status == "Cancelled")
+            {
+                // Mark as failed (or whatever you prefer)
+                job.Status = "Failed";
+                job.ErrorMessage = "Job was cancelled.";
+                job.CompletedAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync(ct);
+                return false;
+            }
+
+            return true;
         }
     }
 }

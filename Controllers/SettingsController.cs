@@ -1,9 +1,28 @@
-﻿using BareProx.Services;
+﻿/*
+ * BareProx - Backup and Restore Automation for Proxmox using NetApp
+ *
+ * Copyright (C) 2025 Tobias Modig
+ *
+ * This file is part of BareProx.
+ *
+ * BareProx is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * BareProx is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+using BareProx.Services;
 using BareProx.Data;
 using System.IO;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Hosting;
 using Newtonsoft.Json.Linq;
 using BareProx.Models;
 using Microsoft.EntityFrameworkCore;
@@ -395,15 +414,15 @@ namespace BareProx.Controllers
 
         // POST: Settings/AuthenticateCluster
         [HttpPost]
-        public async Task<IActionResult> AuthenticateCluster(int id)
+        public async Task<IActionResult> AuthenticateCluster(int id, CancellationToken ct)
         {
-            var success = await _proxmoxService.AuthenticateAndStoreTokenAsync(id);
+            var success = await _proxmoxService.AuthenticateAndStoreTokenAsync(id, ct);
             TempData["Message"] = success ? "Authentication successful." : "Authentication failed.";
             return RedirectToAction("Proxmox");
         }
 
         [HttpPost]
-        public async Task<IActionResult> AddCluster(string name, string username, string password)
+        public async Task<IActionResult> AddCluster(string name, string username, string password, CancellationToken ct)
         {
             var cluster = new ProxmoxCluster
             {
@@ -413,28 +432,28 @@ namespace BareProx.Controllers
             };
 
             _context.ProxmoxClusters.Add(cluster);
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(ct);
             return RedirectToAction("Proxmox");
         }
 
         [HttpPost]
-        public async Task<IActionResult> DeleteCluster(int id)
+        public async Task<IActionResult> DeleteCluster(int id, CancellationToken ct)
         {
-            var cluster = await _context.ProxmoxClusters.FindAsync(id);
+            var cluster = await _context.ProxmoxClusters.FindAsync(id, ct);
             if (cluster != null)
             {
                 _context.ProxmoxClusters.Remove(cluster);
-                await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync(ct);
             }
 
             return RedirectToAction("Proxmox");
         }
         [HttpGet]
-        public async Task<IActionResult> ClusterStorage(int clusterId)
+        public async Task<IActionResult> ClusterStorage(int clusterId, CancellationToken ct)
         {
             var cluster = await _context.ProxmoxClusters
                 .Include(c => c.Hosts)
-                .FirstOrDefaultAsync(c => c.Id == clusterId);
+                .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
 
             if (cluster == null)
             {
@@ -442,12 +461,12 @@ namespace BareProx.Controllers
                 return View(new SelectStorageViewModel { ClusterId = clusterId });
             }
 
-            var allNfsStorage = await _proxmoxService.GetNfsStorageAsync(cluster);
+            var allNfsStorage = await _proxmoxService.GetNfsStorageAsync(cluster, ct);
 
             var selectedIds = await _context.Set<ProxSelectedStorage>()
                 .Where(s => s.ClusterId == clusterId)
                 .Select(s => s.StorageIdentifier)
-                .ToHashSetAsync(StringComparer.OrdinalIgnoreCase);
+                .ToHashSetAsync(StringComparer.OrdinalIgnoreCase, ct);
 
             var storageList = allNfsStorage
                 .Select(s => new ProxmoxStorageDto
@@ -472,11 +491,11 @@ namespace BareProx.Controllers
 
 
         [HttpGet]
-        public async Task<IActionResult> EditCluster(int id)
+        public async Task<IActionResult> EditCluster(int id, CancellationToken ct)
         {
             var cluster = await _context.ProxmoxClusters
                 .Include(c => c.Hosts)
-                .FirstOrDefaultAsync(c => c.Id == id);
+                .FirstOrDefaultAsync(c => c.Id == id, ct);
 
             if (cluster == null) return NotFound();
 
@@ -484,17 +503,17 @@ namespace BareProx.Controllers
         }
 
         [HttpPost]
-        public async Task<IActionResult> EditCluster(ProxmoxCluster cluster)
+        public async Task<IActionResult> EditCluster(ProxmoxCluster cluster, CancellationToken ct)
         {
             if (ModelState.IsValid)
             {
-                var existingCluster = await _context.ProxmoxClusters.FindAsync(cluster.Id);
+                var existingCluster = await _context.ProxmoxClusters.FindAsync(cluster.Id, ct);
                 if (existingCluster == null) return NotFound();
 
                 existingCluster.Username = cluster.Username;
                 existingCluster.PasswordHash = _encryptionService.Encrypt(cluster.PasswordHash);
 
-                await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync(ct);
 
                 return RedirectToAction("Proxmox");
             }
@@ -502,11 +521,11 @@ namespace BareProx.Controllers
         }
 
         [HttpPost]
-        public async Task<IActionResult> AddHost(int clusterId, string hostAddress, string hostname)
+        public async Task<IActionResult> AddHost(int clusterId, string hostAddress, string hostname, CancellationToken ct)
         {
             var cluster = await _context.ProxmoxClusters
                 .Include(c => c.Hosts)
-                .FirstOrDefaultAsync(c => c.Id == clusterId);
+                .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
 
             if (cluster == null)
                 return NotFound();
@@ -519,31 +538,31 @@ namespace BareProx.Controllers
             };
 
             _context.ProxmoxHosts.Add(newHost);
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(ct);
 
             return RedirectToAction("EditCluster", new { id = clusterId });
         }
 
         [HttpPost]
-        public async Task<IActionResult> DeleteHost(int id)
+        public async Task<IActionResult> DeleteHost(int id, CancellationToken ct)
         {
-            var host = await _context.ProxmoxHosts.FindAsync(id);
+            var host = await _context.ProxmoxHosts.FindAsync(id, ct);
             if (host == null)
                 return NotFound();
 
             var clusterId = host.ClusterId;
 
             _context.ProxmoxHosts.Remove(host);
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(ct);
 
             return RedirectToAction("EditCluster", new { id = clusterId });
         }
 
 
         // GET: Settings/NetappControllers
-        public async Task<IActionResult> Index()
+        public async Task<IActionResult> Index(CancellationToken ct)
         {
-            var controllers = await _context.NetappControllers.ToListAsync();
+            var controllers = await _context.NetappControllers.ToListAsync(ct);
             return View("~/Views/Settings/IndexNC.cshtml", controllers);
         }
 
@@ -556,7 +575,7 @@ namespace BareProx.Controllers
         // POST: Settings/NetappControllers/Create
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> Create(string Hostname, string IpAddress, bool IsPrimary, string Username, string PasswordHash)
+        public async Task<IActionResult> Create(string Hostname, string IpAddress, bool IsPrimary, string Username, string PasswordHash, CancellationToken ct)
         {
             var controller = new NetappController
             {
@@ -570,7 +589,7 @@ namespace BareProx.Controllers
             if (ModelState.IsValid)
             {
                 _context.Add(controller);
-                await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync(ct);
                 return RedirectToAction(nameof(Index));
             }
 
@@ -578,11 +597,11 @@ namespace BareProx.Controllers
         }
 
         // GET: Settings/NetappControllers/Edit/5
-        public async Task<IActionResult> Edit(int? id)
+        public async Task<IActionResult> Edit(int? id, CancellationToken ct)
         {
             if (id == null) return NotFound();
 
-            var controller = await _context.NetappControllers.FindAsync(id);
+            var controller = await _context.NetappControllers.FindAsync(id, ct);
             if (controller == null) return NotFound();
 
             controller.PasswordHash = string.Empty; // clear for editing
@@ -592,9 +611,9 @@ namespace BareProx.Controllers
         // POST: Settings/NetappControllers/Edit/5
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> Edit(int id, string Hostname, string IpAddress, bool IsPrimary, string Username, string PasswordHash)
+        public async Task<IActionResult> Edit(int id, string Hostname, string IpAddress, bool IsPrimary, string Username, string PasswordHash, CancellationToken ct)
         {
-            var existingController = await _context.NetappControllers.FindAsync(id);
+            var existingController = await _context.NetappControllers.FindAsync(id, ct);
             if (existingController == null) return NotFound();
 
             if (ModelState.IsValid)
@@ -610,7 +629,7 @@ namespace BareProx.Controllers
                         existingController.PasswordHash = _encryptionService.Encrypt(PasswordHash);
                     }
 
-                    await _context.SaveChangesAsync();
+                    await _context.SaveChangesAsync(ct);
                     return RedirectToAction(nameof(Index));
                 }
                 catch (DbUpdateConcurrencyException)
@@ -624,11 +643,11 @@ namespace BareProx.Controllers
         }
 
         // GET: Settings/Delete/5
-        public async Task<IActionResult> Delete(int? id)
+        public async Task<IActionResult> Delete(int? id, CancellationToken ct)
         {
             if (id == null) return NotFound();
 
-            var controller = await _context.NetappControllers.FirstOrDefaultAsync(c => c.Id == id);
+            var controller = await _context.NetappControllers.FirstOrDefaultAsync(c => c.Id == id, ct);
             if (controller == null) return NotFound();
 
             return View("~/Views/Settings/DeleteNC.cshtml", controller);
@@ -637,13 +656,13 @@ namespace BareProx.Controllers
         // POST: Settings/Delete/5
         [HttpPost, ActionName("Delete")]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> DeleteConfirmed(int id)
+        public async Task<IActionResult> DeleteConfirmed(int id, CancellationToken ct)
         {
-            var controller = await _context.NetappControllers.FindAsync(id);
+            var controller = await _context.NetappControllers.FindAsync(id, ct);
             if (controller != null)
             {
                 _context.NetappControllers.Remove(controller);
-                await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync(ct);
             }
             return RedirectToAction(nameof(Index));
         }
@@ -653,20 +672,20 @@ namespace BareProx.Controllers
             return _context.NetappControllers.Any(e => e.Id == id);
         }
         [HttpGet]
-        public async Task<IActionResult> GetVolumesTree(int storageId)
+        public async Task<IActionResult> GetVolumesTree(int storageId, CancellationToken ct)
         {
             try
             {
-                var controller = await _context.NetappControllers.FirstOrDefaultAsync(c => c.Id == storageId);
+                var controller = await _context.NetappControllers.FirstOrDefaultAsync(c => c.Id == storageId, ct);
                 if (controller == null) return NotFound("Controller not found");
 
-                var svms = await _netappService.GetVserversAndVolumesAsync(controller.Id);
+                var svms = await _netappService.GetVserversAndVolumesAsync(controller.Id, ct);
                 if (svms == null || !svms.Any())
                     return NotFound("No volume data found for this controller");
 
                 var selected = await _context.SelectedNetappVolumes
                     .Where(v => v.NetappControllerId == storageId)
-                    .ToListAsync();
+                    .ToListAsync(ct);
 
                 var treeDto = new NetappControllerTreeDto
                 {
@@ -697,11 +716,11 @@ namespace BareProx.Controllers
         }
 
         [HttpPost]
-        public async Task<IActionResult> SaveSelectedStorage(SelectStorageViewModel model)
+        public async Task<IActionResult> SaveSelectedStorage(SelectStorageViewModel model, CancellationToken ct)
         {
             var existing = await _context.SelectedStorages
                 .Where(s => s.ClusterId == model.ClusterId)
-                .ToListAsync();
+                .ToListAsync(ct);
 
             var selectedSet = new HashSet<string>(model.SelectedStorageIds ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
 
@@ -724,20 +743,20 @@ namespace BareProx.Controllers
 
             _context.SelectedStorages.AddRange(toAdd);
 
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(ct);
             TempData["Message"] = "Selected storage updated.";
             return RedirectToAction("ClusterStorage", new { clusterId = model.ClusterId });
         }
 
         [HttpPost]
-        public async Task<IActionResult> SaveNetappSelectedVolumes([FromBody] List<NetappVolumeExportDto> volumes)
+        public async Task<IActionResult> SaveNetappSelectedVolumes([FromBody] List<NetappVolumeExportDto> volumes, CancellationToken ct)
         {
             var controllerId = volumes.FirstOrDefault()?.ClusterId ?? 0;
 
             // Clear previous selections for this controller
             var old = await _context.SelectedNetappVolumes
                 .Where(v => v.NetappControllerId == controllerId)
-                .ToListAsync();
+                .ToListAsync(ct);
             _context.SelectedNetappVolumes.RemoveRange(old);
 
             // Add new ones
@@ -752,7 +771,10 @@ namespace BareProx.Controllers
             });
 
             _context.SelectedNetappVolumes.AddRange(entities);
-            await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync(ct);
+
+            // --- Update extra info after saving
+            await _netappService.UpdateAllSelectedVolumesAsync(ct); // <-- add this line
 
             return Ok();
         }

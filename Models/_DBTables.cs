@@ -1,4 +1,23 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿/*
+ * BareProx - Backup and Restore Automation for Proxmox using NetApp
+ *
+ * Copyright (C) 2025 Tobias Modig
+ *
+ * This file is part of BareProx.
+ *
+ * BareProx is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * BareProx is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
+ */
+
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Text.Json.Serialization;
 
@@ -67,6 +86,12 @@ namespace BareProx.Models
         public string MountIp { get; set; }
         public int ClusterId { get; set; }
         public int NetappControllerId { get; set; }
+
+        public long? SpaceSize { get; set; }         // maps to "space.size"
+        public long? SpaceAvailable { get; set; }    // maps to "space.available"
+        public long? SpaceUsed { get; set; }         // maps to "space.used"
+        public string? ExportPolicyName { get; set; } // maps to "nas.export_policy.name"
+        public bool? SnapshotLockingEnabled { get; set; } // maps to "snapshot_locking_enabled"
     }
     public class NetappSnapshot
     {
@@ -142,6 +167,9 @@ namespace BareProx.Models
         public string RetentionUnit { get; set; }
         public bool ReplicateToSecondary { get; set; }
         public DateTime? LastRun { get; set; }
+        public bool EnableLocking { get; set; }
+        public int? LockRetentionCount { get; set; }
+        public string? LockRetentionUnit { get; set; }
     }
 
     public class BackupRecord
