@@ -20,6 +20,7 @@
 
 using BareProx.Data;
 using BareProx.Models;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
 namespace BareProx.Services.Background
@@ -153,7 +154,21 @@ namespace BareProx.Services.Background
                             "Primary snapshot expired but secondary copy exists for {snap}, preserving record",
                             ex.SnapshotName);
 
-                        await db.SaveChangesAsync(ct);
+                        // Retry save on error
+                        for (int i = 0; i < 3; i++)
+                        {
+                            try
+                            {
+                                await db.SaveChangesAsync(ct);
+                                break;
+                            }
+                            catch (DbUpdateException ey)
+                                when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
+                            {
+                                if (i == 2) throw;
+                                await Task.Delay(500, ct);
+                            }
+                        }
                         continue;
                     }
                 }
@@ -171,7 +186,21 @@ namespace BareProx.Services.Background
                     "Removed all DB rows for snapshot {snap}, job {job}",
                     ex.SnapshotName, ex.JobId);
 
-                await db.SaveChangesAsync(ct);
+                // Retry save on error
+                for (int i = 0; i < 3; i++)
+                {
+                    try
+                    {
+                        await db.SaveChangesAsync(ct);
+                        break;
+                    }
+                    catch (DbUpdateException ey)
+                        when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
+                    {
+                        if (i == 2) throw;
+                        await Task.Delay(500, ct);
+                    }
+                }
             }
         }
 
@@ -299,7 +328,21 @@ namespace BareProx.Services.Background
             }
 
             // 5) Save all updates/inserts at once
-            await db.SaveChangesAsync(ct);
+            // Retry save on error
+            for (int i = 0; i < 3; i++)
+            {
+                try
+                {
+                    await db.SaveChangesAsync(ct);
+                    break;
+                }
+                catch (DbUpdateException ey)
+                    when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
+                {
+                    if (i == 2) throw;
+                    await Task.Delay(500, ct);
+                }
+            }
         }
 
 

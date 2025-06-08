@@ -266,7 +266,7 @@ if (isConfigured)
     builder.Services.AddHostedService<QueuedBackgroundService>();
     builder.Services.AddHostedService<ScheduledBackupService>();
     builder.Services.AddHostedService<JanitorService>();
-    builder.Services.AddHostedService<SnapMirrorSyncService>();
+    builder.Services.AddHostedService<CollectionService>();
 
 }
 

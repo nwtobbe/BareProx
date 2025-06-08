@@ -21,6 +21,7 @@
 using BareProx.Controllers;
 using BareProx.Data;
 using BareProx.Models;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using System.Globalization;
 
@@ -142,7 +143,21 @@ namespace BareProx.Services.Background
                 }
             }
 
-            await _context.SaveChangesAsync(ct);
+            // Retry save on error
+            for (int i = 0; i < 3; i++)
+            {
+                try
+                {
+                    await _context.SaveChangesAsync(ct);
+                    break;
+                }
+                catch (DbUpdateException ey)
+                    when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
+                {
+                    if (i == 2) throw;
+                    await Task.Delay(500, ct);
+                }
+            }
         }
 
 

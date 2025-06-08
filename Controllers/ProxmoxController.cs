@@ -54,6 +54,27 @@ namespace BareProx.Controllers
                 return View(new List<StorageWithVMsDto>());
             }
 
+            // 1a) Check cluster health and skip if *all* hosts are offline
+            var (quorate, onlineCount, totalCount, hostStates, summary)
+                = await _proxmoxService.GetClusterStatusAsync(cluster, ct);
+
+            // Collect the *names* of hosts that are actually up:
+            var onlineHostNames = hostStates
+                .Where(kvp => kvp.Value)
+                .Select(kvp => kvp.Key)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            if (!onlineHostNames.Any())
+            {
+                ViewBag.Warning = "No Proxmox hosts are currently online: " + summary;
+                return View(new List<StorageWithVMsDto>());
+            }
+
+            // 1b) Prune cluster.Hosts to only those that are up
+            cluster.Hosts = cluster.Hosts
+                .Where(h => onlineHostNames.Contains(h.Hostname ?? h.HostAddress))
+                .ToList();
+
             // 2) Pick primary NetApp controller
             var netappController = await _context.NetappControllers
                 .Where(c => c.IsPrimary)
@@ -75,7 +96,7 @@ namespace BareProx.Controllers
                 return View(new List<StorageWithVMsDto>());
             }
 
-            // 4) Query Proxmox for VM lists, with error handling
+            // 4) Query Proxmox for VM lists, now only against the online hosts
             Dictionary<string, List<ProxmoxVM>> storageVmMap;
             try
             {
@@ -84,7 +105,7 @@ namespace BareProx.Controllers
             }
             catch (ServiceUnavailableException ex)
             {
-                _logger.LogWarning(ex, "Unable to reach Proxmox cluster");
+                _logger.LogWarning(ex, "Unable to reach any Proxmox host");
                 ViewBag.Warning = ex.Message;
                 return View(new List<StorageWithVMsDto>());
             }

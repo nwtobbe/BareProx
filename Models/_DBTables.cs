@@ -37,6 +37,10 @@ namespace BareProx.Models
         public DateTime? TokenExpiry { get; set; }
         public string? LastStatus { get; set; }
         public DateTime? LastChecked { get; set; }
+        public bool? HasQuorum { get; set; }
+        public int? OnlineHostCount { get; set; }
+        public int? TotalHostCount { get; set; }
+        public string? LastStatusMessage { get; set; }
 
         public ICollection<ProxmoxHost> Hosts { get; set; } = new List<ProxmoxHost>();
     }
@@ -52,7 +56,11 @@ namespace BareProx.Models
         // New property for hostname
         public string? Hostname { get; set; }
 
-        // Navigation property
+        // New status/health columns:
+        public bool? IsOnline { get; set; }
+        public string? LastStatus { get; set; }      // e.g. "Online", "Offline", "Error"
+        public string? LastStatusMessage { get; set; } // Any error or status description
+        public DateTime? LastChecked { get; set; }
         public ProxmoxCluster Cluster { get; set; }
     }
     public class ProxSelectedStorage
@@ -238,7 +246,7 @@ namespace BareProx.Models
         public int Count { get; set; }
         public bool Preserve { get; set; }
         public int Warn { get; set; }
-        public string? Period { get; set; }            // e.g. "P10M" for retention locking
+        public string? Period { get; set; }
     }
 
 }

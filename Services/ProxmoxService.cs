@@ -54,7 +54,7 @@ namespace BareProx.Services
                 .Include(c => c.Hosts)
                 .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
 
-            if (cluster == null || !cluster.Hosts.Any())
+            if (cluster == null || !GetQueryableHosts(cluster).Any())
                 return false;
 
             return await AuthenticateAndStoreTokenAsync(cluster, ct);
@@ -62,7 +62,7 @@ namespace BareProx.Services
 
         private async Task<bool> AuthenticateAndStoreTokenAsync(ProxmoxCluster cluster, CancellationToken ct)
         {
-            var host = cluster.Hosts.First();
+            var host = GetQueryableHosts(cluster).First();
             var url = $"https://{host.HostAddress}:8006/api2/json/access/ticket";
 
             var form = new Dictionary<string, string>
@@ -161,7 +161,7 @@ namespace BareProx.Services
             catch (HttpRequestException ex)
             {
                 // This catches socket errors, timeouts, connection refused, etc.
-                var host = cluster.Hosts.FirstOrDefault()?.HostAddress ?? "unknown";
+                var host = GetQueryableHosts(cluster).FirstOrDefault()?.HostAddress ?? "unknown";
                 _ = _context.ProxmoxClusters
                     .Where(c => c.Id == cluster.Id)
                     .ExecuteUpdateAsync(b => b.SetProperty(c => c.LastStatus, _ => $"Unreachable: {ex.Message}")
@@ -218,7 +218,7 @@ namespace BareProx.Services
 
             // 2) Discover which NFS storages Proxmox actually has mounted
             var proxmoxStorageNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var host in cluster.Hosts)
+            foreach (var host in GetQueryableHosts(cluster))
             {
                 var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/storage";
                 var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
@@ -247,7 +247,7 @@ namespace BareProx.Services
             );
 
             // 6) For each host, list its VMs and scan their configs
-            foreach (var host in cluster.Hosts)
+            foreach (var host in GetQueryableHosts(cluster))
             {
                 // a) list VMs
                 var vmListUrl = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/qemu";
@@ -308,7 +308,7 @@ namespace BareProx.Services
             int vmId,
             CancellationToken ct = default)
         {
-            var hostAddress = cluster.Hosts.First(h => h.Hostname == host).HostAddress;
+            var hostAddress = GetQueryableHosts(cluster).First(h => h.Hostname == host).HostAddress;
             var url = $"https://{hostAddress}:8006/api2/json/nodes/{host}/qemu/{vmId}/config";
 
             var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
@@ -611,7 +611,7 @@ namespace BareProx.Services
             var cluster = await _context.ProxmoxClusters
                 .Include(c => c.Hosts)
                 .FirstOrDefaultAsync(ct);
-            if (cluster == null || !cluster.Hosts.Any())
+            if (cluster == null || !GetQueryableHosts(cluster).Any())
                 return false;
 
             // 4) Get next free VMID
@@ -776,7 +776,7 @@ namespace BareProx.Services
             var cluster = await _context.ProxmoxClusters
                 .Include(c => c.Hosts)
                 .FirstOrDefaultAsync(ct);
-            if (cluster == null || !cluster.Hosts.Any())
+            if (cluster == null || !GetQueryableHosts(cluster).Any())
                 return false;
 
             // 4) Use the original VMID directly
@@ -853,7 +853,7 @@ namespace BareProx.Services
     string options = "vers=3",
     CancellationToken ct = default)
         {
-            var nodeHost = cluster.Hosts.FirstOrDefault(h => h.Hostname == node)?.HostAddress ?? "";
+            var nodeHost = GetQueryableHosts(cluster).FirstOrDefault(h => h.Hostname == node)?.HostAddress ?? "";
             if (string.IsNullOrEmpty(nodeHost)) return false;
 
             var url = $"https://{nodeHost}:8006/api2/json/storage";
@@ -883,7 +883,7 @@ namespace BareProx.Services
         // Shutdown VM
         public async Task ShutdownAndRemoveVmAsync(ProxmoxCluster cluster, string nodeName, int vmId, CancellationToken ct = default)
         {
-            var host = cluster.Hosts.First(h => h.Hostname == nodeName);
+            var host = GetQueryableHosts(cluster).First(h => h.Hostname == nodeName);
             var baseApiUrl = $"https://{host.HostAddress}:8006/api2/json/nodes/{nodeName}/qemu/{vmId}";
 
             // 1) Get current VM status
@@ -959,7 +959,7 @@ namespace BareProx.Services
             {
                 result[storage] = new List<ProxmoxVM>();
 
-                foreach (var host in cluster.Hosts)
+                foreach (var host in GetQueryableHosts(cluster))
                 {
                     var vms = await GetVmsOnNodeAsync(cluster, host.Hostname, storage, ct);
                     result[storage].AddRange(vms);
@@ -974,7 +974,7 @@ namespace BareProx.Services
             var result = new List<ProxmoxStorageDto>();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase); // avoid duplicates by name
 
-            foreach (var host in cluster.Hosts)
+            foreach (var host in GetQueryableHosts(cluster))
             {
                 var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/storage";
 
@@ -1045,5 +1045,126 @@ namespace BareProx.Services
                 throw new InvalidOperationException($"Node '{nodeName}' not found in cluster.");
             return host;
         }
+
+        public async Task<(
+        bool Quorate,
+        int OnlineNodeCount,
+        int TotalNodeCount,
+        Dictionary<string, bool> HostStates,
+        string Message
+    )> GetClusterStatusAsync(
+        ProxmoxCluster cluster,
+        CancellationToken ct = default)
+        {
+            var errors = new List<string>();
+
+            // 1) Try each host until one responds
+            foreach (var host in cluster.Hosts)
+            {
+                try
+                {
+                    var url = $"https://{host.HostAddress}:8006/api2/json/cluster/status";
+                    var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+
+                    if (!resp.IsSuccessStatusCode)
+                    {
+                        errors.Add($"{host.HostAddress} → HTTP {(int)resp.StatusCode}");
+                        continue;
+                    }
+
+                    var body = await resp.Content.ReadAsStringAsync(ct);
+                    using var doc = JsonDocument.Parse(body);
+
+                    if (!doc.RootElement.TryGetProperty("data", out var items)
+                        || items.ValueKind != JsonValueKind.Array)
+                    {
+                        errors.Add($"{host.HostAddress} → invalid JSON");
+                        continue;
+                    }
+
+                    bool quorate = false;
+                    int total = 0, onlineCount = 0;
+                    var hostStates = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+
+                    foreach (var item in items.EnumerateArray())
+                    {
+                        if (!item.TryGetProperty("type", out var t))
+                            continue;
+                        var type = t.GetString();
+
+                        if (type == "cluster")
+                        {
+                            // quorate may be boolean or numeric
+                            if (item.TryGetProperty("quorate", out var q))
+                            {
+                                quorate = q.ValueKind switch
+                                {
+                                    JsonValueKind.True => true,
+                                    JsonValueKind.False => false,
+                                    JsonValueKind.Number => q.GetInt32() == 1,
+                                    _ => false
+                                };
+                            }
+
+                            // total node count
+                            if (item.TryGetProperty("nodes", out var n) && n.ValueKind == JsonValueKind.Number)
+                                total = n.GetInt32();
+                        }
+                        else if (type == "node")
+                        {
+                            // node name
+                            var name = item.GetProperty("name").GetString()!;
+                            // online may be boolean or numeric
+                            bool isOnline = false;
+                            if (item.TryGetProperty("online", out var on))
+                            {
+                                isOnline = on.ValueKind switch
+                                {
+                                    JsonValueKind.True => true,
+                                    JsonValueKind.False => false,
+                                    JsonValueKind.Number => on.GetInt32() == 1,
+                                    _ => false
+                                };
+                            }
+                            hostStates[name] = isOnline;
+                            if (isOnline) onlineCount++;
+                        }
+                    }
+
+                    // 3) Build summary
+                    string message = quorate
+                        ? (onlineCount == total
+                            ? "Cluster healthy (all nodes online)"
+                            : $"Quorum ok, but {total - onlineCount} node(s) offline")
+                        : "Cluster lost quorum!";
+
+                    return (quorate, onlineCount, total, hostStates, message);
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"{host.HostAddress} → {ex.Message}");
+                }
+            }
+
+            // 4) No host responded correctly
+            var errMsg = errors.Count > 0
+                ? string.Join("; ", errors)
+                : "No hosts configured";
+            return (false, 0, 0, new Dictionary<string, bool>(), $"Cluster unreachable: {errMsg}");
+        }
+
+        /// <summary>
+        /// Returns only the hosts that were last marked online. If none have been checked yet,
+        /// or all are offline, returns the full list so we can still attempt a first‐time call.
+        /// </summary>
+        private IEnumerable<ProxmoxHost> GetQueryableHosts(ProxmoxCluster cluster)
+        {
+            var up = cluster.Hosts.Where(h => h.IsOnline == true).ToList();
+            return up.Any() ? up : cluster.Hosts;
+        }
+
+
     }
+
+
 }

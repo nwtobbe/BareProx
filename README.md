@@ -16,6 +16,7 @@ apt-get install sudo ca-certificates curl gnupg lsb-release
 
 
 # ---------------------- Fix
+Check backup json.. snapshots?
 Authentication failed error page?
 Add lookup of volumes when doing things.
 Fix add cluster
@@ -32,6 +33,9 @@ extra verifications
 
 
 Done.
+Modified code to use only hosts that are online
+Added Proxmox health on Landingpage
+Added Landingpage 24h jobs with failed and warnings
 Added Snapmirror view
 Added support for SnapLock / Tamper Proof Snapshots
 Added removal of snapmirror relationship if a volume is unselected in settings.

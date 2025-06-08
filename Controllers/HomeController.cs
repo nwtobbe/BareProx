@@ -18,15 +18,68 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
+using BareProx.Data;
+using BareProx.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using System.Reflection;
 
     public class HomeController : Controller
 {
-    public IActionResult Index()
+    private readonly ApplicationDbContext _context;
+    private readonly ProxmoxService _proxmoxService;
+
+    public HomeController(
+        ApplicationDbContext context,
+        ProxmoxService proxmoxService)
     {
+        _context = context;
+        _proxmoxService = proxmoxService;
+        _proxmoxService = proxmoxService;
+    }
+    public async Task<IActionResult> Index()
+    {
+        var since = DateTime.UtcNow.AddHours(-24);
+        ViewBag.RecentJobs = _context.Jobs
+            .Where(j => j.StartedAt > since && (j.Status == "Failed" || j.Status == "Cancelled"))
+            .OrderByDescending(j => j.StartedAt)
+            .Select(j => new {
+                j.StartedAt,
+                j.Type,
+                j.Status,
+                j.RelatedVm,
+                j.ErrorMessage
+            })
+            .ToList();
+
+        // **Proxmox real data**
+        // 1) Load clusters + hosts in one go
+        var clusters = await _context.ProxmoxClusters
+            .Include(c => c.Hosts)
+            .ToListAsync();
+
+        // 2) Project into your dynamic list
+        var proxmoxClusters = clusters.Select(cluster => new
+        {
+            Name = cluster.Name,
+            Status = cluster.LastStatus ?? "Unknown",   // e.g. "Cluster healthy (all nodes online)" or error text
+            Hosts = cluster.Hosts
+                .OrderBy(h => (h.Hostname ?? h.HostAddress))
+                .Select(h => new
+                {
+                    Name = h.Hostname ?? h.HostAddress,
+                    Status = (h.IsOnline == true) ? "Running" : "Offline"
+                })
+                .ToList()
+        })
+        .ToList();
+
+        ViewBag.ProxmoxClusters = proxmoxClusters;
+
+        // your existing NetApp assignments...
         return View();
     }
+
     public IActionResult About()
     {
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString();
@@ -40,5 +93,6 @@ using System.Reflection;
         return View();
     }
     public IActionResult Help() => View();
+
 }
 

@@ -1,5 +1,135 @@
 ﻿@{
-    ViewData["Title"] = "Help";
+    ViewData["Title"] = "Help & User Guide";
 }
-<h2>Help!</h2>
-<p></p>
+<div class="container mt-5">
+    <div class="card shadow rounded-3">
+        <div class="card-body">
+            <h2 class="card-title mb-4">Help & User Guide</h2>
+
+            <h4>About BareProx</h4>
+            <p>
+                <strong>BareProx</strong> automates backup, restore, and snapshot management for Proxmox environments using integrated NetApp storage. This platform aims to simplify VM data protection, recovery, and storage operations for administrators.
+            </p>
+
+            <hr />
+
+            <h4>Contents</h4>
+            <ul>
+                <li><a href="#getting-started">Getting Started</a></li>
+                <li><a href="#main-features">Main Features</a></li>
+                <li><a href="#common-tasks">Common Tasks</a></li>
+                <li><a href="#faq">Frequently Asked Questions (FAQ)</a></li>
+                <li><a href="#support">Support</a></li>
+            </ul>
+
+            <hr />
+
+            <h4 id="getting-started">Getting Started</h4>
+            <ol>
+                <li><strong>Login:</strong> Use your assigned credentials. Contact your administrator if you don’t have access.</li>
+                <li><strong>Navigation:</strong> Use the main menu to access Backups, Restores, Snapshots, Jobs, Settings, and SnapMirror relationships.</li>
+                <li><strong>Dashboard Overview:</strong> Review system status, storage health, and recent activity after login.</li>
+            </ol>
+
+            <hr />
+
+            <h4 id="main-features">Main Features</h4>
+            <ul>
+                <li><strong>Backup Scheduling:</strong> Schedule recurring backups for selected VMs or entire storage. Supports daily, weekly, or hourly cycles and application-aware backups.</li>
+                <li><strong>Manual Backups:</strong> Run instant backups of VMs or volumes, with options for crash-consistent or application-aware (IO Freeze, Proxmox Snapshot, Include RAM) operations.</li>
+                <li><strong>Snapshot Management:</strong> View and manage snapshots for NetApp volumes, mount snapshots for inspection or recovery, and lock critical snapshots.</li>
+                <li><strong>Restore:</strong> Restore VMs from available backups/snapshots, with options to rename, disconnect from the network, or use FlexClone for testing.</li>
+                <li><strong>Storage & Cluster Integration:</strong> Automatically detects connected Proxmox clusters and NetApp controllers, groups shared storage, and tracks all associated VMs.</li>
+                <li><strong>SnapMirror:</strong> Visualize and manage SnapMirror relationships for replication between primary and secondary NetApp controllers.</li>
+                <li><strong>Job & Task Monitoring:</strong> Track all ongoing, completed, failed, or cancelled jobs in real time. Cancel or retry operations as needed.</li>
+            </ul>
+
+            <hr />
+
+            <h4 id="common-tasks">Common Tasks</h4>
+            <ul>
+                <li>
+                    <strong>1. Creating a Backup Schedule:</strong>
+                    <ol>
+                        <li>Go to <b>Backup</b> &rarr; <b>Schedules</b>.</li>
+                        <li>Click <b>Add Schedule</b>.</li>
+                        <li>Fill in the schedule details: name, backup type, frequency, VMs/storage, retention policy, and options like application-aware backup.</li>
+                        <li>Click <b>Save</b>. The schedule will appear in the list and run at the defined times.</li>
+                    </ol>
+                </li>
+                <li>
+                    <strong>2. Running a Manual Backup:</strong>
+                    <ol>
+                        <li>Go to <b>Proxmox Storage</b>.</li>
+                        <li>Select the storage, click <b>Backup Now</b>.</li>
+                        <li>Choose backup options, then confirm to start.</li>
+                    </ol>
+                </li>
+                <li>
+                    <strong>3. Restoring a VM:</strong>
+                    <ol>
+                        <li>Go to <b>Restore</b>.</li>
+                        <li>Select the desired backup record or snapshot.</li>
+                        <li>Follow the restore wizard to choose the target name, storage, and network settings.</li>
+                        <li>Click <b>Restore</b> to start the process. You can monitor the restore job status on the <b>Jobs</b> page.</li>
+                    </ol>
+                </li>
+                <li>
+                    <strong>4. Managing Snapshots:</strong>
+                    <ol>
+                        <li>Go to <b>Snapshots</b>.</li>
+                        <li>Expand volumes to see available snapshots.</li>
+                        <li>Mount snapshots as needed.</li>
+                    </ol>
+                </li>
+                <li>
+                    <strong>5. Monitoring Jobs:</strong>
+                    <ol>
+                        <li>Go to <b>Jobs</b>.</li>
+                        <li>See all running, completed, failed, or cancelled operations.</li>
+                        <li>Cancel jobs directly from this page.</li>
+                    </ol>
+                </li>
+            </ul>
+
+            <hr />
+
+            <h4 id="faq">Frequently Asked Questions (FAQ)</h4>
+            <div>
+                <strong>Q: How do I know if my backup succeeded?</strong>
+                <p>A: Go to the <b>Jobs</b> page. Completed jobs will show status “Completed”. Failed jobs will be marked with an error message and details.</p>
+
+                <strong>Q: What is an application-aware backup?</strong>
+                <p>A: It ensures applications (like databases) are in a consistent state by temporarily pausing I/O (IO Freeze) or using Proxmox snapshot features during backup.</p>
+
+                <strong>Q: Can I restore to a new VM name or without network connection?</strong>
+                <p>A: Yes. The restore wizard allows you to rename the VM and optionally restore it with the network interface disconnected.</p>
+
+                <strong>Q: How do I change the backup retention policy?</strong>
+                <p>A: Edit the backup schedule and adjust the “Retention” settings (number of backups and unit: days, weeks, etc.).</p>
+
+                <strong>Q: I see a “Warning” on a storage. What does it mean?</strong>
+                <p>A: Warnings are shown if a storage is unreachable or there are issues with the connection. Check network and NetApp system status.</p>
+
+                <strong>Q: How do I add or configure a Proxmox cluster or NetApp controller?</strong>
+                <p>A: Go to <b>Settings</b>, use the <b>Proxmox</b> or <b>NetApp</b> tabs to define or edit cluster/controller settings. Save credentials and test the connection.</p>
+
+                <strong>Q: Can I view or manage SnapMirror replication?</strong>
+                <p>A: Yes. Use the <b>SnapMirror</b> menu to see all relationships, replication lag, health, and status.</p>
+            </div>
+
+            <hr />
+
+            <h4 id="support">Support</h4>
+            <ul>
+                <li>For technical issues, contact your IT administrator or the BareProx support team.</li>
+                <li>Check logs (under <b>Jobs</b> and <b>Notifications</b>) for error details.</li>
+                <li>For feature requests or bug reports, use the <b>Feedback</b> link in the menu (if available).</li>
+            </ul>
+
+            <div class="alert alert-secondary mt-4">
+                <strong>Tip:</strong> For more information on a specific page, click the <span class="badge bg-info text-dark">?</span> help icon found in the top right of most screens.
+            </div>
+        </div>
+    </div>
+</div>
