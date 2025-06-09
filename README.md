@@ -34,6 +34,8 @@ dotnet run --urls "http://localhost:5000"
 
 ### Docker Compose
 
+There is a `docker-compose.yml` file included for easy deployment. It uses the official .NET 8.0 SDK image to build the application and run it in a container.
+
 1. Create host directories for config and data:
 
    ```bash
@@ -41,7 +43,8 @@ dotnet run --urls "http://localhost:5000"
    sudo chown -R 1001:1001 /var/bareprox/{config,data}
    ```
 2. Configuration files will be created during first run `/var/bareprox/config`:
-2.1 Database will be created in `/var/bareprox/data/BareProxDB.db` on first run.
+
+2a.  Database will be created in `/var/bareprox/data/BareProxDB.db` on first run.
 
 3. Start the service:
 
@@ -60,8 +63,9 @@ Volumes map as follows:
 ## Configuration
 
 
-Browse to `http://<HOST>:<PORT>` and log in with the default user Overseer and P@ssw0rd! . Use the web UI to:
+Browse to `http://<HOST>:<PORT>` and log in with the default user 'Overseer' and 'P@ssw0rd!'. Use the web UI to:
 
+- Configure DB and restart the application.
 - View Proxmox cluster health and snapshot status  
 - Configure new backup tasks and SnapMirror relationships  
 - Monitor job history and logs  
