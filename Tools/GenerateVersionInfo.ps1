@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: AssemblyFileVersion("{0}")]
 '@ -f $version
 
-# Output directory
+# Output directory 
 $targetPath = "Generated"
 New-Item -ItemType Directory -Force -Path $targetPath | Out-Null
 
