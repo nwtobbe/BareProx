@@ -1,4 +1,8 @@
-# BareProx 2025, What Netapp did not want to give you
+# BareProx 2025
+
+Installation
+
+
 sudo useradd --system --create-home --shell /bin/bash bareprox
 sudo usermod -aG docker bareprox
 
