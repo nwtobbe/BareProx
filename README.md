@@ -1,12 +1,13 @@
 ﻿# BareProx
 
-BareProx is an ASP.NET Core MVC application, as evidenced by its Controllers, Views, and Program.cs files ([github.com](https://github.com/nwtobbe/BareProx)). It provides management of Proxmox backups and NetApp SnapMirror configurations, including snapshot creation, SnapLock (tamper‑proof snapshots), and restore operations via a user-friendly web interface ([github.com](https://github.com/nwtobbe/BareProx)).
+BareProx is an ASP.NET Core MVC application, as evidenced by its Controllers, Views, and Program.cs files ([github.com](https://github.com/nwtobbe/BareProx)). It provides management of Proxmox backups—leveraging NetApp NFS datastores—and SnapMirror configurations, including snapshot creation, SnapLock (tamper‑proof snapshots), and restore operations via a user-friendly web interface ([github.com](https://github.com/nwtobbe/BareProx)).
 
 ## Features
 
-* **Proxmox Integration**: Monitor host status and health, create snapshots (with I/O freeze and memory support), and manage snapshot lifecycles ([github.com](https://github.com/nwtobbe/BareProx))
+* **Proxmox Integration**: Monitor host status and health, create snapshots (with I/O freeze and memory support), and manage snapshot lifecycles
+* **NetApp NFS Datastores**: Use NetApp NFS volumes as Proxmox storage backends for VM disks and backups: Use NetApp NFS volumes as Proxmox storage backends for VM disks and backups
 * **NetApp SnapMirror & SnapLock**: Configure and monitor SnapMirror relationships, support SnapLock tamper‑proof snapshots ([github.com](https://github.com/nwtobbe/BareProx))
-* **Scheduling**: Define hourly and daily backup jobs with customizable retention, automatic orphaned snapshot cleanup ([github.com](https://github.com/nwtobbe/BareProx))
+* **Scheduling**: Define hourly and daily backup jobs with customizable retention, including manual cleanup of orphaned snapshots
 * **User Management**: Authentication via ASP.NET Core Identity with support for multiple users and roles ([github.com](https://github.com/nwtobbe/BareProx))
 * **Logging & Monitoring**: File logging with categories, Proxmox health dashboard, status warnings ([github.com](https://github.com/nwtobbe/BareProx))
 * **Dockerized Deployment**: Deploy with Docker Compose using volume mappings for configuration and persistent data ([github.com](https://github.com/nwtobbe/BareProx))
@@ -52,28 +53,74 @@ There is a `docker-compose.yml` file included for easy deployment. It uses the o
    cd /path/to/BareProx
    ```
 
-docker compose up -d
-
-```
+   docker compose up -d
 
 Volumes map as follows:
-- `./bareprox-config:/config`
-- `./bareprox-data:/data` ([github.com](https://github.com/nwtobbe/BareProx))
+
+* `./bareprox-config:/config`
+* `./bareprox-data:/data` ([github.com](https://github.com/nwtobbe/BareProx))
+
+## Server Setup
+
+Before deploying BareProx on your Debian 12 hosts, perform the following steps:
+
+### 1. Install prerequisites
+
+```bash
+sudo apt-get update
+sudo apt-get install -y sudo ca-certificates curl gnupg lsb-release git
+```
+
+### 2. Install .NET 8 runtime
+
+```bash
+wget https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
+sudo dpkg -i packages-microsoft-prod.deb
+sudo apt-get update
+sudo apt-get install -y aspnetcore-runtime-8.0
+```
+
+### 3. Install Docker & Compose
+
+```bash
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
+  $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+sudo chmod +x /usr/local/bin/docker-compose
+sudo usermod -aG docker bareprox
+```
+
+### 4. Clone, build, and run
+
+```bash
+git clone git@github.com:nwtobbe/BareProx.git
+cd BareProx
+
+# Build the Docker image
+docker build -t nwtobbe/bareprox:latest .
+
+# Run container interactively
+docker run -p 80:80 -p 443:443 --rm nwtobbe/bareprox:latest
+```
 
 ## Configuration
 
+Browse to `http://<HOST>:<PORT>` and log in with the default user 'Overseer' and 'P\@ssw0rd!'. Use the web UI to:
 
-Browse to `http://<HOST>:<PORT>` and log in with the default user 'Overseer' and 'P@ssw0rd!'. Use the web UI to:
-
-- Configure DB and restart the application.
-- View Proxmox cluster health and snapshot status  
-- Configure new backup tasks and SnapMirror relationships  
-- Monitor job history and logs  
+* Configure DB and restart the application.
+* View Proxmox cluster health and snapshot status
+* Configure new backup tasks and SnapMirror relationships
+* Monitor job history and logs
 
 ## Contributing
 
-1. Fork the repository.  
-2. Create a feature branch (`git checkout -b feature/YourFeature`).  
+1. Fork the repository.
+2. Create a feature branch (`git checkout -b feature/YourFeature`).
 3. Commit your changes and open a pull request.
 
 ## License
@@ -82,6 +129,4 @@ This program is free software: you can redistribute it and/or modify it under th
 
 This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details:
 
-<https://www.gnu.org/licenses/gpl-3.0.en.html>
-
-```
+[https://www.gnu.org/licenses/gpl-3.0.en.html](https://www.gnu.org/licenses/gpl-3.0.en.html)
