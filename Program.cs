@@ -392,7 +392,7 @@ if (isConfigured)
         }
         else
         {
-            const string user = "BinLadmin", pass = "P@ssw0rd!";
+            const string user = "Overseer", pass = "P@ssw0rd!";
             var exists = userMgr.FindByNameAsync(user).GetAwaiter().GetResult();
             if (exists == null)
             {

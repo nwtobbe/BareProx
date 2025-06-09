@@ -1,97 +1,83 @@
-# BareProx 2025
-TEST
-Installation
+﻿# BareProx
 
+BareProx is an ASP.NET Core MVC application, as evidenced by its Controllers, Views, and Program.cs files ([github.com](https://github.com/nwtobbe/BareProx)). It provides management of Proxmox backups and NetApp SnapMirror configurations, including snapshot creation, SnapLock (tamper‑proof snapshots), and restore operations via a user-friendly web interface ([github.com](https://github.com/nwtobbe/BareProx)).
 
-sudo useradd --system --create-home --shell /bin/bash bareprox
-sudo usermod -aG docker bareprox
+## Features
 
-sudo mkdir -p /var/bareprox/config
-sudo mkdir -p /var/bareprox/data
-# sudo chown -R bareprox:bareprox /var/bareprox
-sudo chown -R 1001:1001 /var/bareprox/config
-sudo chown -R 1001:1001 /var/bareprox/data
-systemctl enable docker
+* **Proxmox Integration**: Monitor host status and health, create snapshots (with I/O freeze and memory support), and manage snapshot lifecycles ([github.com](https://github.com/nwtobbe/BareProx))
+* **NetApp SnapMirror & SnapLock**: Configure and monitor SnapMirror relationships, support SnapLock tamper‑proof snapshots ([github.com](https://github.com/nwtobbe/BareProx))
+* **Scheduling**: Define hourly and daily backup jobs with customizable retention, automatic orphaned snapshot cleanup ([github.com](https://github.com/nwtobbe/BareProx))
+* **User Management**: Authentication via ASP.NET Core Identity with support for multiple users and roles ([github.com](https://github.com/nwtobbe/BareProx))
+* **Logging & Monitoring**: File logging with categories, Proxmox health dashboard, status warnings ([github.com](https://github.com/nwtobbe/BareProx))
+* **Dockerized Deployment**: Deploy with Docker Compose using volume mappings for configuration and persistent data ([github.com](https://github.com/nwtobbe/BareProx))
 
-sudo su - bareprox
-cd /path/to/BareProx/
+## Prerequisites
+
+* [.NET 8.0 SDK](https://dotnet.microsoft.com/download)
+* Docker & Docker Compose
+
+## Installation
+
+### Clone the repository
+
+```bash
+git clone https://github.com/nwtobbe/BareProx.git
+cd BareProx
+```
+
+### Local Development
+
+```bash
+dotnet build
+dotnet run --urls "http://localhost:5000"
+```
+
+### Docker Compose
+
+1. Create host directories for config and data:
+
+   ```bash
+   sudo mkdir -p /var/bareprox/config /var/bareprox/data
+   sudo chown -R 1001:1001 /var/bareprox/{config,data}
+   ```
+2. Configuration files will be created during first run `/var/bareprox/config`:
+2.1 Database will be created in `/var/bareprox/data/BareProxDB.db` on first run.
+
+3. Start the service:
+
+   ```bash
+   cd /path/to/BareProx
+   ```
+
 docker compose up -d
-apt-get install sudo ca-certificates curl gnupg lsb-release
+
+```
+
+Volumes map as follows:
+- `./bareprox-config:/config`
+- `./bareprox-data:/data` ([github.com](https://github.com/nwtobbe/BareProx))
+
+## Configuration
 
 
-# ---------------------- Fix
-Check backup json.. snapshots?
-Authentication failed error page?
-Add lookup of volumes when doing things.
-Fix add cluster
-	Automatically add all nodes to the cluster by one ip
-	Add scheduled task to check access
+Browse to `http://<HOST>:<PORT>` and log in with the default user Overseer and P@ssw0rd! . Use the web UI to:
 
-secondary...
-	Partially implemented, no restore from secondary yet
+- View Proxmox cluster health and snapshot status  
+- Configure new backup tasks and SnapMirror relationships  
+- Monitor job history and logs  
 
-mail
+## Contributing
 
-More logging add categories and sorting, scavange with janitor
-extra verifications
+1. Fork the repository.  
+2. Create a feature branch (`git checkout -b feature/YourFeature`).  
+3. Commit your changes and open a pull request.
 
+## License
 
-Done.
-Modified code to use only hosts that are online
-Added Proxmox health on Landingpage
-Added Landingpage 24h jobs with failed and warnings
-Added Snapmirror view
-Added support for SnapLock / Tamper Proof Snapshots
-Added removal of snapmirror relationship if a volume is unselected in settings.
-Added snapshots-functionality for locking in services
-Updated ct:s
-Added Logging to file
-Moved around in _Layout
-Added Snapmirror
-Parallellization of waiting for proxmox snapshots.
-Fixed 401 when waiting for proxmox snapshots
-Added readd of snapshots magically appearing on secondary.
-Added Orphaned snapshots
-Fixed timezone on debian, again and again
-Fixed edit schedule again
-Disabled clean orphaned snapshots from primary storage
-Added rename files when doing an inplace restore.
-Fixed Restore, cancel
-Fixed edit storage on netapp, return to correct page when clicking on save
-Fixed view under edit and create sched.
-Fixed account page
-Fixed when creating backup, only select that are marked as used in proxmox and storage
-Fixed timeschedule for hourly.
-Docker compose + build instructions
-Fixed minor issue with schedules.
-AutoBuildVersion
-fix install db / first run
-Add lock for snapshots / clones
-Timezones under settings
-Fix in restorecontroller ClusterName = "ProxMox",
-Add select storage svm:s for primary, volumes to use
-	and use it in functions
-Add select storage svms: for secondary, volumes to use
-	and use it in functions
-Added Self signed certificate creation
-Fixed local Timezone for snapshots
-New date/time formatting for snapshots
-Fix create backup so you only can select volumes that have nfs and are in use by proxmox
-Added UserManagement
-Added paths for first run creation
-	volumes:
-  - ./bareprox-config:/config
-	-	appsettings.json
-	-	DatabaseConfig.json
-  - ./bareprox-data:/data
-	-	BareProxDB.db
--Changed to SQL-lite
--Add options for io-freeze, Proxmox Snapshot, include memory and don't try to suspend
--Add a table for snapshots with create date an retention to delete later:
-	Added a check if the snapshot can be deleted, let the record stay an retry until successful
--encrypt passwords in db Netapp + Proxmox + tokens
--Not updating BackupRecord correctly
--Added Setup if no db is configured
-	Added verification if the db is reachable and works.. check permissions etc.
--Added Encryption for dbpassword
--added default user during setup
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 3 of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details:
+
+<https://www.gnu.org/licenses/gpl-3.0.en.html>
+
+```
