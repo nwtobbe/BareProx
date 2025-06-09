@@ -18,7 +18,6 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
-using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text;
 using BareProx.Data;
@@ -34,202 +33,31 @@ namespace BareProx.Services
     public class NetappService : INetappService
     {
         private readonly ApplicationDbContext _context;
-        private readonly IHttpClientFactory _httpClientFactory;
         private readonly ILogger<NetappService> _logger;
-        private readonly IEncryptionService _encryptionService;
         private readonly IAppTimeZoneService _tz;
+        private readonly INetappAuthService _authService;
+        private readonly INetappVolumeService _volumeService;
+
 
         public NetappService(ApplicationDbContext context,
-            IHttpClientFactory httpClientFactory,
             ILogger<NetappService> logger,
-            IEncryptionService encryptionService,
-            IAppTimeZoneService tz)
+            IAppTimeZoneService tz,
+            INetappAuthService authService,
+            INetappVolumeService volumeService)
         {
             _context = context;
-            _httpClientFactory = httpClientFactory;
             _logger = logger;
-            _encryptionService = encryptionService;
             _tz = tz;
+            _authService = authService;
+            _volumeService = volumeService;
         }
 
-        private AuthenticationHeaderValue GetEncryptedAuthHeader(string username, string encryptedPassword)
-        {
-            var decrypted = _encryptionService.Decrypt(encryptedPassword);
-            var base64 = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{username}:{decrypted}"));
-            return new AuthenticationHeaderValue("Basic", base64);
-        }
-        private HttpClient CreateAuthenticatedClient(NetappController controller, out string baseUrl)
-        {
-            var httpClient = _httpClientFactory.CreateClient("NetappClient");
-            httpClient.DefaultRequestHeaders.Authorization =
-                GetEncryptedAuthHeader(controller.Username, controller.PasswordHash);
-
-            baseUrl = $"https://{controller.IpAddress}/api/";
-            return httpClient;
-        }
-        public async Task<List<SelectedNetappVolume>> GetSelectedVolumesAsync(int controllerId, CancellationToken ct = default)
-        {
-            return await _context.SelectedNetappVolumes
-                .Where(v => v.NetappControllerId == controllerId)
-                .ToListAsync(ct);
-        }
-        public async Task<List<VserverDto>> GetVserversAndVolumesAsync(int netappControllerId, CancellationToken ct = default)
-        {
-            var vservers = new List<VserverDto>();
-
-            var controller = await _context.NetappControllers.FindAsync(netappControllerId, ct);
-            if (controller == null)
-                throw new Exception("NetApp controller not found.");
-
-            var httpClient = CreateAuthenticatedClient(controller, out var baseUrl);
-
-            try
-            {
-                var vserverUrl = $"{baseUrl}svm/svms";
-                var vserverResponse = await httpClient.GetAsync(vserverUrl, ct);
-                vserverResponse.EnsureSuccessStatusCode();
-
-                var vserverJson = await vserverResponse.Content.ReadAsStringAsync(ct);
-                using var vserverDoc = JsonDocument.Parse(vserverJson);
-                var vserverElements = vserverDoc.RootElement.GetProperty("records").EnumerateArray();
-
-                foreach (var vserverElement in vserverElements)
-                {
-                    var vserverName = vserverElement.GetProperty("name").GetString() ?? string.Empty;
-                    var vserverDto = new VserverDto { Name = vserverName };
-
-                    var volumesUrl = $"{baseUrl}storage/volumes?svm.name={Uri.EscapeDataString(vserverName)}";
-                    var volumesResponse = await httpClient.GetAsync(volumesUrl, ct);
-                    volumesResponse.EnsureSuccessStatusCode();
-
-                    var volumesJson = await volumesResponse.Content.ReadAsStringAsync(ct);
-                    using var volumesDoc = JsonDocument.Parse(volumesJson);
-                    var volumeElements = volumesDoc.RootElement.GetProperty("records").EnumerateArray();
-
-                    foreach (var volumeElement in volumeElements)
-                    {
-                        var volumeName = volumeElement.GetProperty("name").GetString() ?? string.Empty;
-                        var uuid = volumeElement.TryGetProperty("uuid", out var uuidProp) ? uuidProp.GetString() : string.Empty;
-
-                        var mountIp = volumeElement.TryGetProperty("nas", out var nasProp) &&
-                                      nasProp.TryGetProperty("export_policy", out var exportPolicyProp) &&
-                                      exportPolicyProp.TryGetProperty("rules", out var rulesProp) &&
-                                      rulesProp.GetArrayLength() > 0 &&
-                                      rulesProp[0].TryGetProperty("clients", out var clientsProp) &&
-                                      clientsProp.GetArrayLength() > 0
-                                      ? clientsProp[0].GetString()
-                                      : string.Empty;
-
-                        var volume = new NetappVolumeDto
-                        {
-                            VolumeName = volumeName,
-                            Uuid = uuid,
-                            MountIp = mountIp,
-                            ClusterId = controller.Id
-                        };
-
-                        vserverDto.Volumes.Add(volume);
-                    }
-
-                    vservers.Add(vserverDto);
-                }
-
-                return vservers;
-            }
-            catch (HttpRequestException ex)
-            {
-                _logger.LogError(ex, "HTTP error while fetching NetApp vservers or volumes.");
-                throw new Exception("Failed to retrieve data from NetApp API.", ex);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Unexpected error in NetApp service.");
-                throw;
-            }
-        }
-
-
-
-
-        public async Task<List<NetappMountInfo>> GetVolumesWithMountInfoAsync(int controllerId, CancellationToken ct = default)
-        {
-            var controller = await _context.NetappControllers.FindAsync(controllerId, ct);
-            if (controller == null)
-                throw new Exception("NetApp controller not found.");
-
-            var httpClient = CreateAuthenticatedClient(controller, out var baseUrl);
-
-            try
-            {
-                var interfaceUrl = $"{baseUrl}network/ip/interfaces?fields=ip.address,svm.name,services&services=data_nfs";
-                var interfaceResponse = await httpClient.GetAsync(interfaceUrl, ct);
-                interfaceResponse.EnsureSuccessStatusCode();
-
-                var interfaceJson = await interfaceResponse.Content.ReadAsStringAsync(ct);
-                using var interfaceDoc = JsonDocument.Parse(interfaceJson);
-                var interfaceData = interfaceDoc.RootElement.GetProperty("records");
-
-                var svmToIps = new Dictionary<string, List<string>>();
-                foreach (var iface in interfaceData.EnumerateArray())
-                {
-                    var ip = iface.GetProperty("ip").GetProperty("address").GetString();
-                    var svm = iface.GetProperty("svm").GetProperty("name").GetString();
-
-                    if (string.IsNullOrWhiteSpace(ip) || string.IsNullOrWhiteSpace(svm))
-                        continue;
-
-                    if (!svmToIps.ContainsKey(svm))
-                        svmToIps[svm] = new List<string>();
-
-                    svmToIps[svm].Add(ip);
-                }
-
-                var volumesUrl = $"{baseUrl}storage/volumes?fields=name,svm.name";
-                var volumesResponse = await httpClient.GetAsync(volumesUrl, ct);
-                volumesResponse.EnsureSuccessStatusCode();
-
-                var volumesJson = await volumesResponse.Content.ReadAsStringAsync(ct);
-                using var volumesDoc = JsonDocument.Parse(volumesJson);
-                var volumeData = volumesDoc.RootElement.GetProperty("records");
-
-                var result = new List<NetappMountInfo>();
-                foreach (var volume in volumeData.EnumerateArray())
-                {
-                    var volumeName = volume.GetProperty("name").GetString();
-                    var svmName = volume.GetProperty("svm").GetProperty("name").GetString();
-
-                    if (string.IsNullOrWhiteSpace(volumeName) || string.IsNullOrWhiteSpace(svmName))
-                        continue;
-
-                    if (!svmToIps.TryGetValue(svmName, out var mountIps) || !mountIps.Any())
-                        continue;
-
-                    foreach (var mountIp in mountIps)
-                    {
-                        result.Add(new NetappMountInfo
-                        {
-                            VolumeName = volumeName,
-                            VserverName = svmName,
-                            MountPath = $"{mountIp}:/{volumeName}",
-                            MountIp = mountIp
-                        });
-                    }
-                }
-
-                return result;
-            }
-            catch (HttpRequestException ex)
-            {
-                _logger.LogError(ex, "HTTP error while fetching mount info from NetApp.");
-                throw new Exception("Failed to retrieve volume mount info from NetApp API.", ex);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Unexpected error while building mount info.");
-                throw;
-            }
-        }
-
+        //public async Task<List<SelectedNetappVolume>> GetSelectedVolumesAsync(int controllerId, CancellationToken ct = default)
+        //{
+        //    return await _context.SelectedNetappVolumes
+        //        .Where(v => v.NetappControllerId == controllerId)
+        //        .ToListAsync(ct);
+        //}
         public async Task<bool> TriggerSnapMirrorUpdateAsync(string relationshipUuid, CancellationToken ct = default)
         {
             // 1) Lookup the relation record
@@ -267,7 +95,7 @@ namespace BareProx.Services
             // }
 
             // 4) Trigger the SnapMirror update via HTTP
-            var client = CreateAuthenticatedClient(controller, out var baseUrl);
+            var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
             var url = $"{baseUrl}snapmirror/relationships/{relationshipUuid}/transfers";
             var content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
 
@@ -313,7 +141,7 @@ namespace BareProx.Services
 
             // 3) Optionally re-fetch live state from the API:
             //    (you can remove this if you trust your DB copy)
-            var client = CreateAuthenticatedClient(controller, out var baseUrl);
+            var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
             var resp = await client.GetAsync(
                 $"{baseUrl}snapmirror/relationships/{relationshipUuid}", ct);
             resp.EnsureSuccessStatusCode();
@@ -336,12 +164,8 @@ namespace BareProx.Services
 
         public async Task<List<SnapMirrorRelation>> GetSnapMirrorRelationsAsync(NetappController controller, CancellationToken ct = default)
         {
-            var client = CreateAuthenticatedClient(controller, out var baseUrl);
+            var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
 
-            // Updated query string to match what your actual API returns
-            //var url = $"{baseUrl}snapmirror/relationships?return_timeout=120" +
-            //          "&fields=source.path,destination.path,policy.name,policy.type,policy.uuid,state,lag_time,uuid,healthy" +
-            //          "&max_records=1000";
             var url = $"{baseUrl}snapmirror/relationships?return_timeout=120" +
           "&fields=*";
 
@@ -568,7 +392,7 @@ namespace BareProx.Services
         {
             try
             {
-                var volumes = await GetVolumesWithMountInfoAsync(clusterId, ct);
+                var volumes = await _volumeService.GetVolumesWithMountInfoAsync(clusterId, ct);
                 var volume = volumes.FirstOrDefault(v =>
                     v.VolumeName.Equals(storageName, StringComparison.OrdinalIgnoreCase));
 
@@ -666,7 +490,7 @@ namespace BareProx.Services
                 return result;
             }
 
-            var httpClient = CreateAuthenticatedClient(controller, out var baseUrl);
+            var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
 
             try
             {
@@ -731,7 +555,7 @@ namespace BareProx.Services
                 throw new Exception("NetApp controller not found.");
 
             // 2) Build an authenticated HttpClient (unchanged)
-            var httpClient = CreateAuthenticatedClient(controller, out var baseUrl);
+            var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
 
             // 3) Lookup volume UUID by name (unchanged)
             var lookupUrl = $"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volumeName)}";
@@ -771,7 +595,7 @@ namespace BareProx.Services
             if (controller == null)
                 return new FlexCloneResult { Success = false, Message = "Controller not found." };
 
-            var httpClient = CreateAuthenticatedClient(controller, out var baseUrl);
+            var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
 
             // 2) Lookup volume UUID + SVM name
             var volLookupUrl = $"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volumeName)}&fields=uuid,svm.name";
@@ -871,7 +695,7 @@ namespace BareProx.Services
             if (controller == null)
                 throw new Exception("NetApp controller not found.");
 
-            var httpClient = CreateAuthenticatedClient(controller, out var baseUrl);
+            var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
 
             var url = $"{baseUrl}network/ip/interfaces?svm.name={Uri.EscapeDataString(vserver)}&fields=ip.address,services";
 
@@ -900,7 +724,7 @@ namespace BareProx.Services
             if (controller == null) return false;
 
             // 🔐 Prepare HTTP client + base URL
-            var httpClient = CreateAuthenticatedClient(controller, out var baseUrl); // baseUrl = https://<ip>/api/
+            var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl); // baseUrl = https://<ip>/api/
 
             // 2) Lookup UUID by name
             var lookupUrl = $"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volumeName)}&fields=uuid";
@@ -943,7 +767,7 @@ namespace BareProx.Services
             var controller = await _context.NetappControllers.FindAsync(controllerId, ct);
             if (controller == null) return false;
 
-            var httpClient = CreateAuthenticatedClient(controller, out var baseUrl);
+            var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
 
             // 2) Lookup source export policy *name*
             var srcLookupUrl = $"{baseUrl}storage/volumes" +
@@ -1010,7 +834,7 @@ namespace BareProx.Services
             var controller = await _context.NetappControllers.FindAsync(controllerId, ct);
             if (controller == null) return new List<string>();
 
-            var client = CreateAuthenticatedClient(controller, out var baseUrl);
+            var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
 
             var url = $"{baseUrl}storage/volumes?fields=name";
             var resp = await client.GetAsync(url, ct);
@@ -1031,7 +855,7 @@ namespace BareProx.Services
             if (controller == null)
                 throw new InvalidOperationException("Controller not found");
 
-            var client = CreateAuthenticatedClient(controller, out var baseUrl);
+            var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
 
             var url = $"{baseUrl}storage/volumes?name=restore_*";
             var resp = await client.GetAsync(url, ct);
@@ -1061,7 +885,7 @@ namespace BareProx.Services
                 return false;
 
             // 2) Use helper to get HttpClient and base URL
-            var client = CreateAuthenticatedClient(controller, out var baseUrl);
+            var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
 
             var patchUrl = $"{baseUrl}storage/volumes/{volumeUuid}";
             var geturl = $"{patchUrl}?fields=nas.path";
@@ -1156,7 +980,7 @@ namespace BareProx.Services
             if (controller == null) return null;
 
             // 🔐 Use helper for encrypted auth and base URL
-            var client = CreateAuthenticatedClient(controller, out var baseUrl);
+            var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
             var url = $"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volumeName)}&fields=uuid";
 
             var resp = await client.GetAsync(url, ct);
@@ -1186,7 +1010,7 @@ namespace BareProx.Services
             }
 
             // 🔐 Use encrypted credentials + helper
-            var client = CreateAuthenticatedClient(controller, out var baseUrl);
+            var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
 
             // Step 1: Lookup the volume UUID using the volume name
             var volLookupUrl = $"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volumeName)}";
@@ -1226,7 +1050,7 @@ namespace BareProx.Services
                 throw new Exception("No NetApp controller found.");
 
             // 🔐 Use encrypted credentials and base URL helper
-            var client = CreateAuthenticatedClient(controller, out var baseUrl);
+            var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
 
             var volumesUrl = $"{baseUrl}storage/volumes?fields=name,uuid,svm.name";
             var volumesResp = await client.GetAsync(volumesUrl, ct);
@@ -1288,7 +1112,7 @@ namespace BareProx.Services
                 _logger.LogError("NetApp controller not found for ID {ControllerId}", controllerId);
                 return false;
             }
-            var httpClient = CreateAuthenticatedClient(controller, out var baseUrl);
+            var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
 
             var lookupUrl = $"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volumeName)}";
             var lookupResp = await httpClient.GetAsync(lookupUrl, ct);
@@ -1462,7 +1286,7 @@ namespace BareProx.Services
             if (controller == null)
                 throw new Exception($"NetApp controller {controllerId} not found.");
 
-            var client = CreateAuthenticatedClient(controller, out var baseUrl);
+            var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
             var url = $"{baseUrl}snapmirror/policies/{policyUuid}?fields=*";
             var resp = await client.GetAsync(url, ct);
 
@@ -1506,7 +1330,7 @@ namespace BareProx.Services
             if (controller == null)
                 throw new Exception($"Controller {controllerId} not found.");
 
-            var httpClient = CreateAuthenticatedClient(controller, out var baseUrl);
+            var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
             var url = $"{baseUrl}storage/volumes/{volumeUuid}?fields=space,nas.export_policy.name,snapshot_locking_enabled";
 
             var resp = await httpClient.GetAsync(url, ct);

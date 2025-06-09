@@ -35,17 +35,20 @@ namespace BareProx.Services
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly INetappService _netappService;
         private readonly IEncryptionService _encryptionService;
+        private readonly INetappVolumeService _netappVolumeService;
 
         public ProxmoxService(
             ApplicationDbContext context,
             IHttpClientFactory httpClientFactory,
             INetappService netappService,
-            IEncryptionService encryptionService)
+            IEncryptionService encryptionService,
+            INetappVolumeService netappVolumeService)
         {
             _context = context;
             _httpClientFactory = httpClientFactory;
             _netappService = netappService;
             _encryptionService = encryptionService;
+            _netappVolumeService = netappVolumeService;
         }
 
         public async Task<bool> AuthenticateAndStoreTokenAsync(int clusterId, CancellationToken ct)
@@ -99,7 +102,6 @@ namespace BareProx.Services
                 return false;
             }
         }
-
         private async Task<HttpClient> GetAuthenticatedClientAsync(ProxmoxCluster cluster, CancellationToken ct)
         {
             if (string.IsNullOrEmpty(cluster.ApiToken) || string.IsNullOrEmpty(cluster.CsrfToken))
@@ -231,7 +233,7 @@ namespace BareProx.Services
             }
 
             // 3) Fetch all NetApp NFS volumes
-            var netappVolumes = await _netappService.GetVolumesWithMountInfoAsync(netappControllerId);
+            var netappVolumes = await _netappVolumeService.GetVolumesWithMountInfoAsync(netappControllerId, ct);
 
             // 4) Only keep the intersection: NetApp volumes that Proxmox knows about
             var validVolumes = netappVolumes

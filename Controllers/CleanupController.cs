@@ -31,15 +31,18 @@ namespace BareProx.Controllers
         private readonly ApplicationDbContext _context;
         private readonly INetappService _netappService;
         private readonly ProxmoxService _proxmoxService;
+        private readonly INetappVolumeService _netappVolumeService;
 
         public CleanupController(
             ApplicationDbContext context,
             INetappService netappService,
-            ProxmoxService proxmoxService)
+            ProxmoxService proxmoxService,
+            INetappVolumeService netappVolumeService)
         {
             _context = context;
             _netappService = netappService;
             _proxmoxService = proxmoxService;
+            _netappVolumeService = netappVolumeService;
         }
 
         public async Task<IActionResult> Index(CancellationToken ct)
@@ -103,7 +106,7 @@ namespace BareProx.Controllers
                 foreach (var cloneName in allClones)
                 {
                     // 5A.1) Determine mount‐IP for this clone
-                    var mountInfo = (await _netappService
+                    var mountInfo = (await _netappVolumeService
                                           .GetVolumesWithMountInfoAsync(controllerId, ct))
                                     .FirstOrDefault(m => m.VolumeName == cloneName);
                     string? mountIp = mountInfo?.MountIp;
@@ -188,7 +191,7 @@ namespace BareProx.Controllers
 
                             // 5B.6b) If that clone exists, is it mounted on this cluster?
                             //          Fetch mount info once again, only for this one clone.
-                            var singleMount = (await _netappService
+                            var singleMount = (await _netappVolumeService
                                                     .GetVolumesWithMountInfoAsync(controllerId, ct))
                                               .FirstOrDefault(m => m.VolumeName == cloneForThisSnapshot);
                             info.CloneMountIp = singleMount?.MountIp;

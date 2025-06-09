@@ -238,7 +238,9 @@ if (isConfigured)
     // --- Repositories & Domain Services ----------------------------------------
     builder.Services.AddScoped<IBackupRepository, BackupRepository>();
     builder.Services.AddScoped<IBackupService, BackupService>();
+    builder.Services.AddScoped<INetappAuthService, NetappAuthService>();
     builder.Services.AddScoped<INetappService, NetappService>();
+    builder.Services.AddScoped<INetappVolumeService, NetappVolumeService>();
     builder.Services.AddScoped<ProxmoxService>();
     builder.Services.AddScoped<IRestoreService, RestoreService>();
 

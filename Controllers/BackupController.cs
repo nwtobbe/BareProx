@@ -23,6 +23,7 @@ using BareProx.Models;
 using BareProx.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Rendering;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 
@@ -529,7 +530,21 @@ namespace BareProx.Controllers
             schedule.LockRetentionCount = model.LockRetentionCount;
             schedule.LockRetentionUnit = model.LockRetentionUnit;
 
-            await _context.SaveChangesAsync(ct);
+            // Retry save on error
+            for (int i = 0; i < 3; i++)
+            {
+                try
+                {
+                    await _context.SaveChangesAsync(ct);
+                    break;
+                }
+                catch (DbUpdateException ey)
+                    when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
+                {
+                    if (i == 2) throw;
+                    await Task.Delay(500, ct);
+                }
+            }
             TempData["SuccessMessage"] = "Backup schedule updated successfully.";
             return RedirectToAction("Backup");
         }

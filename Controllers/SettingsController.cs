@@ -45,6 +45,7 @@ namespace BareProx.Controllers
         private readonly string _configFile;
         private readonly SelfSignedCertificateService _certService;
         private readonly IHostApplicationLifetime _appLifetime;
+        private readonly INetappVolumeService _netappVolumeService;
 
 
         public SettingsController(
@@ -54,7 +55,8 @@ namespace BareProx.Controllers
             IEncryptionService encryptionService,
             IWebHostEnvironment env,
             SelfSignedCertificateService certService,
-    IHostApplicationLifetime appLifetime)
+    IHostApplicationLifetime appLifetime,
+    INetappVolumeService netappVolumeService)
         {
             _context = context;
             _proxmoxService = proxmoxService;
@@ -64,7 +66,7 @@ namespace BareProx.Controllers
             _configFile = Path.Combine("/config", "appsettings.json");
             _certService = certService;
             _appLifetime = appLifetime;
-
+            _netappVolumeService = netappVolumeService;
         }
 
         // helper properties to resolve only when needed:
@@ -679,7 +681,7 @@ namespace BareProx.Controllers
                 var controller = await _context.NetappControllers.FirstOrDefaultAsync(c => c.Id == storageId, ct);
                 if (controller == null) return NotFound("Controller not found");
 
-                var svms = await _netappService.GetVserversAndVolumesAsync(controller.Id, ct);
+                var svms = await _netappVolumeService.GetVserversAndVolumesAsync(controller.Id, ct);
                 if (svms == null || !svms.Any())
                     return NotFound("No volume data found for this controller");
 

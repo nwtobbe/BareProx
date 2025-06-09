@@ -33,17 +33,20 @@ namespace BareProx.Services
         private readonly IBackgroundServiceQueue _taskQueue;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ILogger<RestoreService> _logger;
+        private readonly INetappVolumeService _netappVolumeService;
 
         public RestoreService(
             ApplicationDbContext context,
             IBackgroundServiceQueue taskQueue,
             IServiceScopeFactory scopeFactory,
-            ILogger<RestoreService> logger)
+            ILogger<RestoreService> logger,
+            INetappVolumeService netappVolumeService)
         {
             _context = context;
             _taskQueue = taskQueue;
             _scopeFactory = scopeFactory;
             _logger = logger;
+            _netappVolumeService = netappVolumeService;
         }
 
         public async Task<bool> RunRestoreAsync(RestoreFormViewModel model, CancellationToken ct)
@@ -123,7 +126,7 @@ namespace BareProx.Services
                     }
 
                     // 6) Mount on target host
-                    var mounts = await netapp.GetVolumesWithMountInfoAsync(model.ControllerId, backgroundCt);
+                    var mounts = await _netappVolumeService.GetVolumesWithMountInfoAsync(model.ControllerId, backgroundCt);
                     var cloneMount = mounts.FirstOrDefault(m =>
                         m.VolumeName.Equals(cloneName, StringComparison.OrdinalIgnoreCase));
 

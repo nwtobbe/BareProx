@@ -249,25 +249,32 @@
 @section Scripts {
     <script>
         document.addEventListener("DOMContentLoaded", function () {
-            // References
-            const lockingCheckboxContainer  = document.getElementById("lockingCheckbox");
-            const lockingCheckbox           = document.getElementById("EnableLocking");
-            const lockingRetentionContainer = document.getElementById("lockingRetention");
-            const lockCountInput            = document.getElementById("LockRetentionCount");
-            const lockUnitSelect            = document.getElementById("LockRetentionUnit");
-            const retentionCountInput       = document.getElementById("RetentionCount");
-            const retentionUnitSelect       = document.getElementById("RetentionUnit");
+            const appAwareRadios = document.querySelectorAll("input[name='IsApplicationAware']");
+            const optionsContainer = document.getElementById("appAwareOptions");
+            const proxmoxCheckbox = document.getElementById("UseProxmoxSnapshot");
+            const proxmoxOptions = document.getElementById("proxmoxSnapshotOptions");
+            const freezeCheckbox = document.getElementById("EnableIoFreeze");
+            const replicateBox = document.getElementById("replicateCheckbox");
+            const replicateToggle = document.getElementById("ReplicateToSecondaryToggle");
+            const labelSelect = document.getElementById("LabelSelect");
 
-            // Prevent invalid keys in number fields
+            const lockingCheckboxContainer = document.getElementById("lockingCheckbox");
+            const lockingCheckbox = document.getElementById("EnableLocking");
+            const lockingRetentionContainer = document.getElementById("lockingRetention");
+            const lockCountInput = document.getElementById("LockRetentionCount");
+            const lockUnitSelect = document.getElementById("LockRetentionUnit");
+            const retentionCountInput = document.getElementById("RetentionCount");
+            const retentionUnitSelect = document.getElementById("RetentionUnit");
+
             function blockInvalidNumberKeys(evt) {
                 if (["e","E","+","-","."].includes(evt.key)) {
                     evt.preventDefault();
                 }
             }
+
             retentionCountInput.addEventListener("keydown", blockInvalidNumberKeys);
             lockCountInput.addEventListener("keydown", blockInvalidNumberKeys);
 
-            // Convert count/unit → hours
             function retentionInHours(count, unit) {
                 const c = parseInt(count, 10);
                 if (isNaN(c) || c < 1) return 0;
@@ -279,7 +286,33 @@
                 return 0;
             }
 
-            // Recalculate max “Locked for” based on main retention
+            function updateVisibility() {
+                const sel = Array.from(appAwareRadios).find(r => r.checked);
+                optionsContainer.classList.toggle("d-none", sel?.value !== "true");
+            }
+
+            function updateSnapshotOptions() {
+                const useSnap = proxmoxCheckbox.checked;
+                proxmoxOptions.classList.toggle("d-none", !useSnap);
+                if (useSnap && freezeCheckbox.checked) {
+                    freezeCheckbox.checked = false;
+                }
+            }
+
+            function handleFreezeToggle() {
+                if (freezeCheckbox.checked && proxmoxCheckbox.checked) {
+                    proxmoxCheckbox.checked = false;
+                    proxmoxOptions.classList.add("d-none");
+                }
+            }
+
+            function updateReplicateVisibility(isReplicable) {
+                replicateBox.classList.toggle("d-none", !isReplicable || labelSelect.value === "Manual");
+                if (!isReplicable || labelSelect.value === "Manual") {
+                    replicateToggle.checked = false;
+                }
+            }
+
             function recalcLockingOptions() {
                 const totalHours = retentionInHours(
                     retentionCountInput.value,
@@ -287,23 +320,19 @@
                 );
 
                 if (totalHours <= 1) {
-                    // Too low to lock
                     lockingCheckbox.checked = false;
                     lockingCheckbox.disabled = true;
                     lockingRetentionContainer.classList.add("d-none");
                     return;
                 }
 
-                // enable the checkbox
                 lockingCheckbox.disabled = false;
 
-                // recompute each unit’s max
                 Array.from(lockUnitSelect.options).forEach(opt => {
                     const unit = opt.value;
-                    const mul  = unit === "Days" ? 24 :
-                                 unit === "Weeks"? 168 : 1;
+                    const mul = unit === "Days" ? 24 : unit === "Weeks" ? 168 : 1;
                     let maxCnt = Math.floor((totalHours - 1) / mul);
-                    maxCnt     = Math.min(maxCnt, 30);
+                    maxCnt = Math.min(maxCnt, 30);
 
                     opt.disabled = maxCnt < 1;
                     if (unit === lockUnitSelect.value) {
@@ -315,59 +344,50 @@
                 });
             }
 
-            // Show/hide the “Locked for” block
             lockingCheckbox.addEventListener("change", () => {
-                if (lockingCheckbox.checked) {
-                    recalcLockingOptions();
-                    lockingRetentionContainer.classList.remove("d-none");
-                } else {
-                    lockingRetentionContainer.classList.add("d-none");
-                }
+                lockingRetentionContainer.classList.toggle("d-none", !lockingCheckbox.checked);
+                if (lockingCheckbox.checked) recalcLockingOptions();
             });
 
-            // Update when main retention changes
             retentionCountInput.addEventListener("input", recalcLockingOptions);
             retentionUnitSelect.addEventListener("change", recalcLockingOptions);
             lockUnitSelect.addEventListener("change", recalcLockingOptions);
 
-            // When the modal opens, fill hidden fields & toggle locking UI
-            const backupModal = document.getElementById("backupModal");
-            backupModal.addEventListener("show.bs.modal", function (e) {
-                const btn     = e.relatedTarget;
-                const storage = btn.getAttribute("data-storage");
-                const cluster = btn.getAttribute("data-cluster");
-                const ctrlId  = btn.getAttribute("data-controllerid");
-                const canLock = btn.getAttribute("data-snapshotlockingenabled") === "true";
+            const backupModal = document.getElementById('backupModal');
+            backupModal.addEventListener('show.bs.modal', function (event) {
+                const btn = event.relatedTarget;
+                const isRep = btn.getAttribute('data-replicable') === 'true';
+                const canLock = btn.getAttribute('data-snapshotlockingenabled') === 'true';
 
-                // populate hidden inputs
-                document.getElementById("modalStorageName").value  = storage;
-                document.getElementById("modalClusterId").value    = cluster;
-                document.getElementById("modalControllerId").value = ctrlId;
+                replicateToggle.checked = false;
+                updateReplicateVisibility(isRep);
 
-                // reset main retention
+                document.getElementById('modalStorageName').value = btn.dataset.storage;
+                document.getElementById('modalClusterId').value = btn.dataset.cluster;
+                document.getElementById('modalControllerId').value = btn.dataset.controllerid;
+
+                labelSelect.value = "Manual";
+                labelSelect.onchange = () => updateReplicateVisibility(isRep);
+
                 retentionCountInput.value = 7;
                 retentionUnitSelect.value = "Days";
-                retentionCountInput.max   = 256;
-
-                // show/hide locking checkbox
-                if (canLock) {
-                    lockingCheckboxContainer.classList.remove("d-none");
-                    lockingCheckbox.disabled = false;
-                } else {
-                    lockingCheckboxContainer.classList.add("d-none");
-                    lockingCheckbox.checked  = false;
-                    lockingCheckbox.disabled = true;
-                    lockingRetentionContainer.classList.add("d-none");
-                }
-
-                // reset locked-for inputs
                 lockCountInput.value = 1;
                 lockUnitSelect.value = "Hours";
-                lockCountInput.max   = 30;
 
-                // recalc in case user toggles immediately
+                lockingCheckboxContainer.classList.toggle("d-none", !canLock);
+                lockingCheckbox.checked = false;
+                lockingCheckbox.disabled = !canLock;
+                lockingRetentionContainer.classList.add("d-none");
+
                 recalcLockingOptions();
             });
+
+            appAwareRadios.forEach(r => r.addEventListener("change", updateVisibility));
+            proxmoxCheckbox.addEventListener("change", updateSnapshotOptions);
+            freezeCheckbox.addEventListener("change", handleFreezeToggle);
+
+            updateVisibility();
+            updateSnapshotOptions();
         });
     </script>
 }

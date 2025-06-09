@@ -29,10 +29,8 @@ namespace BareProx.Services
     {
         // --- Periodic volume and mount‐info sync ---
         Task UpdateAllSelectedVolumesAsync(CancellationToken ct = default);
-        Task<List<NetappMountInfo>> GetVolumesWithMountInfoAsync(int netappControllerId, CancellationToken ct = default);
 
         // --- Vserver and volume info ---
-        Task<List<VserverDto>> GetVserversAndVolumesAsync(int netappControllerId, CancellationToken ct = default);
         Task<List<string>> ListVolumesByPrefixAsync(string prefix, int controllerId, CancellationToken ct = default);
         Task<List<string>> ListFlexClonesAsync(int controllerId, CancellationToken ct = default);
         Task<VolumeInfo?> LookupVolumeAsync(string volumeName, int controllerId, CancellationToken ct = default);
