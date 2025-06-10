@@ -4,18 +4,18 @@ BareProx is an ASP.NET Core MVC application, as evidenced by its Controllers, Vi
 
 ## Features
 
-* **Proxmox Integration**: Monitor host status and health, create snapshots (with I/O freeze and memory support), and manage snapshot lifecycles
-* **NetApp NFS Datastores**: Use NetApp NFS volumes as Proxmox storage backends for VM disks and backups.
-* **NetApp SnapMirror & SnapLock**: Configure and monitor SnapMirror relationships, support SnapLock tamper‑proof snapshots ([github.com](https://github.com/nwtobbe/BareProx))
-* **Scheduling**: Define hourly and daily backup jobs with customizable retention, including manual cleanup of orphaned snapshots
-* **User Management**: Authentication via ASP.NET Core Identity with support for multiple users and roles ([github.com](https://github.com/nwtobbe/BareProx))
-* **Logging & Monitoring**: File logging with categories, Proxmox health dashboard, status warnings ([github.com](https://github.com/nwtobbe/BareProx))
-* **Dockerized Deployment**: Deploy with Docker Compose using volume mappings for configuration and persistent data ([github.com](https://github.com/nwtobbe/BareProx))
+- **Proxmox Integration**: Monitor host status and health, create snapshots (with I/O freeze and memory support), and manage snapshot lifecycles
+- **NetApp NFS Datastores**: Use NetApp NFS volumes as Proxmox storage backends for VM disks and backups.
+- **NetApp SnapMirror & SnapLock**: Configure and monitor SnapMirror relationships, support SnapLock tamper‑proof snapshots ([github.com](https://github.com/nwtobbe/BareProx))
+- **Scheduling**: Define hourly and daily backup jobs with customizable retention, including manual cleanup of orphaned snapshots
+- **User Management**: Authentication via ASP.NET Core Identity with support for multiple users and roles ([github.com](https://github.com/nwtobbe/BareProx))
+- **Logging & Monitoring**: File logging with categories, Proxmox health dashboard, status warnings ([github.com](https://github.com/nwtobbe/BareProx))
+- **Dockerized Deployment**: Deploy with Docker Compose using volume mappings for configuration and persistent data ([github.com](https://github.com/nwtobbe/BareProx))
 
 ## Prerequisites
 
-* [.NET 8.0 SDK](https://dotnet.microsoft.com/download)
-* Docker & Docker Compose
+- [.NET 8.0 SDK](https://dotnet.microsoft.com/download)
+- Docker & Docker Compose
 
 ## Installation
 
@@ -30,7 +30,7 @@ cd BareProx
 
 ```bash
 dotnet build
-dotnet run --urls "http://localhost:5000"
+dotnet run --urls "http://localhost:443"
 ```
 
 ### Docker Compose
@@ -38,31 +38,35 @@ dotnet run --urls "http://localhost:5000"
 There is a `docker-compose.yml` file included for easy deployment. It uses the official .NET 8.0 SDK image to build the application and run it in a container.
 
 1. Create host directories for config and data:
-
-   ```bash
-   sudo mkdir -p /var/bareprox/config /var/bareprox/data
-   sudo chown -R 1001:1001 /var/bareprox/{config,data}
-   ```
+  
+  ```bash
+  sudo mkdir -p /var/bareprox/config /var/bareprox/data
+  sudo chown -R 1001:1001 /var/bareprox/{config,data}
+  ```
+  
 2. Configuration files will be created during first run `/var/bareprox/config`:
-
-2a.  Database will be created in `/var/bareprox/data/BareProxDB.db` on first run.
-
-3. Start the service:
-
-   ```bash
-   cd /path/to/BareProx
-   ```
-
-   docker compose up -d
+  
+3. Database will be created in `/var/bareprox/data/BareProxDB.db` on first run.
+  
+4. Start the service:
+  
+  ```bash
+  cd /path/to/BareProx
+  ```
+  
+  docker compose up -d
+  
 
 Volumes map as follows:
 
-* `./bareprox-config:/config`
-* `./bareprox-data:/data` ([github.com](https://github.com/nwtobbe/BareProx))
+- `./bareprox-config:/config`
+- `./bareprox-data:/data` ([github.com](https://github.com/nwtobbe/BareProx))
 
 ## Server Setup
 
 Before deploying BareProx on your Debian 12 hosts, perform the following steps:
+
+It still needs to be 100% verified since there is a lot already packaged in the docker image.
 
 ### 1. Install prerequisites
 
@@ -110,14 +114,41 @@ docker run -p 443:443 --rm nwtobbe/bareprox:latest
 
 ## Configuration
 
-Browse to `http://<HOST>:<PORT>` and log in with the default user 'Overseer' and 'P\@ssw0rd!'. Use the web UI to:
+Browse to `http://<HOST>:<PORT>` and log in with the default user 'Overseer' and 'P@ssw0rd!'. Use the web UI to:
 
-* Configure DB and restart the application.
-* View Proxmox cluster health and snapshot status
-* Configure new backup tasks and SnapMirror relationships
-* Monitor job history and logs
+- Configure DB and restart the application.
+- View Proxmox cluster health and snapshot status
+- Configure new backup tasks and SnapMirror relationships
+- Monitor job history and logs
 
-## Contributing
+#### System
+
+- Set TimeZone
+  
+- Regenerate certificate if needed
+  
+
+#### Netapp Controllers
+
+Add NetApp controller
+
+Then Edit created NetApp controller to select storage to use.
+
+Rinse and repeat for a secondary controller if any.
+
+##### Proxmox
+
+Create Proxmox cluster
+
+A small hint: username@pam
+
+Edit Created Proxmox cluster and add hosts in cluster. There is no api currently to do this automagically.
+
+When done click authenticate.
+
+And don't forget to select storage.
+
+#### Contributing
 
 1. Fork the repository.
 2. Create a feature branch (`git checkout -b feature/YourFeature`).
