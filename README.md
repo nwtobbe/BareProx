@@ -5,7 +5,7 @@ BareProx is an ASP.NET Core MVC application, as evidenced by its Controllers, Vi
 ## Features
 
 * **Proxmox Integration**: Monitor host status and health, create snapshots (with I/O freeze and memory support), and manage snapshot lifecycles
-* **NetApp NFS Datastores**: Use NetApp NFS volumes as Proxmox storage backends for VM disks and backups: Use NetApp NFS volumes as Proxmox storage backends for VM disks and backups
+* **NetApp NFS Datastores**: Use NetApp NFS volumes as Proxmox storage backends for VM disks and backups.
 * **NetApp SnapMirror & SnapLock**: Configure and monitor SnapMirror relationships, support SnapLock tamper‑proof snapshots ([github.com](https://github.com/nwtobbe/BareProx))
 * **Scheduling**: Define hourly and daily backup jobs with customizable retention, including manual cleanup of orphaned snapshots
 * **User Management**: Authentication via ASP.NET Core Identity with support for multiple users and roles ([github.com](https://github.com/nwtobbe/BareProx))
