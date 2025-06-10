@@ -32,17 +32,20 @@ namespace BareProx.Controllers
         private readonly INetappService _netappService;
         private readonly ProxmoxService _proxmoxService;
         private readonly INetappVolumeService _netappVolumeService;
+        private readonly INetappSnapshotService _netappSnapshotService;
 
         public CleanupController(
             ApplicationDbContext context,
             INetappService netappService,
             ProxmoxService proxmoxService,
-            INetappVolumeService netappVolumeService)
+            INetappVolumeService netappVolumeService,
+            INetappSnapshotService netappSnapshotService)
         {
             _context = context;
             _netappService = netappService;
             _proxmoxService = proxmoxService;
             _netappVolumeService = netappVolumeService;
+            _netappSnapshotService = netappSnapshotService;
         }
 
         public async Task<IActionResult> Index(CancellationToken ct)
@@ -154,7 +157,7 @@ namespace BareProx.Controllers
                     };
 
                     // 5B.3) Fetch all snapshot names on storage for this volume
-                    var allSnapshotNamesOnDisk = await _netappService.GetSnapshotsAsync(controllerId, vol, ct)
+                    var allSnapshotNamesOnDisk = await _netappSnapshotService.GetSnapshotsAsync(controllerId, vol, ct)
                         ?? new List<string>();
 
                     // 5B.4) Which snapshots are already in BackupRecords?
@@ -303,7 +306,7 @@ namespace BareProx.Controllers
             if (controllerId == 0)
                 return NotFound(new { error = "No NetApp controller configured." });
 
-            var result = await _netappService.DeleteSnapshotAsync(
+            var result = await _netappSnapshotService.DeleteSnapshotAsync(
                              controllerId,
                              volumeName,
                              snapshotName, ct);

@@ -66,6 +66,7 @@ namespace BareProx.Services.Background
             using var scope = _services.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var netapp = scope.ServiceProvider.GetRequiredService<INetappService>();
+            var netappSnapshotService = scope.ServiceProvider.GetRequiredService<INetappSnapshotService>();
             var now = DateTime.UtcNow;
 
             var relations = await db.SnapMirrorRelations.AsNoTracking().ToListAsync(ct);
@@ -96,7 +97,7 @@ namespace BareProx.Services.Background
 
                 try
                 {
-                    var deleteRes = await netapp.DeleteSnapshotAsync(
+                    var deleteRes = await netappSnapshotService.DeleteSnapshotAsync(
                         ex.ControllerId, ex.StorageName, ex.SnapshotName, ct);
 
                     if (!deleteRes.Success && !(deleteRes.ErrorMessage?.Contains("not found", StringComparison.OrdinalIgnoreCase) ?? false))
@@ -106,7 +107,7 @@ namespace BareProx.Services.Background
                     }
 
                     // Verify snapshot deletion explicitly
-                    var primarySnapshots = await netapp.GetSnapshotsAsync(ex.ControllerId, ex.StorageName, ct);
+                    var primarySnapshots = await netappSnapshotService.GetSnapshotsAsync(ex.ControllerId, ex.StorageName, ct);
                     if (primarySnapshots.Any(n => n.Equals(ex.SnapshotName, StringComparison.OrdinalIgnoreCase)))
                     {
                         _logger.LogWarning("Snapshot {snap} still exists on primary after deletion attempt", ex.SnapshotName);
@@ -115,7 +116,7 @@ namespace BareProx.Services.Background
 
                     if (relLookup.TryGetValue((ex.ControllerId, ex.StorageName), out var rel))
                     {
-                        var secondarySnapshots = await netapp.GetSnapshotsAsync(rel.DestinationControllerId, rel.DestinationVolume, ct);
+                        var secondarySnapshots = await netappSnapshotService.GetSnapshotsAsync(rel.DestinationControllerId, rel.DestinationVolume, ct);
                         bool existsOnSecondary = secondarySnapshots.Any(n => n.Equals(ex.SnapshotName, StringComparison.OrdinalIgnoreCase));
 
                         var snapRecord = await db.NetappSnapshots.FirstOrDefaultAsync(s =>
@@ -168,6 +169,7 @@ namespace BareProx.Services.Background
             using var scope = _services.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var netapp = scope.ServiceProvider.GetRequiredService<INetappService>();
+            var netappSnapshotService = scope.ServiceProvider.GetRequiredService<INetappSnapshotService>();
             var now = DateTime.UtcNow;
 
             // 0) Preload all valid NetappController IDs
@@ -209,12 +211,12 @@ namespace BareProx.Services.Background
                 }
 
                 // 3a) List all snapshots on the secondary side
-                var secList = await netapp.GetSnapshotsAsync(
+                var secList = await netappSnapshotService.GetSnapshotsAsync(
                     rel.DestinationControllerId,
                     rel.DestinationVolume, ct);
 
                 // 3b) List all snapshots on the primary side (to set ExistsOnPrimary)
-                var primaryList = await netapp.GetSnapshotsAsync(
+                var primaryList = await netappSnapshotService.GetSnapshotsAsync(
                     rel.SourceControllerId,
                     rel.SourceVolume, ct);
 

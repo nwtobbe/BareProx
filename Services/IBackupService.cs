@@ -21,7 +21,6 @@
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Repositories;
-using BareProx.Services.Netapp;
 using Microsoft.EntityFrameworkCore;
 using System.Diagnostics;
 
@@ -57,6 +56,7 @@ namespace BareProx.Services
         private readonly ProxmoxService _proxmoxService;
         private readonly INetappService _netAppService;
         private readonly INetappSnapmirrorService _netAppSnapmirrorService;
+        private readonly INetappSnapshotService _netAppSnapshotService;
         private readonly IBackupRepository _backupRepository;
         private readonly ILogger<BackupService> _logger;
         private readonly TimeZoneInfo _timeZoneInfo;
@@ -68,6 +68,7 @@ namespace BareProx.Services
             ProxmoxService proxmoxService,
             INetappService netAppService,
             INetappSnapmirrorService netAppSnapmirrorService,
+            INetappSnapshotService netAppSnapshotService,
             IBackupRepository backupRepository,
             ILogger<BackupService> logger,
             IConfiguration configuration,
@@ -77,6 +78,7 @@ namespace BareProx.Services
             _proxmoxService = proxmoxService;
             _netAppService = netAppService;
             _netAppSnapmirrorService = netAppSnapmirrorService;
+            _netAppSnapshotService = netAppSnapshotService;
             _backupRepository = backupRepository;
             _logger = logger;
             _timeZoneId = configuration["AppSettings:TimeZone"] ?? "UTC";
@@ -230,7 +232,7 @@ namespace BareProx.Services
                 }
 
                 // 5a) Create the NetApp snapshot
-                var snapshotResult = await _netAppService.CreateSnapshotAsync(
+                var snapshotResult = await _netAppSnapshotService.CreateSnapshotAsync(
                     netappControllerId,
                     storageName,
                     label,
@@ -346,7 +348,7 @@ namespace BareProx.Services
                             && updated.transfer?.State.Equals("success", StringComparison.OrdinalIgnoreCase) == true)
                         {
                             // 2) Now confirm *your* snapshot
-                            var snaps = await _netAppService.GetSnapshotsAsync(
+                            var snaps = await _netAppSnapshotService.GetSnapshotsAsync(
                                 secondaryControllerId,
                                 secondaryVolume,
                                 ct);

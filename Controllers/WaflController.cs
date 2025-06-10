@@ -21,7 +21,6 @@
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services;
-using BareProx.Services.Netapp;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.RegularExpressions;
@@ -34,6 +33,7 @@ namespace BareProx.Controllers
         private readonly INetappService _netappService;
         private readonly INetappSnapmirrorService _netappSnapmirrorService;
         private readonly INetappVolumeService _netappVolumeService;
+        private readonly INetappSnapshotService _netappSnapshotService;
         private readonly ProxmoxService _proxmoxService;
 
         public WaflController(
@@ -41,12 +41,14 @@ namespace BareProx.Controllers
                 INetappService netappService,
                 INetappSnapmirrorService netappSnapmirrorService,
                 INetappVolumeService netappVolumeService,
+                INetappSnapshotService netappSnapshotService,
                 ProxmoxService proxmoxService)
         {
             _context = context;
             _netappService = netappService;
             _netappSnapmirrorService = netappSnapmirrorService;
             _netappVolumeService = netappVolumeService;
+            _netappSnapshotService = netappSnapshotService;
             _proxmoxService = proxmoxService;
         }
 
@@ -110,8 +112,7 @@ namespace BareProx.Controllers
                         };
 
                         // 4) Fetch snapshots for this volume (passes ct)
-                        var snapshots = await _netappService
-                            .GetSnapshotsAsync(vol.ClusterId, vol.VolumeName, ct);
+                        var snapshots = await _netappSnapshotService.GetSnapshotsAsync(vol.ClusterId, vol.VolumeName, ct);
                         volumeDto.Snapshots = snapshots;
 
                         svmDto.Volumes.Add(volumeDto);
@@ -228,8 +229,7 @@ namespace BareProx.Controllers
             int ClusterId,
             CancellationToken ct)
         {
-            var snapshots = await _netappService
-                .GetSnapshotsAsync(ClusterId, volume, ct);
+            var snapshots = await _netappSnapshotService.GetSnapshotsAsync(ClusterId, volume, ct);
             return Json(new { snapshots });
         }
 

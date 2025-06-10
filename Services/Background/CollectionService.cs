@@ -20,7 +20,6 @@
 
 using BareProx.Data;
 using BareProx.Services;
-using BareProx.Services.Netapp;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 

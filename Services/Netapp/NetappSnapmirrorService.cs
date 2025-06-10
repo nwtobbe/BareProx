@@ -23,19 +23,19 @@ using BareProx.Models;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 
-namespace BareProx.Services.Netapp
+namespace BareProx.Services
 {
     public class NetappSnapmirrorService : INetappSnapmirrorService
     {
         private readonly ApplicationDbContext _context;
-        private readonly ILogger<NetappService> _logger;
+        private readonly ILogger<NetappSnapmirrorService> _logger;
         private readonly IAppTimeZoneService _tz;
         private readonly INetappAuthService _authService;
         private readonly INetappVolumeService _volumeService;
 
 
         public NetappSnapmirrorService(ApplicationDbContext context,
-            ILogger<NetappService> logger,
+            ILogger<NetappSnapmirrorService> logger,
             IAppTimeZoneService tz,
             INetappAuthService authService,
             INetappVolumeService volumeService)

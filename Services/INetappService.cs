@@ -51,18 +51,9 @@ namespace BareProx.Services
         /// </param>
         /// <param name="ct">Cancellation token.</param>
         /// <returns>A SnapshotResult indicating success, the snapshot name, or an error.</returns>
-        Task<SnapshotResult> CreateSnapshotAsync(
-            int clusterId,
-            string storageName,
-            string snapmirrorLabel,
-            bool snapLocking = false,
-            int? lockRetentionCount = null,
-            string? lockRetentionUnit = null,
-            CancellationToken ct = default
-        );
-        Task<List<string>> GetSnapshotsAsync(int controllerId, string volumeName, CancellationToken ct = default);
+
         Task<List<VolumeSnapshotTreeDto>> GetSnapshotsForVolumesAsync(HashSet<string> volumeNames, CancellationToken ct = default);
-        Task<DeleteSnapshotResult> DeleteSnapshotAsync(int controllerId, string volumeName, string snapshotName, CancellationToken ct = default);
+
 
         // --- Cloning and export policies ---
         Task<FlexCloneResult> CloneVolumeFromSnapshotAsync(string volumeName, string snapshotName, string cloneName, int controllerId, CancellationToken ct = default);

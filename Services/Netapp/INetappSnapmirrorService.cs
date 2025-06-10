@@ -20,7 +20,7 @@
 
 using BareProx.Models;
 
-namespace BareProx.Services.Netapp
+namespace BareProx.Services
 {
     public interface INetappSnapmirrorService 
     {
