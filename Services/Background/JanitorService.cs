@@ -68,13 +68,11 @@ namespace BareProx.Services.Background
             var netapp = scope.ServiceProvider.GetRequiredService<INetappService>();
             var now = DateTime.UtcNow;
 
-            // preload all SnapMirror relations
-            var relations = await db.SnapMirrorRelations.ToListAsync(ct);
+            var relations = await db.SnapMirrorRelations.AsNoTracking().ToListAsync(ct);
             var relLookup = relations.ToDictionary(
                 r => (r.SourceControllerId, r.SourceVolume),
                 r => r);
 
-            // find expired BackupRecords by retention
             var expired = await db.BackupRecords
                 .Include(r => r.Job)
                 .Where(r =>
@@ -94,112 +92,69 @@ namespace BareProx.Services.Background
             {
                 var ex = grp.First();
 
-                // 1) Delete on primary
-                bool primaryDeleted = false;
+                using var transaction = await db.Database.BeginTransactionAsync(ct);
+
                 try
                 {
-                    var res = await netapp.DeleteSnapshotAsync(
+                    var deleteRes = await netapp.DeleteSnapshotAsync(
                         ex.ControllerId, ex.StorageName, ex.SnapshotName, ct);
 
-                    primaryDeleted = res.Success
-                        || res.ErrorMessage?.IndexOf("not found", StringComparison.OrdinalIgnoreCase) >= 0;
-                }
-                catch (Exception e)
-                {
-                    _logger.LogError(e, "Error deleting primary snapshot {snap}", ex.SnapshotName);
-                    continue;
-                }
-
-                if (!primaryDeleted)
-                    continue;
-
-                // 2) Verify it’s truly gone on primary
-                var stillOnPrimary = (await netapp.GetSnapshotsAsync(
-                        ex.ControllerId, ex.StorageName, ct))
-                    .Any(n => n.Equals(ex.SnapshotName, StringComparison.OrdinalIgnoreCase));
-
-                if (stillOnPrimary)
-                    continue;
-
-                // 3) Check for any live secondary copy
-                bool hasSecondary = false;
-                if (relLookup.TryGetValue((ex.ControllerId, ex.StorageName), out var rel))
-                {
-                    var secList = await netapp.GetSnapshotsAsync(
-                        rel.DestinationControllerId,
-                        rel.DestinationVolume, ct);
-
-                    hasSecondary = secList
-                        .Any(n => n.Equals(ex.SnapshotName, StringComparison.OrdinalIgnoreCase));
-
-                    if (hasSecondary)
+                    if (!deleteRes.Success && !(deleteRes.ErrorMessage?.Contains("not found", StringComparison.OrdinalIgnoreCase) ?? false))
                     {
-                        // 4a) Update the existing NetappSnapshot row instead of deleting it
-                        var snap = await db.NetappSnapshots.FirstOrDefaultAsync(s =>
+                        _logger.LogWarning("Failed to delete snapshot {snap}: {error}", ex.SnapshotName, deleteRes.ErrorMessage);
+                        continue;
+                    }
+
+                    // Verify snapshot deletion explicitly
+                    var primarySnapshots = await netapp.GetSnapshotsAsync(ex.ControllerId, ex.StorageName, ct);
+                    if (primarySnapshots.Any(n => n.Equals(ex.SnapshotName, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        _logger.LogWarning("Snapshot {snap} still exists on primary after deletion attempt", ex.SnapshotName);
+                        continue;
+                    }
+
+                    if (relLookup.TryGetValue((ex.ControllerId, ex.StorageName), out var rel))
+                    {
+                        var secondarySnapshots = await netapp.GetSnapshotsAsync(rel.DestinationControllerId, rel.DestinationVolume, ct);
+                        bool existsOnSecondary = secondarySnapshots.Any(n => n.Equals(ex.SnapshotName, StringComparison.OrdinalIgnoreCase));
+
+                        var snapRecord = await db.NetappSnapshots.FirstOrDefaultAsync(s =>
                             s.JobId == ex.JobId &&
                             s.SnapshotName == ex.SnapshotName, ct);
 
-                        if (snap != null)
+                        if (existsOnSecondary)
                         {
-                            snap.ExistsOnPrimary = false;            // primary is gone
-                            snap.ExistsOnSecondary = true;
-                            snap.SecondaryControllerId = rel.DestinationControllerId;
-                            snap.SecondaryVolume = rel.DestinationVolume;
-                            snap.IsReplicated = true;
-                            snap.LastChecked = now;
-                        }
-
-                        // keep the BackupRecord + Job around so you can restore from secondary
-                        _logger.LogInformation(
-                            "Primary snapshot expired but secondary copy exists for {snap}, preserving record",
-                            ex.SnapshotName);
-
-                        // Retry save on error
-                        for (int i = 0; i < 3; i++)
-                        {
-                            try
+                            if (snapRecord != null)
                             {
-                                await db.SaveChangesAsync(ct);
-                                break;
+                                snapRecord.ExistsOnPrimary = false;
+                                snapRecord.ExistsOnSecondary = true;
+                                snapRecord.SecondaryControllerId = rel.DestinationControllerId;
+                                snapRecord.SecondaryVolume = rel.DestinationVolume;
+                                snapRecord.IsReplicated = true;
+                                snapRecord.LastChecked = now;
                             }
-                            catch (DbUpdateException ey)
-                                when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
-                            {
-                                if (i == 2) throw;
-                                await Task.Delay(500, ct);
-                            }
+
+                            _logger.LogInformation("Snapshot {snap} exists on secondary, preserving record.", ex.SnapshotName);
+                            await db.SaveChangesAsync(ct);
+                            await transaction.CommitAsync(ct);
+                            continue;
                         }
-                        continue;
                     }
+
+                    // Remove related records if no secondary exists
+                    db.NetappSnapshots.RemoveRange(db.NetappSnapshots.Where(s => s.JobId == ex.JobId && s.SnapshotName == ex.SnapshotName));
+                    db.BackupRecords.RemoveRange(grp);
+                    db.Jobs.Remove(ex.Job);
+
+                    await db.SaveChangesAsync(ct);
+                    await transaction.CommitAsync(ct);
+
+                    _logger.LogInformation("Successfully removed snapshot {snap} and related records.", ex.SnapshotName);
                 }
-
-                // 4b) No secondary copy → remove NetappSnapshot + BackupRecord + Job
-                db.NetappSnapshots.RemoveRange(
-                    db.NetappSnapshots.Where(s =>
-                        s.JobId == ex.JobId &&
-                        s.SnapshotName == ex.SnapshotName));
-
-                db.BackupRecords.RemoveRange(grp);
-                db.Jobs.Remove(ex.Job);
-
-                _logger.LogInformation(
-                    "Removed all DB rows for snapshot {snap}, job {job}",
-                    ex.SnapshotName, ex.JobId);
-
-                // Retry save on error
-                for (int i = 0; i < 3; i++)
+                catch (Exception e)
                 {
-                    try
-                    {
-                        await db.SaveChangesAsync(ct);
-                        break;
-                    }
-                    catch (DbUpdateException ey)
-                        when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
-                    {
-                        if (i == 2) throw;
-                        await Task.Delay(500, ct);
-                    }
+                    await transaction.RollbackAsync(ct);
+                    _logger.LogError(e, "Error processing expired snapshot {snap}", ex.SnapshotName);
                 }
             }
         }

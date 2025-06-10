@@ -105,7 +105,7 @@ cd BareProx
 docker build -t nwtobbe/bareprox:latest .
 
 # Run container interactively
-docker run -p 80:80 -p 443:443 --rm nwtobbe/bareprox:latest
+docker run -p 443:443 --rm nwtobbe/bareprox:latest
 ```
 
 ## Configuration

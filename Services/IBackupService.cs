@@ -384,10 +384,7 @@ namespace BareProx.Services
                         .ToListAsync(ct);
                     foreach (var rec in toUpdate)
                     {
-                        rec.ControllerId = secondaryControllerId;  // now point at secondary
-                        rec.ReplicateToSecondary = true;                 // mark it
-                                                                         // optionally update timestamp or snapshot name if it changed
-                                                                         // rec.TimeStamp = DateTime.UtcNow;
+                        rec.ReplicateToSecondary = true;                                                                 
                     }
 
                     job.Status = "Replication completed";
