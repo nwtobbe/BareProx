@@ -21,6 +21,7 @@
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Repositories;
+using BareProx.Services.Netapp;
 using Microsoft.EntityFrameworkCore;
 using System.Diagnostics;
 
@@ -55,6 +56,7 @@ namespace BareProx.Services
         private readonly ApplicationDbContext _context;
         private readonly ProxmoxService _proxmoxService;
         private readonly INetappService _netAppService;
+        private readonly INetappSnapmirrorService _netAppSnapmirrorService;
         private readonly IBackupRepository _backupRepository;
         private readonly ILogger<BackupService> _logger;
         private readonly TimeZoneInfo _timeZoneInfo;
@@ -65,6 +67,7 @@ namespace BareProx.Services
             ApplicationDbContext context,
             ProxmoxService proxmoxService,
             INetappService netAppService,
+            INetappSnapmirrorService netAppSnapmirrorService,
             IBackupRepository backupRepository,
             ILogger<BackupService> logger,
             IConfiguration configuration,
@@ -73,6 +76,7 @@ namespace BareProx.Services
             _context = context;
             _proxmoxService = proxmoxService;
             _netAppService = netAppService;
+            _netAppSnapmirrorService = netAppSnapmirrorService;
             _backupRepository = backupRepository;
             _logger = logger;
             _timeZoneId = configuration["AppSettings:TimeZone"] ?? "UTC";
@@ -315,7 +319,7 @@ namespace BareProx.Services
                     job.Status = "Triggering SnapMirror update";
                     await _context.SaveChangesAsync(ct);
 
-                    var triggered = await _netAppService.TriggerSnapMirrorUpdateAsync(relation.Uuid, ct);
+                    var triggered = await _netAppSnapmirrorService.TriggerSnapMirrorUpdateAsync(relation.Uuid, ct);
                     if (!triggered)
                         return await FailJobAsync(job, "Failed to trigger SnapMirror update.", ct);
 
@@ -335,7 +339,7 @@ namespace BareProx.Services
                     while (sw.Elapsed < TimeSpan.FromMinutes(120))
                     {
                         await Task.Delay(TimeSpan.FromSeconds(10));
-                         updated = await _netAppService.GetSnapMirrorRelationAsync(relation.Uuid, ct);
+                         updated = await _netAppSnapmirrorService.GetSnapMirrorRelationAsync(relation.Uuid, ct);
 
                         // 1) Did SnapMirror say “success”?
                         if (updated.state.Equals("snapmirrored", StringComparison.OrdinalIgnoreCase)

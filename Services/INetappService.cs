@@ -31,9 +31,9 @@ namespace BareProx.Services
         Task UpdateAllSelectedVolumesAsync(CancellationToken ct = default);
 
         // --- Vserver and volume info ---
-        Task<List<string>> ListVolumesByPrefixAsync(string prefix, int controllerId, CancellationToken ct = default);
+        
         Task<List<string>> ListFlexClonesAsync(int controllerId, CancellationToken ct = default);
-        Task<VolumeInfo?> LookupVolumeAsync(string volumeName, int controllerId, CancellationToken ct = default);
+        
 
         // --- Snapshots ---
         /// <summary>
@@ -64,12 +64,6 @@ namespace BareProx.Services
         Task<List<VolumeSnapshotTreeDto>> GetSnapshotsForVolumesAsync(HashSet<string> volumeNames, CancellationToken ct = default);
         Task<DeleteSnapshotResult> DeleteSnapshotAsync(int controllerId, string volumeName, string snapshotName, CancellationToken ct = default);
 
-        // --- SnapMirror and replication ---
-        Task SyncSnapMirrorRelationsAsync(CancellationToken ct = default);
-        Task<SnapMirrorPolicy?> SnapMirrorPolicyGet(int controllerId, string policyUuid, CancellationToken ct = default);
-        Task<SnapMirrorRelation> GetSnapMirrorRelationAsync(string relationshipUuid, CancellationToken ct = default);
-        Task<bool> TriggerSnapMirrorUpdateAsync(string relationshipUuid, CancellationToken ct = default);
-
         // --- Cloning and export policies ---
         Task<FlexCloneResult> CloneVolumeFromSnapshotAsync(string volumeName, string snapshotName, string cloneName, int controllerId, CancellationToken ct = default);
         Task<bool> CopyExportPolicyAsync(string sourceVolume, string targetVolume, int controllerId, CancellationToken ct = default);
@@ -87,6 +81,6 @@ namespace BareProx.Services
             CancellationToken ct = default);
 
         // --- Volume deletion ---
-        Task<bool> DeleteVolumeAsync(string volumeName, int controllerId, CancellationToken ct = default);
+        
     }
 }

@@ -40,6 +40,7 @@ using Serilog.Events;
 // Alias for clarity
 using DbConfigModel = BareProx.Models.DatabaseConfigModels;
 using Microsoft.AspNetCore.Authorization;
+using BareProx.Services.Netapp;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -241,6 +242,7 @@ if (isConfigured)
     builder.Services.AddScoped<INetappAuthService, NetappAuthService>();
     builder.Services.AddScoped<INetappService, NetappService>();
     builder.Services.AddScoped<INetappVolumeService, NetappVolumeService>();
+    builder.Services.AddScoped<INetappSnapmirrorService, NetappSnapmirrorService>();
     builder.Services.AddScoped<ProxmoxService>();
     builder.Services.AddScoped<IRestoreService, RestoreService>();
 

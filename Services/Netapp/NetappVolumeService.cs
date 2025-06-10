@@ -1,6 +1,27 @@
-﻿using BareProx.Data;
+﻿/*
+ * BareProx - Backup and Restore Automation for Proxmox using NetApp
+ *
+ * Copyright (C) 2025 Tobias Modig
+ *
+ * This file is part of BareProx.
+ *
+ * BareProx is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * BareProx is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+using BareProx.Data;
 using BareProx.Models;
 using Microsoft.EntityFrameworkCore;
+using System.Text;
 using System.Text.Json;
 
 namespace BareProx.Services
@@ -95,8 +116,6 @@ namespace BareProx.Services
                 throw;
             }
         }
-
-
         public async Task<List<NetappMountInfo>> GetVolumesWithMountInfoAsync(int controllerId, CancellationToken ct = default)
         {
             var controller = await _context.NetappControllers.FindAsync(controllerId, ct);
@@ -175,7 +194,84 @@ namespace BareProx.Services
                 throw;
             }
         }
+        public async Task<List<string>> ListVolumesByPrefixAsync(string prefix, int controllerId, CancellationToken ct = default)
+        {
+            var controller = await _context.NetappControllers.FindAsync(controllerId, ct);
+            if (controller == null) return new List<string>();
 
+            var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+
+            var url = $"{baseUrl}storage/volumes?fields=name";
+            var resp = await client.GetAsync(url, ct);
+            resp.EnsureSuccessStatusCode();
+
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            return doc.RootElement
+                      .GetProperty("records")
+                      .EnumerateArray()
+                      .Select(r => r.GetProperty("name").GetString()!)
+                      .Where(n => n != null && n.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                      .ToList();
+        }
+        public async Task<VolumeInfo?> LookupVolumeAsync(string volumeName, int controllerId, CancellationToken ct = default)
+        {
+            var controller = await _context.NetappControllers
+                .FirstOrDefaultAsync(c => c.Id == controllerId, ct);
+            if (controller == null) return null;
+
+            // 🔐 Use helper for encrypted auth and base URL
+            var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+            var url = $"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volumeName)}&fields=uuid";
+
+            var resp = await client.GetAsync(url, ct);
+            if (!resp.IsSuccessStatusCode) return null;
+
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            var records = doc.RootElement.GetProperty("records");
+            if (records.GetArrayLength() == 0) return null;
+
+            var uuid = records[0].GetProperty("uuid").GetString();
+            if (string.IsNullOrEmpty(uuid)) return null;
+
+            return new VolumeInfo { Uuid = uuid };
+        }
+        public async Task<bool> DeleteVolumeAsync(string volumeName, int controllerId, CancellationToken ct = default)
+        {
+            // 1) Fetch controller
+            var controller = await _context.NetappControllers.FindAsync(controllerId, ct);
+            if (controller == null) return false;
+
+            // 🔐 Prepare HTTP client + base URL
+            var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl); // baseUrl = https://<ip>/api/
+
+            // 2) Lookup UUID by name
+            var lookupUrl = $"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volumeName)}&fields=uuid";
+            var lookupResp = await httpClient.GetAsync(lookupUrl, ct);
+            if (!lookupResp.IsSuccessStatusCode) return false;
+
+            using var lookupDoc = JsonDocument.Parse(await lookupResp.Content.ReadAsStringAsync(ct));
+            var records = lookupDoc.RootElement.GetProperty("records");
+            if (records.GetArrayLength() == 0) return false;
+
+            var uuid = records[0].GetProperty("uuid").GetString();
+            if (string.IsNullOrEmpty(uuid)) return false;
+
+            // 3) Unexport by PATCHing nas.path = ""
+            var patchUrl = $"{baseUrl}storage/volumes/{uuid}";
+            var unexportPayload = new { nas = new { path = "" } };
+            var patchContent = new StringContent(System.Text.Json.JsonSerializer.Serialize(unexportPayload), Encoding.UTF8, "application/json");
+            var patchResp = await httpClient.PatchAsync(patchUrl, patchContent, ct);
+            if (!patchResp.IsSuccessStatusCode)
+            {
+                _logger?.LogWarning("Failed to unexport volume {Name} (uuid={Uuid}): {Code}", volumeName, uuid, patchResp.StatusCode);
+                // Proceed to delete anyway
+            }
+
+            // 4) Delete by UUID
+            var deleteUrl = $"{baseUrl}storage/volumes/{uuid}";
+            var deleteResp = await httpClient.DeleteAsync(deleteUrl, ct);
+            return deleteResp.IsSuccessStatusCode;
+        }
 
     }
     }

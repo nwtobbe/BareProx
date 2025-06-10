@@ -20,6 +20,7 @@
 
 using BareProx.Data;
 using BareProx.Services;
+using BareProx.Services.Netapp;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
@@ -48,7 +49,9 @@ public class CollectionService
             {
                 using var scope = _services.CreateScope();
                 var netappService = scope.ServiceProvider.GetRequiredService<INetappService>();
-                await netappService.SyncSnapMirrorRelationsAsync(stoppingToken);
+                var netappSnapmirrorService = scope.ServiceProvider.GetRequiredService<INetappSnapmirrorService>();
+
+                await netappSnapmirrorService.SyncSnapMirrorRelationsAsync(stoppingToken);
                 await EnsureSnapMirrorPoliciesAsync(stoppingToken);
 
                 // Check if it's time to update volumes
@@ -80,6 +83,7 @@ public class CollectionService
         using var scope = _services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var netapp = scope.ServiceProvider.GetRequiredService<INetappService>();
+        var netappSnapmirrorService = scope.ServiceProvider.GetRequiredService<INetappSnapmirrorService>();
 
         // Step 1: Find all PolicyUuids in use
         var refs = await db.SnapMirrorRelations
@@ -96,7 +100,7 @@ public class CollectionService
             try
             {
                 // This method should fetch and map policy+retentions for a single controller+uuid
-                var policy = await netapp.SnapMirrorPolicyGet(pair.DestinationControllerId, pair.PolicyUuid!);
+                var policy = await netappSnapmirrorService.SnapMirrorPolicyGet(pair.DestinationControllerId, pair.PolicyUuid!);
                 if (policy != null)
                 {
                     db.SnapMirrorPolicies.Add(policy);

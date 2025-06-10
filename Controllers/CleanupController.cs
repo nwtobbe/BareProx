@@ -269,7 +269,7 @@ namespace BareProx.Controllers
             }
 
             // Delete the NetApp flexclone
-            var deleted = await _netappService.DeleteVolumeAsync(
+            var deleted = await _netappVolumeService.DeleteVolumeAsync(
                               volumeName,
                               controllerId: _context.NetappControllers
                                                  .Select(c => c.Id)

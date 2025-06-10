@@ -103,12 +103,12 @@ namespace BareProx.Services
 
                     if (!policyOk)
                     {
-                        await netapp.DeleteVolumeAsync(cloneName, model.ControllerId, backgroundCt);
+                        await _netappVolumeService.DeleteVolumeAsync(cloneName, model.ControllerId, backgroundCt);
                         throw new InvalidOperationException("Failed to apply export policy.");
                     }
 
                     // 5) Ensure export path is set
-                    var volInfo = await netapp.LookupVolumeAsync(cloneName, model.ControllerId, backgroundCt);
+                    var volInfo = await _netappVolumeService.LookupVolumeAsync(cloneName, model.ControllerId, backgroundCt);
                     if (volInfo == null)
                         throw new InvalidOperationException($"UUID not found for clone '{cloneName}'.");
 
@@ -121,7 +121,7 @@ namespace BareProx.Services
 
                     if (!exported)
                     {
-                        await netapp.DeleteVolumeAsync(cloneName, model.ControllerId, backgroundCt);
+                        await _netappVolumeService.DeleteVolumeAsync(cloneName, model.ControllerId, backgroundCt);
                         throw new InvalidOperationException($"Failed to export clone '{cloneName}'.");
                     }
 
@@ -161,7 +161,7 @@ namespace BareProx.Services
 
                     if (!mountSuccess)
                     {
-                        await netapp.DeleteVolumeAsync(cloneName, model.ControllerId, backgroundCt);
+                        await _netappVolumeService.DeleteVolumeAsync(cloneName, model.ControllerId, backgroundCt);
                         throw new InvalidOperationException("Failed to mount clone on target host.");
                     }
 

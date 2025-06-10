@@ -21,6 +21,7 @@
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services;
+using BareProx.Services.Netapp;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.RegularExpressions;
@@ -31,15 +32,21 @@ namespace BareProx.Controllers
     {
         private readonly ApplicationDbContext _context;
         private readonly INetappService _netappService;
+        private readonly INetappSnapmirrorService _netappSnapmirrorService;
+        private readonly INetappVolumeService _netappVolumeService;
         private readonly ProxmoxService _proxmoxService;
 
         public WaflController(
                 ApplicationDbContext context,
                 INetappService netappService,
+                INetappSnapmirrorService netappSnapmirrorService,
+                INetappVolumeService netappVolumeService,
                 ProxmoxService proxmoxService)
         {
             _context = context;
             _netappService = netappService;
+            _netappSnapmirrorService = netappSnapmirrorService;
+            _netappVolumeService = netappVolumeService;
             _proxmoxService = proxmoxService;
         }
 
@@ -278,7 +285,7 @@ namespace BareProx.Controllers
                                            .Select(c => c.Id)
                                            .First();
 
-                var volumeInfo = await _netappService
+                var volumeInfo = await _netappVolumeService
                     .LookupVolumeAsync(result.CloneVolumeName!, controllerId, ct);
                 if (volumeInfo == null)
                     return StatusCode(500, $"Failed to find UUID for cloned volume '{result.CloneVolumeName}'.");
@@ -328,7 +335,7 @@ namespace BareProx.Controllers
         {
             try
             {
-                var result = await _netappService
+                var result = await _netappSnapmirrorService
                     .TriggerSnapMirrorUpdateAsync(relationUuid, ct);
 
                 if (result)

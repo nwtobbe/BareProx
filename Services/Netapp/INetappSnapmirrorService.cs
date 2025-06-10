@@ -20,14 +20,14 @@
 
 using BareProx.Models;
 
-namespace BareProx.Services
+namespace BareProx.Services.Netapp
 {
-    public interface INetappVolumeService
+    public interface INetappSnapmirrorService 
     {
-        Task<List<VserverDto>> GetVserversAndVolumesAsync(int controllerId, CancellationToken ct = default);
-        Task<List<NetappMountInfo>> GetVolumesWithMountInfoAsync(int controllerId, CancellationToken ct = default);
-        Task<List<string>> ListVolumesByPrefixAsync(string prefix, int controllerId, CancellationToken ct = default);
-        Task<VolumeInfo?> LookupVolumeAsync(string volumeName, int controllerId, CancellationToken ct = default);
-        Task<bool> DeleteVolumeAsync(string volumeName, int controllerId, CancellationToken ct = default);
+        // --- SnapMirror and replication ---
+        Task SyncSnapMirrorRelationsAsync(CancellationToken ct = default);
+        Task<SnapMirrorPolicy?> SnapMirrorPolicyGet(int controllerId, string policyUuid, CancellationToken ct = default);
+        Task<SnapMirrorRelation> GetSnapMirrorRelationAsync(string relationshipUuid, CancellationToken ct = default);
+        Task<bool> TriggerSnapMirrorUpdateAsync(string relationshipUuid, CancellationToken ct = default);
     }
 }
