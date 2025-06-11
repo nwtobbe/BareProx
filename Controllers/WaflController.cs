@@ -52,45 +52,48 @@ namespace BareProx.Controllers
             _proxmoxService = proxmoxService;
         }
 
-        public async Task<IActionResult> Snapshots(CancellationToken ct)
+        public async Task<IActionResult> Snapshots(int? clusterId, CancellationToken ct)
         {
-            // 1) Load cluster
-            var cluster = await _context.ProxmoxClusters
-                                        .Include(c => c.Hosts)
-                                        .FirstOrDefaultAsync(ct);
+            // 1. Load all clusters
+            var clusters = await _context.ProxmoxClusters
+                                         .Include(c => c.Hosts)
+                                         .ToListAsync(ct);
 
-            if (cluster == null)
+            if (!clusters.Any())
             {
                 ViewBag.Warning = "No Proxmox clusters are configured.";
                 return View(new List<NetappControllerTreeDto>());
             }
 
-            // 2) Load all NetApp controllers
-            var netappControllers = await _context.NetappControllers
-                                                  .ToListAsync(ct);
+            // 2. Figure out which cluster is selected (default: first)
+            var selectedCluster = clusters.FirstOrDefault(c => c.Id == clusterId) ?? clusters.First();
+            ViewBag.Clusters = clusters;
+            ViewBag.SelectedClusterId = selectedCluster.Id;
+
+            // 3. Load all NetApp controllers
+            var netappControllers = await _context.NetappControllers.ToListAsync(ct);
             if (!netappControllers.Any())
             {
                 ViewBag.Warning = "No NetApp controllers are configured.";
                 return View(new List<NetappControllerTreeDto>());
             }
 
-            // 3) Load all selected volumes
-            var selectedVolumes = await _context.SelectedNetappVolumes
-                                                .ToListAsync(ct);
+            // 4. Load **all** volumes (primary and secondary) from SelectedNetappVolumes
+            var selectedVolumes = await _context.SelectedNetappVolumes.ToListAsync(ct);
             var volumeLookup = selectedVolumes.ToLookup(v => v.NetappControllerId);
 
             var result = new List<NetappControllerTreeDto>();
-
             foreach (var controller in netappControllers)
             {
                 var controllerDto = new NetappControllerTreeDto
                 {
+                    ControllerId = controller.Id,
                     ControllerName = controller.Hostname,
+                    IsPrimary = controller.IsPrimary,
                     Svms = new List<NetappSvmDto>()
                 };
 
-                var groupedBySvm = volumeLookup[controller.Id]
-                                   .GroupBy(v => v.Vserver);
+                var groupedBySvm = volumeLookup[controller.Id].GroupBy(v => v.Vserver);
                 foreach (var svmGroup in groupedBySvm)
                 {
                     var svmDto = new NetappSvmDto
@@ -111,21 +114,19 @@ namespace BareProx.Controllers
                             IsSelected = true
                         };
 
-                        // 4) Fetch snapshots for this volume (passes ct)
-                        var snapshots = await _netappSnapshotService.GetSnapshotsAsync(vol.ClusterId, vol.VolumeName, ct);
+                        // Fetch snapshots for this volume
+                        var snapshots = await _netappSnapshotService.GetSnapshotsAsync(vol.NetappControllerId, vol.VolumeName, ct);
                         volumeDto.Snapshots = snapshots;
 
                         svmDto.Volumes.Add(volumeDto);
                     }
-
                     controllerDto.Svms.Add(svmDto);
                 }
-
                 result.Add(controllerDto);
             }
-
             return View(result);
         }
+
 
         public async Task<IActionResult> SnapMirrorGraph(CancellationToken ct)
         {
@@ -236,10 +237,11 @@ namespace BareProx.Controllers
         [HttpGet]
         public async Task<IActionResult> GetNfsIps(
             string vserver,
+            int controllerId,
             CancellationToken ct)
         {
             var ips = await _netappService
-                .GetNfsEnabledIpsAsync(vserver, ct);
+                .GetNfsEnabledIpsAsync(controllerId, vserver, ct);
             return Json(new { ips });
         }
 
@@ -257,15 +259,17 @@ namespace BareProx.Controllers
                 var timestamp = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
                 var cloneName = $"restore_{model.VolumeName}_{timestamp}";
 
+                var controllerId = model.ControllerId;
+                if (controllerId <= 0)
+                    return BadRequest("Invalid controller ID.");
+
                 // 2) Clone the snapshot (pass ct to service)
                 var result = await _netappService
                     .CloneVolumeFromSnapshotAsync(
                         volumeName: model.VolumeName,
                         snapshotName: model.SnapshotName,
                         cloneName: cloneName,
-                        controllerId: _context.NetappControllers
-                                          .Select(c => c.Id)
-                                          .First(),
+                        controllerId: controllerId,
                         ct);
 
                 if (!result.Success)
@@ -275,15 +279,10 @@ namespace BareProx.Controllers
                 await _netappService.CopyExportPolicyAsync(
                     model.VolumeName,
                     cloneName,
-                    controllerId: _context.NetappControllers
-                                     .Select(c => c.Id)
-                                     .First(),
+                    controllerId: controllerId,
                     ct);
 
                 // 4) Lookup the clone’s UUID, then set its export path
-                var controllerId = _context.NetappControllers
-                                           .Select(c => c.Id)
-                                           .First();
 
                 var volumeInfo = await _netappVolumeService
                     .LookupVolumeAsync(result.CloneVolumeName!, controllerId, ct);

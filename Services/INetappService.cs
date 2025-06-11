@@ -61,7 +61,7 @@ namespace BareProx.Services
         Task<bool> SetVolumeExportPathAsync(string volumeUuid, string exportPath, int controllerId, CancellationToken ct = default);
 
         // --- NFS and network ---
-        Task<List<string>> GetNfsEnabledIpsAsync(string vserver, CancellationToken ct = default);
+        Task<List<string>> GetNfsEnabledIpsAsync(int controllerId, string vserver, CancellationToken ct = default);
 
         // --- VM file operations ---
         Task<bool> MoveAndRenameAllVmFilesAsync(

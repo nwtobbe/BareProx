@@ -133,11 +133,15 @@ namespace BareProx.Models
         public string ReadWrite { get; set; } = "ro";  // "ro" or "rw"
         public string MountIp { get; set; } = null!;
         public int ControllerId { get; set; }
+        public bool IsSecondary { get; set; }
+
     }
 
     public class NetappControllerTreeDto
     {
-        public string ControllerName { get; set; }
+        public string ControllerName { get; set; } = null!; // Name of the controller, e.g. "netapp1"
+        public int ControllerId { get; set; } // Unique identifier for the controller
+        public bool IsPrimary { get; set; } // "true" or "false"
         public List<NetappSvmDto> Svms { get; set; } = new();
     }
 

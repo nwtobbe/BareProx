@@ -4,6 +4,18 @@
 
 <input type="text" id="searchBox" class="form-control mb-3" placeholder="Search volumes or snapshots..." />
 
+<form method="get" asp-action="Snapshots" class="mb-3">
+    <label for="clusterSelect"><strong>Select Proxmox Cluster:</strong></label>
+    <select id="clusterSelect" name="clusterId" class="form-select d-inline w-auto ms-2" onchange="this.form.submit()">
+        @foreach (var c in (IEnumerable<BareProx.Models.ProxmoxCluster>)ViewBag.Clusters)
+        {
+            <option value="@c.Id" selected="@(c.Id == (int)ViewBag.SelectedClusterId ? "selected" : null)">
+                @c.Name
+            </option>
+        }
+    </select>
+</form>
+
 <div id="volumeTree">
     @for (int controllerIdx = 0; controllerIdx < Model.Count; controllerIdx++)
     {
@@ -11,6 +23,10 @@
         <div class="card mb-3 volume-card">
             <div class="card-header bg-dark text-white">
                 <strong>@controller.ControllerName</strong>
+                @if (!controller.IsPrimary)
+                {
+                    <span class="badge bg-warning text-dark ms-2">Secondary</span>
+                }
             </div>
             <div class="card-body">
                 @for (int svmIdx = 0; svmIdx < controller.Svms.Count; svmIdx++)
@@ -18,7 +34,6 @@
                     var svm = controller.Svms[svmIdx];
                     <div class="mb-2">
                         <h6>@svm.Name</h6>
-
                         @for (int volIdx = 0; volIdx < svm.Volumes.Count; volIdx++)
                         {
                             var volume = svm.Volumes[volIdx];
@@ -44,7 +59,9 @@
                                                                 data-bs-target="#mountModal"
                                                                 data-volume="@volume.VolumeName"
                                                                 data-vserver="@volume.Vserver"
-                                                                data-snapshot="@snap">
+                                                                data-snapshot="@snap"
+                                                                data-controller-id="@controller.ControllerId"
+                                                                data-is-primary="@(controller.IsPrimary ? "true" : "false")">
                                                             Mount
                                                         </button>
                                                     </li>
@@ -79,6 +96,14 @@
                     <input type="hidden" name="VolumeName" id="modalVolumeName" />
                     <input type="hidden" name="Vserver" id="modalVserver" />
                     <input type="hidden" name="SnapshotName" id="modalSnapshotName" />
+                    <input type="hidden" name="ControllerId" id="modalControllerId" />
+                    <input type="hidden" name="IsPrimary" id="modalIsPrimary" />
+
+                    <!--
+                    <div id="secondaryWarning" class="alert alert-warning" style="display: none;">
+                        <strong>Warning:</strong> You are mounting from a secondary NetApp controller. Please verify that SnapMirror is up-to-date.
+                    </div>
+                    -->
 
                     <div class="mb-3">
                         <label for="modalMountIp" class="form-label">Select Mount IP</label>
@@ -96,8 +121,10 @@
     </div>
 </div>
 
+
 @section Scripts {
     <script>
+        // Search/filter volumes and snapshots live
         document.getElementById("searchBox").addEventListener("input", function () {
             const query = this.value.toLowerCase();
             const cards = document.querySelectorAll(".volume-card");
@@ -110,25 +137,38 @@
             });
         });
 
+        // When the Mount modal opens, fill its fields and load IPs
         document.getElementById('mountModal').addEventListener('show.bs.modal', async function (event) {
             const button = event.relatedTarget;
             const volume = button.getAttribute('data-volume');
             const vserver = button.getAttribute('data-vserver');
             const snapshot = button.getAttribute('data-snapshot');
+            const controllerId = button.getAttribute('data-controller-id');
+            const isPrimary = button.getAttribute('data-is-primary') === "true";
 
-            document.getElementById('modalVolumeName').value = volume;
-            document.getElementById('modalVserver').value = vserver;
+            // Fill hidden modal fields
+            document.getElementById('modalVolumeName').value   = volume;
+            document.getElementById('modalVserver').value      = vserver;
             document.getElementById('modalSnapshotName').value = snapshot;
+            document.getElementById('modalControllerId').value = controllerId;
+            document.getElementById('modalIsPrimary').value    = isPrimary ? "true" : "false";
 
+            // Optionally show/hide secondary warning
+            const warningEl = document.getElementById('secondaryWarning');
+            if (warningEl)
+                warningEl.style.display = isPrimary ? 'none' : '';
+
+            // Load NFS IPs for this controller/vserver
             const mountIpSelect = document.getElementById('modalMountIp');
             mountIpSelect.innerHTML = '<option disabled selected value="">Loading...</option>';
 
             try {
-                const response = await fetch(`/Wafl/GetNfsIps?vserver=${encodeURIComponent(vserver)}`);
+                const url = `/Wafl/GetNfsIps?vserver=${encodeURIComponent(vserver)}&controllerId=${encodeURIComponent(controllerId)}`;
+                const response = await fetch(url);
                 const data = await response.json();
                 mountIpSelect.innerHTML = '';
 
-                if (data.ips.length === 0) {
+                if (!data.ips || data.ips.length === 0) {
                     mountIpSelect.innerHTML = '<option disabled>No mount IPs available</option>';
                 } else {
                     data.ips.forEach(ip => {

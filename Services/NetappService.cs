@@ -53,11 +53,6 @@ namespace BareProx.Services
         }
 
 
-
-
-
-
-
         public async Task<FlexCloneResult> CloneVolumeFromSnapshotAsync(
             string volumeName,
             string snapshotName,
@@ -164,9 +159,10 @@ namespace BareProx.Services
             };
         }
 
-        public async Task<List<string>> GetNfsEnabledIpsAsync(string vserver, CancellationToken ct = default)
+        public async Task<List<string>> GetNfsEnabledIpsAsync(int controllerId, string vserver, CancellationToken ct = default)
         {
-            var controller = await _context.NetappControllers.FirstOrDefaultAsync(ct);
+            var controller = await _context.NetappControllers
+                .FirstOrDefaultAsync(c => c.Id == controllerId, ct);
             if (controller == null)
                 throw new Exception("NetApp controller not found.");
 
@@ -189,6 +185,7 @@ namespace BareProx.Services
                       .Distinct()
                       .ToList();
         }
+
 
 
 

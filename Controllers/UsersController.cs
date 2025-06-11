@@ -94,6 +94,18 @@ namespace BareProx.Controllers
             return RedirectToAction("Index");
         }
 
+        [HttpPost, ValidateAntiForgeryToken]
+        public async Task<IActionResult> Delete(string id)
+        {
+            var user = await _users.FindByIdAsync(id);
+            if (user == null) return NotFound();
+
+            var res = await _users.DeleteAsync(user);
+            if (res.Succeeded) TempData["Msg"] = "User deleted.";
+            else TempData["Error"] = string.Join("; ", res.Errors.Select(e => e.Description));
+            return RedirectToAction("Index");
+        }
+
         // POST: /Users/ChangePassword
         [HttpPost, ValidateAntiForgeryToken]
         public async Task<IActionResult> ChangePassword(ChangePasswordVm m)
