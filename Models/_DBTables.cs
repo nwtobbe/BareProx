@@ -23,9 +23,6 @@ using System.Text.Json.Serialization;
 
 namespace BareProx.Models
 {
-
-
-
     public class ProxmoxCluster
     {
         public int Id { get; set; }

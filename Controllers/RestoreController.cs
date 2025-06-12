@@ -119,6 +119,24 @@ namespace BareProx.Controllers
 
             var originalHost = cluster.Hosts.FirstOrDefault(h => h.Hostname == record.HostName);
 
+            var snap = await _context.NetappSnapshots
+                .FirstOrDefaultAsync(s => s.JobId == record.JobId, ct);
+
+            var sourceVolume = record.StorageName;
+            if (snap?.ExistsOnSecondary == true &&
+                target.Equals("Secondary", StringComparison.OrdinalIgnoreCase))
+            {
+                sourceVolume = snap.SecondaryVolume;
+            }
+            // load the snapshot metadata
+            var snapX = await _context.NetappSnapshots
+                .FirstOrDefaultAsync(s => s.JobId == record.JobId, ct);
+
+            // decide which volume to restore from
+            var actualVolume = (snapX?.ExistsOnSecondary == true &&
+                                target.Equals("Secondary", StringComparison.OrdinalIgnoreCase))
+                ? snapX.SecondaryVolume
+                : record.StorageName;
             var vm = new RestoreFormViewModel
             {
                 BackupId = record.Id,
@@ -128,7 +146,7 @@ namespace BareProx.Controllers
                 VmId = record.VMID.ToString(),
                 VmName = record.VmName.ToString(),
                 SnapshotName = record.SnapshotName,
-                VolumeName = record.StorageName,
+                VolumeName = actualVolume,
                 OriginalConfig = record.ConfigurationJson,
                 CloneVolumeName = $"clone_{record.VMID}_{_tz.ConvertUtcToApp(DateTime.UtcNow):yyyy-MM-dd-HH-mm}",
                 StartDisconnected = false,

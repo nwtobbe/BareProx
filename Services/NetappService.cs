@@ -282,7 +282,397 @@ namespace BareProx.Services
                       .Distinct()
                       .ToList();
         }
+        public async Task<bool> CopyExportPolicyFromPrimaryAsync(
+    string exportPolicyName,
+    int primaryControllerId,
+    int secondaryControllerId,
+    string svmName, // SVM context required for export policies
+    CancellationToken ct = default)
+        {
+            // 1. Get export policy (and its rules) from primary
+            var primaryController = await _context.NetappControllers.FindAsync(primaryControllerId, ct);
+            var secondaryController = await _context.NetappControllers.FindAsync(secondaryControllerId, ct);
+            if (primaryController == null || secondaryController == null)
+                throw new Exception("Controller(s) not found.");
 
+            var primaryClient = _authService.CreateAuthenticatedClient(primaryController, out var primaryBaseUrl);
+            var secondaryClient = _authService.CreateAuthenticatedClient(secondaryController, out var secondaryBaseUrl);
+
+            // a. Get policy on primary
+            var policyUrl = $"{primaryBaseUrl}protocols/nfs/export-policies?name={Uri.EscapeDataString(exportPolicyName)}&svm.name={Uri.EscapeDataString(svmName)}";
+            var policyResp = await primaryClient.GetAsync(policyUrl, ct);
+            if (!policyResp.IsSuccessStatusCode)
+                throw new Exception($"Failed to get export policy '{exportPolicyName}' from primary.");
+            var policyDoc = JsonDocument.Parse(await policyResp.Content.ReadAsStringAsync(ct));
+            var policyRecord = policyDoc.RootElement.GetProperty("records").EnumerateArray().FirstOrDefault();
+            if (policyRecord.ValueKind != JsonValueKind.Object)
+                throw new Exception($"Export policy '{exportPolicyName}' not found on primary.");
+            var primaryPolicyUuid = policyRecord.GetProperty("uuid").GetString();
+
+            // b. Get rules from primary
+            var rulesUrl = $"{primaryBaseUrl}protocols/nfs/export-policies/{primaryPolicyUuid}/rules";
+            var rulesResp = await primaryClient.GetAsync(rulesUrl, ct);
+            if (!rulesResp.IsSuccessStatusCode)
+                throw new Exception("Failed to get rules for export policy.");
+            var rulesDoc = JsonDocument.Parse(await rulesResp.Content.ReadAsStringAsync(ct));
+            var rulesRecords = rulesDoc.RootElement.GetProperty("records").EnumerateArray().ToList();
+
+            // 2. Check if policy exists on secondary
+            var secPolicyUrl = $"{secondaryBaseUrl}protocols/nfs/export-policies?name={Uri.EscapeDataString(exportPolicyName)}&svm.name={Uri.EscapeDataString(svmName)}";
+            var secPolicyResp = await secondaryClient.GetAsync(secPolicyUrl, ct);
+            if (!secPolicyResp.IsSuccessStatusCode)
+                throw new Exception($"Failed to query export policies on secondary.");
+            var secPolicyDoc = JsonDocument.Parse(await secPolicyResp.Content.ReadAsStringAsync(ct));
+            var secPolicyRecord = secPolicyDoc.RootElement.GetProperty("records").EnumerateArray().FirstOrDefault();
+
+            string? secondaryPolicyUuid = null;
+
+            if (secPolicyRecord.ValueKind == JsonValueKind.Object)
+            {
+                // Policy already exists, get its uuid
+                secondaryPolicyUuid = secPolicyRecord.GetProperty("uuid").GetString();
+            }
+            else
+            {
+                // Policy does not exist, create it
+                var createBody = new
+                {
+                    name = exportPolicyName,
+                    svm = new { name = svmName }
+                };
+                var createContent = new StringContent(System.Text.Json.JsonSerializer.Serialize(createBody), Encoding.UTF8, "application/json");
+                var createResp = await secondaryClient.PostAsync($"{secondaryBaseUrl}protocols/nfs/export-policies", createContent, ct);
+                if (!createResp.IsSuccessStatusCode)
+                    throw new Exception("Failed to create export policy on secondary.");
+                var createDoc = JsonDocument.Parse(await createResp.Content.ReadAsStringAsync(ct));
+                secondaryPolicyUuid = createDoc.RootElement.GetProperty("records")[0].GetProperty("uuid").GetString();
+
+                // Now add all rules from primary to secondary
+                foreach (var rule in rulesRecords)
+                {
+                    // Pass through all properties of the rule EXCEPT "policy" and "uuid"
+                    var ruleObj = new Dictionary<string, object>();
+                    foreach (var prop in rule.EnumerateObject())
+                    {
+                        if (prop.Name != "policy" && prop.Name != "uuid")
+                        {
+                            ruleObj[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() :
+                                prop.Value.ValueKind == JsonValueKind.Number ? prop.Value.GetInt32() : (object)prop.Value.ToString();
+                        }
+                    }
+
+                    var ruleContent = new StringContent(System.Text.Json.JsonSerializer.Serialize(ruleObj), Encoding.UTF8, "application/json");
+                    var ruleResp = await secondaryClient.PostAsync($"{secondaryBaseUrl}protocols/nfs/export-policies/{secondaryPolicyUuid}/rules", ruleContent, ct);
+                    if (!ruleResp.IsSuccessStatusCode)
+                        throw new Exception("Failed to create export policy rule on secondary.");
+                }
+            }
+
+            return true;
+        }
+        public async Task<bool> EnsureExportPolicyExistsOnSecondaryAsync(
+       string exportPolicyName,
+       int primaryControllerId,
+       int secondaryControllerId,
+       string svmName,
+       CancellationToken ct = default)
+        {
+            // 1. Lookup controllers
+            var primaryController = await _context.NetappControllers.FindAsync(primaryControllerId, ct);
+            var secondaryController = await _context.NetappControllers.FindAsync(secondaryControllerId, ct);
+            if (primaryController == null || secondaryController == null)
+                throw new Exception("Controller(s) not found.");
+
+            var primaryClient = _authService.CreateAuthenticatedClient(primaryController, out var primaryBaseUrl);
+            var secondaryClient = _authService.CreateAuthenticatedClient(secondaryController, out var secondaryBaseUrl);
+
+            // 2. Check if export policy exists on secondary
+            var secPolicyUrl = $"{secondaryBaseUrl}protocols/nfs/export-policies?name={Uri.EscapeDataString(exportPolicyName)}&svm.name={Uri.EscapeDataString(svmName)}";
+            var secPolicyResp = await secondaryClient.GetAsync(secPolicyUrl, ct);
+            secPolicyResp.EnsureSuccessStatusCode();
+
+            using (var secPolicyDoc = JsonDocument.Parse(await secPolicyResp.Content.ReadAsStringAsync(ct)))
+            {
+                if (secPolicyDoc.RootElement.TryGetProperty("records", out var secRecordsElement) &&
+                    secRecordsElement.ValueKind == JsonValueKind.Array)
+                {
+                    var secPolicyRecord = secRecordsElement.EnumerateArray().FirstOrDefault();
+                    if (secPolicyRecord.ValueKind == JsonValueKind.Object)
+                    {
+                        // Policy already exists on secondary, done!
+                        return true;
+                    }
+                }
+            }
+
+            // 3. Lookup export policy (and id) on primary
+            string? primaryPolicyId = null;
+            JsonElement primaryPolicyRecord = default;
+
+            // Try SVM-scoped first
+            var primaryPolicyUrl = $"{primaryBaseUrl}protocols/nfs/export-policies?name={Uri.EscapeDataString(exportPolicyName)}&svm.name={Uri.EscapeDataString(svmName)}";
+            var primaryPolicyResp = await primaryClient.GetAsync(primaryPolicyUrl, ct);
+
+            bool tryClusterLevel = false;
+            if (primaryPolicyResp.IsSuccessStatusCode)
+            {
+                using (var primaryPolicyDoc = JsonDocument.Parse(await primaryPolicyResp.Content.ReadAsStringAsync(ct)))
+                {
+                    if (primaryPolicyDoc.RootElement.TryGetProperty("records", out var policyArray) &&
+                        policyArray.ValueKind == JsonValueKind.Array)
+                    {
+                        primaryPolicyRecord = policyArray.EnumerateArray().FirstOrDefault();
+                        if (primaryPolicyRecord.ValueKind == JsonValueKind.Object &&
+                            primaryPolicyRecord.TryGetProperty("id", out var idProp))
+                        {
+                            // id is a number; convert to string for URLs
+                            primaryPolicyId = idProp.GetInt64().ToString();
+                        }
+                        else
+                        {
+                            tryClusterLevel = true; // No policy found at SVM level, try cluster
+                        }
+                    }
+                    else
+                    {
+                        tryClusterLevel = true;
+                    }
+                }
+            }
+            else
+            {
+                var body = await primaryPolicyResp.Content.ReadAsStringAsync(ct);
+                // Try cluster-level if SVM does not exist or policy not found (2621462)
+                if (primaryPolicyResp.StatusCode == System.Net.HttpStatusCode.NotFound ||
+                    body.Contains("does not exist", StringComparison.OrdinalIgnoreCase) ||
+                    body.Contains("\"code\": \"2621462\"", StringComparison.OrdinalIgnoreCase))
+                {
+                    tryClusterLevel = true;
+                }
+                else
+                {
+                    // Other error (auth, comms, etc)
+                    return false;
+                }
+            }
+
+            if (tryClusterLevel)
+            {
+                var clusterPolicyUrl = $"{primaryBaseUrl}protocols/nfs/export-policies?name={Uri.EscapeDataString(exportPolicyName)}";
+                var clusterPolicyResp = await primaryClient.GetAsync(clusterPolicyUrl, ct);
+                if (!clusterPolicyResp.IsSuccessStatusCode)
+                    return false;
+                using (var clusterPolicyDoc = JsonDocument.Parse(await clusterPolicyResp.Content.ReadAsStringAsync(ct)))
+                {
+                    if (clusterPolicyDoc.RootElement.TryGetProperty("records", out var clusterArray) &&
+                        clusterArray.ValueKind == JsonValueKind.Array)
+                    {
+                        primaryPolicyRecord = clusterArray.EnumerateArray().FirstOrDefault();
+                        if (primaryPolicyRecord.ValueKind == JsonValueKind.Object &&
+                            primaryPolicyRecord.TryGetProperty("id", out var idProp))
+                        {
+                            primaryPolicyId = idProp.GetInt64().ToString();
+                        }
+                        else
+                        {
+                            _logger?.LogError("primaryPolicyRecord did not have an id property. Record: {0}", primaryPolicyRecord.ToString());
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            if (string.IsNullOrEmpty(primaryPolicyId))
+                return false;
+
+            // 4. Get all rules for this policy from primary using the detailed policy endpoint
+            var policyDetailUrl = $"{primaryBaseUrl}protocols/nfs/export-policies/{primaryPolicyId}?fields=svm,id,rules,name";
+            var policyDetailResp = await primaryClient.GetAsync(policyDetailUrl, ct);
+            if (!policyDetailResp.IsSuccessStatusCode)
+                return false;
+
+            var policyDetailJson = await policyDetailResp.Content.ReadAsStringAsync(ct);
+            using var policyDetailDoc = JsonDocument.Parse(policyDetailJson);
+            var policyDetail = policyDetailDoc.RootElement;
+
+            // Extract the "rules" array
+            if (!policyDetail.TryGetProperty("rules", out var rulesArray) || rulesArray.ValueKind != JsonValueKind.Array)
+                return false;
+
+            // 5. Create export policy on secondary
+            var createBody = new
+            {
+                name = exportPolicyName,
+                svm = new { name = svmName }
+            };
+            var createContent = new StringContent(System.Text.Json.JsonSerializer.Serialize(createBody), Encoding.UTF8, "application/json");
+            var createResp = await secondaryClient.PostAsync($"{secondaryBaseUrl}protocols/nfs/export-policies", createContent, ct);
+            if (!createResp.IsSuccessStatusCode)
+                return false;
+
+            string? createdId = null;
+            using (var createDoc = JsonDocument.Parse(await createResp.Content.ReadAsStringAsync(ct)))
+            {
+                if (createDoc.RootElement.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.Number)
+                {
+                    createdId = idProp.GetInt64().ToString();
+                }
+            }
+
+            // Fallback: If id is not present, look up by name and svm.name
+            if (string.IsNullOrEmpty(createdId))
+            {
+                var lookupUrl = $"{secondaryBaseUrl}protocols/nfs/export-policies?name={Uri.EscapeDataString(exportPolicyName)}&svm.name={Uri.EscapeDataString(svmName)}";
+                var lookupResp = await secondaryClient.GetAsync(lookupUrl, ct);
+                if (!lookupResp.IsSuccessStatusCode)
+                    return false;
+
+                using var lookupDoc = JsonDocument.Parse(await lookupResp.Content.ReadAsStringAsync(ct));
+                if (lookupDoc.RootElement.TryGetProperty("records", out var recordsArray) && recordsArray.ValueKind == JsonValueKind.Array)
+                {
+                    var policyRec = recordsArray.EnumerateArray().FirstOrDefault();
+                    if (policyRec.ValueKind == JsonValueKind.Object && policyRec.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.Number)
+                    {
+                        createdId = idProp.GetInt64().ToString();
+                    }
+                }
+            }
+
+            if (string.IsNullOrEmpty(createdId))
+                return false;
+
+
+            // 6. Copy each rule from primary to secondary using detailed rule
+            foreach (var rule in rulesArray.EnumerateArray())
+            {
+                // Fetch detailed rule if possible
+                if (!rule.TryGetProperty("index", out var idxProp) || idxProp.ValueKind != JsonValueKind.Number)
+                    continue;
+                int ruleIndex = idxProp.GetInt32();
+
+                // Fetch full details for this rule
+                var ruleDetailsUrl = $"{primaryBaseUrl}protocols/nfs/export-policies/{primaryPolicyId}/rules/{ruleIndex}";
+                var ruleDetailsResp = await primaryClient.GetAsync(ruleDetailsUrl, ct);
+                if (!ruleDetailsResp.IsSuccessStatusCode)
+                {
+                    _logger?.LogWarning("Failed to fetch detailed export policy rule for index {0}", ruleIndex);
+                    continue;
+                }
+
+                using var ruleDetailsDoc = JsonDocument.Parse(await ruleDetailsResp.Content.ReadAsStringAsync(ct));
+                var ruleDetails = ruleDetailsDoc.RootElement;
+
+                // Build payload ONLY with supported fields
+                var payload = new Dictionary<string, object>();
+
+                // List of NetApp export rule properties you want to copy if present:
+                var knownFields = new[] {
+        "clients", "protocols", "ro_rule", "rw_rule",
+        "anonymous_user", "superuser", "allow_device_creation", "ntfs_unix_security",
+        "chown_mode", "allow_suid"
+    };
+
+                foreach (var field in knownFields)
+                {
+                    if (ruleDetails.TryGetProperty(field, out var value) && value.ValueKind != JsonValueKind.Undefined && value.ValueKind != JsonValueKind.Null)
+                    {
+                        switch (value.ValueKind)
+                        {
+                            case JsonValueKind.String:
+                                payload[field] = value.GetString();
+                                break;
+                            case JsonValueKind.Number:
+                                if (value.TryGetInt64(out var longVal)) payload[field] = longVal;
+                                else if (value.TryGetDecimal(out var decVal)) payload[field] = decVal;
+                                break;
+                            case JsonValueKind.True:
+                            case JsonValueKind.False:
+                                payload[field] = value.GetBoolean();
+                                break;
+                            case JsonValueKind.Array:
+                                payload[field] = value.EnumerateArray().Select(x =>
+                                {
+                                    // for "clients" it may be array of objects, for others usually string
+                                    if (x.ValueKind == JsonValueKind.String)
+                                        return (object)x.GetString();
+                                    else if (x.ValueKind == JsonValueKind.Object)
+                                    {
+                                        // for "clients", e.g. [{"match": "10.0.0.0/24"}]
+                                        return x.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.ToString());
+                                    }
+                                    return x.ToString();
+                                }).ToList();
+                                break;
+                            case JsonValueKind.Object:
+                                // Only needed for "clients" (array of object)
+                                payload[field] = System.Text.Json.JsonSerializer.Deserialize<object>(value.GetRawText());
+                                break;
+                        }
+                    }
+                }
+
+                if (payload.Count == 0)
+                {
+                    _logger?.LogWarning("Export policy rule for policy {0} (rule index {1}) is empty after filtering. Skipping.", createdId, ruleIndex);
+                    continue;
+                }
+
+                var ruleContent = new StringContent(System.Text.Json.JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+                var rulePostUrl = $"{secondaryBaseUrl}protocols/nfs/export-policies/{createdId}/rules";
+                var ruleResp = await secondaryClient.PostAsync(rulePostUrl, ruleContent, ct);
+                if (!ruleResp.IsSuccessStatusCode)
+                {
+                    var errText = await ruleResp.Content.ReadAsStringAsync(ct);
+                    _logger?.LogError("Failed to POST export policy rule {0} to {1}: {2}", ruleIndex, rulePostUrl, errText);
+                    return false;
+                }
+            }
+
+            // Success!
+            return true;
+
+        }
+
+
+
+        public async Task<bool> SetExportPolicyAsync(
+    string volumeName,
+    string exportPolicyName,
+    int controllerId,
+    CancellationToken ct = default)
+        {
+            var controller = await _context.NetappControllers.FindAsync(controllerId, ct);
+            if (controller == null) return false;
+
+            var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+
+            // Lookup UUID for the clone
+            var lookupUrl = $"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volumeName)}&fields=uuid";
+            var lookupResp = await httpClient.GetAsync(lookupUrl, ct);
+            lookupResp.EnsureSuccessStatusCode();
+
+            using var doc = JsonDocument.Parse(await lookupResp.Content.ReadAsStringAsync(ct));
+            var recs = doc.RootElement.GetProperty("records");
+            if (recs.GetArrayLength() == 0) return false;
+            var uuid = recs[0].GetProperty("uuid").GetString()!;
+
+            var patchUrl = $"{baseUrl}storage/volumes/{uuid}";
+            var payload = new
+            {
+                nas = new
+                {
+                    export_policy = new { name = exportPolicyName }
+                }
+            };
+            var content = new StringContent(System.Text.Json.JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+            var patchResp = await httpClient.PatchAsync(patchUrl, content, ct);
+
+            return patchResp.IsSuccessStatusCode;
+        }
 
         public async Task<bool> SetVolumeExportPathAsync(
            string volumeUuid,

@@ -213,6 +213,53 @@ namespace BareProx.Services
                       .Where(n => n != null && n.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
                       .ToList();
         }
+        public async Task<List<NetappVolumeDto>> ListVolumesAsync(int controllerId, CancellationToken ct = default)
+        {
+            var result = new List<NetappVolumeDto>();
+
+            var controller = await _context.NetappControllers.FindAsync(controllerId, ct);
+            if (controller == null)
+                throw new Exception("NetApp controller not found.");
+
+            var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+
+            try
+            {
+                var url = $"{baseUrl}storage/volumes?fields=name,uuid,svm.name";
+                var resp = await httpClient.GetAsync(url, ct);
+                resp.EnsureSuccessStatusCode();
+
+                var json = await resp.Content.ReadAsStringAsync(ct);
+                using var doc = JsonDocument.Parse(json);
+
+                foreach (var volumeElement in doc.RootElement.GetProperty("records").EnumerateArray())
+                {
+                    var volumeName = volumeElement.GetProperty("name").GetString() ?? string.Empty;
+                    var uuid = volumeElement.TryGetProperty("uuid", out var uuidProp) ? uuidProp.GetString() : string.Empty;
+
+                    // If you want SVM name or more fields, fetch them here (optional)
+                    result.Add(new NetappVolumeDto
+                    {
+                        VolumeName = volumeName,
+                        Uuid = uuid,
+                        ClusterId = controller.Id,
+                        // add more if needed
+                    });
+                }
+                return result;
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogError(ex, "HTTP error while listing NetApp volumes.");
+                throw new Exception("Failed to retrieve NetApp volumes.", ex);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unexpected error while listing NetApp volumes.");
+                throw;
+            }
+        }
+
         public async Task<VolumeInfo?> LookupVolumeAsync(string volumeName, int controllerId, CancellationToken ct = default)
         {
             var controller = await _context.NetappControllers

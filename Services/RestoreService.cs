@@ -71,6 +71,7 @@ namespace BareProx.Services
                 var ctx = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                 var netapp = scope.ServiceProvider.GetRequiredService<INetappService>();
                 var proxmox = scope.ServiceProvider.GetRequiredService<ProxmoxService>();
+                var netappVolumeSvc = scope.ServiceProvider.GetRequiredService<INetappVolumeService>();
 
                 // Reload job in new context
                 var backgroundJob = await ctx.Jobs.FindAsync(new object[] { jobId }, backgroundCt);
@@ -94,21 +95,82 @@ namespace BareProx.Services
                     if (!cloneResult.Success)
                         throw new InvalidOperationException(cloneResult.Message);
 
-                    // 4) Copy export policy
-                    var policyOk = await netapp.CopyExportPolicyAsync(
-                        model.VolumeName,
-                        cloneName,
-                        model.ControllerId,
-                        backgroundCt);
-
-                    if (!policyOk)
+                    // 4) Copy export policy (branch if restoring from secondary)
+                    if (model.Target.Equals("Secondary", StringComparison.OrdinalIgnoreCase))
                     {
-                        await _netappVolumeService.DeleteVolumeAsync(cloneName, model.ControllerId, backgroundCt);
-                        throw new InvalidOperationException("Failed to apply export policy.");
+                        // a) figure out which primary controller & volume to copy from
+                        var snap = await ctx.NetappSnapshots
+                            .FirstOrDefaultAsync(s => s.JobId == model.BackupId, backgroundCt);
+
+                        int primaryCtrl = snap?.PrimaryControllerId
+                                           ?? (await ctx.SnapMirrorRelations
+                                                .Where(r =>
+                                                    r.DestinationControllerId == model.ControllerId &&
+                                                    r.DestinationVolume == model.VolumeName)
+                                                .Select(r => r.SourceControllerId)
+                                                .FirstOrDefaultAsync(backgroundCt));
+
+                        string primaryVol = snap?.PrimaryVolume
+                                            ?? (await ctx.SnapMirrorRelations
+                                                 .Where(r =>
+                                                     r.DestinationControllerId == model.ControllerId &&
+                                                     r.DestinationVolume == model.VolumeName)
+                                                 .Select(r => r.SourceVolume)
+                                                 .FirstOrDefaultAsync(backgroundCt));
+
+                        // b) read the export‐policy name from SelectedNetappVolumes on primary
+                        var primaryPolicy = await ctx.SelectedNetappVolumes
+                            .Where(v => v.NetappControllerId == primaryCtrl &&
+                                        v.VolumeName == primaryVol)
+                            .Select(v => v.ExportPolicyName)
+                            .FirstOrDefaultAsync(backgroundCt)
+                            ?? throw new InvalidOperationException($"No policy for {primaryVol}@{primaryCtrl}");
+
+                        // c) ensure it exists on secondary
+                        await netapp.EnsureExportPolicyExistsOnSecondaryAsync(
+                            exportPolicyName: primaryPolicy,
+                            primaryControllerId: primaryCtrl,
+                            secondaryControllerId: model.ControllerId,
+                            svmName: (await ctx.SelectedNetappVolumes
+                                                       .Where(v => v.NetappControllerId == model.ControllerId &&
+                                                                   v.VolumeName == model.VolumeName)
+                                                       .Select(v => v.Vserver)
+                                                       .FirstOrDefaultAsync(backgroundCt))
+                                                    ?? throw new InvalidOperationException("Missing SVM"),
+                            ct: backgroundCt);
+
+                        // d) assign it to the new clone
+                        var setOk = await netapp.SetExportPolicyAsync(
+                            volumeName: cloneName,
+                            exportPolicyName: primaryPolicy,
+                            controllerId: model.ControllerId,
+                            ct: backgroundCt);
+
+                        if (!setOk)
+                        {
+                            await netappVolumeSvc.DeleteVolumeAsync(cloneName, model.ControllerId, backgroundCt);
+                            throw new InvalidOperationException("Failed to set export policy on cloned volume.");
+                        }
+                    }
+                    else
+                    {
+                        // Primary: just copy the policy in‐place
+                        var policyOk = await netapp.CopyExportPolicyAsync(
+                            model.VolumeName,
+                            cloneName,
+                            model.ControllerId,
+                            backgroundCt);
+
+                        if (!policyOk)
+                        {
+                            await netappVolumeSvc.DeleteVolumeAsync(cloneName, model.ControllerId, backgroundCt);
+                            throw new InvalidOperationException("Failed to apply export policy on primary clone.");
+                        }
                     }
 
+
                     // 5) Ensure export path is set
-                    var volInfo = await _netappVolumeService.LookupVolumeAsync(cloneName, model.ControllerId, backgroundCt);
+                    var volInfo = await netappVolumeSvc.LookupVolumeAsync(cloneName, model.ControllerId, backgroundCt);
                     if (volInfo == null)
                         throw new InvalidOperationException($"UUID not found for clone '{cloneName}'.");
 
@@ -121,12 +183,12 @@ namespace BareProx.Services
 
                     if (!exported)
                     {
-                        await _netappVolumeService.DeleteVolumeAsync(cloneName, model.ControllerId, backgroundCt);
+                        await netappVolumeSvc.DeleteVolumeAsync(cloneName, model.ControllerId, backgroundCt);
                         throw new InvalidOperationException($"Failed to export clone '{cloneName}'.");
                     }
 
                     // 6) Mount on target host
-                    var mounts = await _netappVolumeService.GetVolumesWithMountInfoAsync(model.ControllerId, backgroundCt);
+                    var mounts = await netappVolumeSvc.GetVolumesWithMountInfoAsync(model.ControllerId, backgroundCt);
                     var cloneMount = mounts.FirstOrDefault(m =>
                         m.VolumeName.Equals(cloneName, StringComparison.OrdinalIgnoreCase));
 
@@ -161,7 +223,7 @@ namespace BareProx.Services
 
                     if (!mountSuccess)
                     {
-                        await _netappVolumeService.DeleteVolumeAsync(cloneName, model.ControllerId, backgroundCt);
+                        await netappVolumeSvc.DeleteVolumeAsync(cloneName, model.ControllerId, backgroundCt);
                         throw new InvalidOperationException("Failed to mount clone on target host.");
                     }
 

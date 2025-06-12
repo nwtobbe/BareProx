@@ -50,19 +50,19 @@ namespace BareProx.Models
         public string? MountIp { get; set; }
         public bool IsInUse { get; set; }
         public List<ProxmoxVM> AttachedVms { get; set; } = new();
-
-        // We no longer store snapshots here; snapshots live under PrimaryVolumeSnapshots.
+        public string ControllerName { get; set; } = "";
+        public int ControllerId { get; set; }
+        public int ClusterId { get; set; }
+        public bool IsSelectedVolume { get; set; }
     }
 
     // ** NEW **: one object per “primary volume,” with its own orphaned‐snapshot list.
     public class PrimaryVolumeSnapshots
     {
         public string VolumeName { get; set; } = "";
-
-        /// <summary>
-        /// All snapshot names on disk for this volume that are *not* in BackupRecords.
-        /// </summary>
         public List<SnapshotInfo> OrphanedSnapshots { get; set; } = new();
+        public string ControllerName { get; set; } = "";
+        public int ControllerId { get; set; }
     }
 
     // ** NEW **: For each orphaned snapshot, does there exist a clone built from it?

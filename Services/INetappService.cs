@@ -56,7 +56,15 @@ namespace BareProx.Services
 
 
         // --- Cloning and export policies ---
+        Task<bool> EnsureExportPolicyExistsOnSecondaryAsync(
+    string exportPolicyName,
+    int primaryControllerId,
+    int secondaryControllerId,
+    string svmName,
+    CancellationToken ct = default);
+
         Task<FlexCloneResult> CloneVolumeFromSnapshotAsync(string volumeName, string snapshotName, string cloneName, int controllerId, CancellationToken ct = default);
+        Task<bool> SetExportPolicyAsync(string volumeName, string exportPolicyName, int controllerId, CancellationToken ct = default);
         Task<bool> CopyExportPolicyAsync(string sourceVolume, string targetVolume, int controllerId, CancellationToken ct = default);
         Task<bool> SetVolumeExportPathAsync(string volumeUuid, string exportPath, int controllerId, CancellationToken ct = default);
 

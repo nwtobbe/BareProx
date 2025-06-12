@@ -247,8 +247,8 @@ namespace BareProx.Controllers
 
         [HttpPost]
         public async Task<IActionResult> MountSnapshot(
-            MountSnapshotViewModel model,
-            CancellationToken ct)
+    MountSnapshotViewModel model,
+    CancellationToken ct)
         {
             if (!ModelState.IsValid)
                 return BadRequest("Invalid input.");
@@ -263,7 +263,7 @@ namespace BareProx.Controllers
                 if (controllerId <= 0)
                     return BadRequest("Invalid controller ID.");
 
-                // 2) Clone the snapshot (pass ct to service)
+                // 2) Clone the snapshot
                 var result = await _netappService
                     .CloneVolumeFromSnapshotAsync(
                         volumeName: model.VolumeName,
@@ -275,15 +275,116 @@ namespace BareProx.Controllers
                 if (!result.Success)
                     return BadRequest("Failed to create FlexClone: " + result.Message);
 
-                // 3) Copy export policy
-                await _netappService.CopyExportPolicyAsync(
-                    model.VolumeName,
-                    cloneName,
-                    controllerId: controllerId,
-                    ct);
+                // 3) Copy export policy — enhanced logic for secondary
+                if (model.IsSecondary)
+                {
+                    // first, try the NetappSnapshots table
+                    var snapshotRecord = await _context.NetappSnapshots
+                        .Where(s =>
+                            s.SnapshotName == model.SnapshotName &&
+                            s.SecondaryVolume == model.VolumeName &&
+                            s.SecondaryControllerId == model.ControllerId)
+                        .FirstOrDefaultAsync(ct);
+
+                    int primaryControllerId;
+                    string primaryVolumeName;
+                    string exportPolicyName;
+                    bool snapshotLocking;
+
+                    if (snapshotRecord != null)
+                    {
+                        // got it directly
+                        primaryControllerId = snapshotRecord.PrimaryControllerId;
+                        primaryVolumeName = snapshotRecord.PrimaryVolume;
+                    }
+                    else
+                    {
+                        // FALLBACK: use SnapMirrorRelation
+                        var smr = await _context.SnapMirrorRelations
+                            .Where(r =>
+                                r.DestinationControllerId == model.ControllerId &&
+                                r.DestinationVolume == model.VolumeName)
+                            .FirstOrDefaultAsync(ct);
+
+                        if (smr == null)
+                            return BadRequest(
+                               $"No snapshot metadata or SnapMirrorRelation found for '{model.SnapshotName}' on '{model.VolumeName}'.");
+
+                        primaryControllerId = smr.SourceControllerId;
+                        primaryVolumeName = smr.SourceVolume;
+
+                        // now look up the export-policy on the source (primary) side
+                        exportPolicyName = await _context.SelectedNetappVolumes
+                            .Where(v =>
+                                v.NetappControllerId == primaryControllerId &&
+                                v.VolumeName == primaryVolumeName)
+                            .Select(v => v.ExportPolicyName)
+                            .FirstOrDefaultAsync(ct)
+                            ?? throw new Exception(
+                                $"ExportPolicyName not found for primary volume '{primaryVolumeName}'");
+
+                        // we don’t know locking, assume false (or fetch live if you prefer)
+                        snapshotLocking = false;
+                    }
+
+                    //if (snapshotRecord == null)
+                    //    return StatusCode(500, "Could not find snapshot metadata for export policy lookup.");
+
+                    // var primaryControllerId = snapshotRecord.PrimaryControllerId;
+                   //  var primaryVolumeName = snapshotRecord.PrimaryVolume;
+
+                    // Get export policy name from primary
+                    var primaryExportPolicy = await _context.SelectedNetappVolumes
+                        .Where(v => v.NetappControllerId == primaryControllerId &&
+                                    v.VolumeName == primaryVolumeName)
+                        .Select(v => v.ExportPolicyName)
+                        .FirstOrDefaultAsync(ct);
+
+                    if (string.IsNullOrEmpty(primaryExportPolicy))
+                        return StatusCode(500, "Could not find export policy on primary volume.");
+
+                    // Get SVM name for the clone (from SelectedNetappVolumes on secondary)
+                    var svmName = await _context.SelectedNetappVolumes
+                        .Where(v => v.NetappControllerId == model.ControllerId &&
+                                    v.VolumeName == model.VolumeName)
+                        .Select(v => v.Vserver)
+                        .FirstOrDefaultAsync(ct);
+
+                    if (string.IsNullOrEmpty(svmName))
+                        return StatusCode(500, "Could not determine SVM name for clone.");
+
+                    // Ensure the policy (and its rules) exist on secondary (copy if needed)
+                    var copied = await _netappService.EnsureExportPolicyExistsOnSecondaryAsync(
+                        exportPolicyName: primaryExportPolicy,
+                        primaryControllerId: primaryControllerId,
+                        secondaryControllerId: model.ControllerId,
+                        svmName: svmName,
+                        ct: ct);
+
+                    if (!copied)
+                        return StatusCode(500, "Failed to ensure export policy exists on secondary controller.");
+
+                    // Now assign the policy to the clone (on secondary)
+                    var ok = await _netappService.SetExportPolicyAsync(
+                        volumeName: cloneName,
+                        exportPolicyName: primaryExportPolicy,
+                        controllerId: model.ControllerId,
+                        ct: ct);
+
+                    if (!ok)
+                        return StatusCode(500, "Failed to set export policy on clone from primary info.");
+                }
+                else
+                {
+                    // Primary: just copy export policy on same controller
+                    await _netappService.CopyExportPolicyAsync(
+                        model.VolumeName,
+                        cloneName,
+                        controllerId: controllerId,
+                        ct);
+                }
 
                 // 4) Lookup the clone’s UUID, then set its export path
-
                 var volumeInfo = await _netappVolumeService
                     .LookupVolumeAsync(result.CloneVolumeName!, controllerId, ct);
                 if (volumeInfo == null)
@@ -326,6 +427,8 @@ namespace BareProx.Controllers
                 return StatusCode(500, "Mount failed: " + ex.Message);
             }
         }
+
+
 
         [HttpPost]
         public async Task<IActionResult> UpdateSnapMirror(

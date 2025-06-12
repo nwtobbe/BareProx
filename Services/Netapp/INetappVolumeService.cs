@@ -26,6 +26,7 @@ namespace BareProx.Services
     {
         Task<List<VserverDto>> GetVserversAndVolumesAsync(int controllerId, CancellationToken ct = default);
         Task<List<NetappMountInfo>> GetVolumesWithMountInfoAsync(int controllerId, CancellationToken ct = default);
+        Task<List<NetappVolumeDto>> ListVolumesAsync(int controllerId, CancellationToken ct = default);
         Task<List<string>> ListVolumesByPrefixAsync(string prefix, int controllerId, CancellationToken ct = default);
         Task<VolumeInfo?> LookupVolumeAsync(string volumeName, int controllerId, CancellationToken ct = default);
         Task<bool> DeleteVolumeAsync(string volumeName, int controllerId, CancellationToken ct = default);

@@ -52,47 +52,23 @@ namespace BareProx.Controllers
         {
             var pageVm = new CleanupPageViewModel();
 
-            // 1) Load all Proxmox clusters including their Hosts
-            var clusters = await _context.ProxmoxClusters
-                                         .Include(c => c.Hosts)
-                                         .ToListAsync(ct);
-
-            if (clusters.Count == 0)
+            // 1) Load Proxmox clusters including their hosts
+            var clusters = await _context.ProxmoxClusters.Include(c => c.Hosts).ToListAsync(ct);
+            if (!clusters.Any())
             {
                 pageVm.WarningMessage = "No Proxmox clusters are configured.";
                 return View(pageVm);
             }
 
-            // 2) Find the single primary NetApp controller
-            var primaryController = await _context.NetappControllers
-                                                  .FirstOrDefaultAsync(c => c.IsPrimary, ct);
-            if (primaryController == null)
+            // 2) Load all NetApp controllers (primary & secondary)
+            var netappControllers = await _context.NetappControllers.ToListAsync(ct);
+            if (!netappControllers.Any())
             {
-                pageVm.WarningMessage = "No primary NetApp controller is configured.";
+                pageVm.WarningMessage = "No NetApp controllers are configured.";
                 return View(pageVm);
             }
 
-            int controllerId = primaryController.Id;
-
-            // 3) Fetch the full list of all FlexClones on that controller once:
-            var allClones = await _netappService.ListFlexClonesAsync(controllerId, ct);
-
-            // 4) Build a HashSet of all backup‐recorded snapshots from the DB:
-            //    We assume there is a DbSet<BackupRecord> with (VolumeName, SnapshotName) columns.
-            //    Replace "BackupRecords" with whatever your actual EF Core DbSet is called.
-            var backupRecords = await _context.Set<BackupRecord>()
-                .AsNoTracking()
-                .ToListAsync(ct);
-
-            var recordedSnapshotsByVolume = backupRecords
-                .GroupBy(r => r.StorageName, StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(
-                    g => g.Key,
-                    g => g.Select(r => r.SnapshotName).ToHashSet(StringComparer.OrdinalIgnoreCase),
-                    StringComparer.OrdinalIgnoreCase
-                );
-
-            // 5) Now process each cluster separately
+            // 3) Process each cluster separately
             foreach (var cluster in clusters)
             {
                 var clusterVm = new CleanupClusterViewModel
@@ -100,128 +76,123 @@ namespace BareProx.Controllers
                     ClusterName = cluster.Name ?? $"Cluster {cluster.Id}"
                 };
 
-                // —————————————————————————————————————————————————————————————
-                // PART A) In‐Use vs Orphaned Clones (unchanged)
-                // —————————————————————————————————————————————————————————————
-
                 var allItems = new List<CleanupItem>();
 
-                foreach (var cloneName in allClones)
+                // Process each NetApp controller separately
+                foreach (var controller in netappControllers)
                 {
-                    // 5A.1) Determine mount‐IP for this clone
-                    var mountInfo = (await _netappVolumeService
-                                          .GetVolumesWithMountInfoAsync(controllerId, ct))
-                                    .FirstOrDefault(m => m.VolumeName == cloneName);
-                    string? mountIp = mountInfo?.MountIp;
+                    var controllerId = controller.Id;
 
-                    // 5A.2) Check if any VM on *this cluster* is using that clone
-                    var attachedVMs = new List<ProxmoxVM>();
-                    foreach (var host in cluster.Hosts)
+                    // Fetch FlexClones for this controller
+                    var allClones = await _netappService.ListFlexClonesAsync(controllerId, ct);
+
+                    // Fetch selected volumes from database
+                    var selectedVolumes = await _context.Set<SelectedNetappVolume>()
+                        .Where(v => v.NetappControllerId == controllerId)
+                        .AsNoTracking()
+                        .ToListAsync(ct);
+
+                    var selectedVolumeNames = selectedVolumes
+                        .Select(v => v.VolumeName)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                    // Fetch mount info once per controller
+                    var mountInfos = await _netappVolumeService.GetVolumesWithMountInfoAsync(controllerId, ct);
+
+                    // PART A: FlexClones In-use vs Orphaned
+                    foreach (var cloneName in allClones)
                     {
-                        var nodeName = host.Hostname ?? host.HostAddress!;
-                        var vmsOnNode = await _proxmoxService
-                            .GetVmsOnNodeAsync(cluster, nodeName, cloneName, ct);
+                        var mountInfo = mountInfos.FirstOrDefault(m => m.VolumeName == cloneName);
+                        var mountIp = mountInfo?.MountIp;
 
-                        if (vmsOnNode?.Any() == true)
-                            attachedVMs.AddRange(vmsOnNode);
+                        // Check attached VMs per host
+                        var attachedVMs = new List<ProxmoxVM>();
+                        foreach (var host in cluster.Hosts)
+                        {
+                            var nodeName = host.Hostname ?? host.HostAddress!;
+                            var vmsOnNode = await _proxmoxService.GetVmsOnNodeAsync(cluster, nodeName, cloneName, ct);
+                            if (vmsOnNode?.Any() == true)
+                                attachedVMs.AddRange(vmsOnNode);
+                        }
+
+                        allItems.Add(new CleanupItem
+                        {
+                            VolumeName = cloneName,
+                            MountIp = mountIp,
+                            ControllerName = controller.Hostname,
+                            ControllerId = controllerId,
+                            ClusterId = cluster.Id,
+                            IsInUse = attachedVMs.Any(),
+                            AttachedVms = attachedVMs,
+                            IsSelectedVolume = selectedVolumeNames.Contains(cloneName)
+                        });
                     }
 
-                    allItems.Add(new CleanupItem
+                    // PART B: Orphaned Snapshots per selected volume
+                    var primaryControllerIds = netappControllers
+                        .Where(c => c.IsPrimary)
+                        .Select(c => c.Id)
+                        .ToHashSet();
+
+                    foreach (var selectedVolume in selectedVolumes.Where(v => primaryControllerIds.Contains(v.NetappControllerId)))
                     {
-                        VolumeName = cloneName,
-                        MountIp = mountIp,
-                        IsInUse = attachedVMs.Any(),
-                        AttachedVms = attachedVMs
-                    });
+                        var pvs = new PrimaryVolumeSnapshots
+                        {
+                            VolumeName = selectedVolume.VolumeName,
+                            ControllerName = controller.Hostname,
+                            ControllerId = controllerId
+                        };
+
+                        var snapshotsOnDisk = await _netappSnapshotService.GetSnapshotsAsync(controllerId, selectedVolume.VolumeName, ct)
+                            ?? new List<string>();
+
+                        var recordedSnapshots = await _context.Set<BackupRecord>()
+                            .Where(r => r.StorageName == selectedVolume.VolumeName)
+                            .Select(r => r.SnapshotName)
+                            .ToHashSetAsync(StringComparer.OrdinalIgnoreCase, ct);
+
+                        var orphanedSnapshots = snapshotsOnDisk
+                            .Where(s => !recordedSnapshots.Contains(s) &&
+                                        !s.StartsWith("snapmirror", StringComparison.OrdinalIgnoreCase))
+                            .ToList();
+
+                        var orphanedInfos = new List<SnapshotInfo>();
+                        foreach (var snap in orphanedSnapshots)
+                        {
+                            var info = new SnapshotInfo { SnapshotName = snap };
+
+                            var cloneForSnapshot = allClones.FirstOrDefault(c =>
+                                c.Contains(snap, StringComparison.OrdinalIgnoreCase) &&
+                                c.StartsWith(selectedVolume.VolumeName + "_", StringComparison.OrdinalIgnoreCase));
+
+                            if (cloneForSnapshot != null)
+                            {
+                                info.CloneName = cloneForSnapshot;
+                                var cloneMount = mountInfos.FirstOrDefault(m => m.VolumeName == cloneForSnapshot);
+                                info.CloneMountIp = cloneMount?.MountIp;
+
+                                if (info.CloneName is not null)
+                                {
+                                    var vmsOnClone = new List<ProxmoxVM>();
+                                    foreach (var host in cluster.Hosts)
+                                    {
+                                        var nodeName = host.Hostname ?? host.HostAddress!;
+                                        var vms = await _proxmoxService.GetVmsOnNodeAsync(cluster, nodeName, cloneForSnapshot, ct);
+                                        if (vms?.Any() == true)
+                                            vmsOnClone.AddRange(vms);
+                                    }
+                                    info.CloneAttachedVms = vmsOnClone;
+                                }
+                            }
+                            orphanedInfos.Add(info);
+                        }
+                        pvs.OrphanedSnapshots = orphanedInfos;
+                        clusterVm.Volumes.Add(pvs);
+                    }
                 }
 
                 clusterVm.InUse = allItems.Where(x => x.IsInUse).ToList();
                 clusterVm.Orphaned = allItems.Where(x => !x.IsInUse).ToList();
-
-                // —————————————————————————————————————————————————————————————
-                // PART B) “Orphaned Snapshots” per Primary Volume
-                // —————————————————————————————————————————————————————————————
-
-                // 5B.1) Determine the list of “primary volumes” we care about.
-                //       In this example, we treat each distinct VolumeName from BackupRecords
-                //       as a primary volume. (Any other method you use to enumerate primary volumes
-                //       would simply replace this block.)
-                var primaryVolumes = recordedSnapshotsByVolume.Keys.ToList();
-
-                // 5B.2) Build one PrimaryVolumeSnapshots object per volume
-                foreach (var vol in primaryVolumes)
-                {
-                    var pvs = new PrimaryVolumeSnapshots
-                    {
-                        VolumeName = vol
-                    };
-
-                    // 5B.3) Fetch all snapshot names on storage for this volume
-                    var allSnapshotNamesOnDisk = await _netappSnapshotService.GetSnapshotsAsync(controllerId, vol, ct)
-                        ?? new List<string>();
-
-                    // 5B.4) Which snapshots are already in BackupRecords?
-                    recordedSnapshotsByVolume.TryGetValue(vol, out var recordedForThisVol);
-                    recordedForThisVol ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-                    // 5B.5) Orphaned snapshots = (diskSnapshots − recordedSnapshots)
-                    var orphanedSnapshotNames = allSnapshotNamesOnDisk
-                        .Where(s =>
-                            !recordedForThisVol.Contains(s) &&
-                            !s.StartsWith("snapmirror", StringComparison.OrdinalIgnoreCase))
-                        .ToList();
-
-                    // 5B.6) For each orphaned snapshot, check if there’s a FlexClone built from it,
-                    //        and if so, whether that clone is in‐use or mounted on *this cluster*.
-                    var orphanedInfos = new List<SnapshotInfo>();
-                    foreach (var snap in orphanedSnapshotNames)
-                    {
-                        var info = new SnapshotInfo
-                        {
-                            SnapshotName = snap
-                        };
-
-                        // 5B.6a) Is there a clone whose name suggests it was made from this snapshot?
-                        //         We assume your clones follow some naming convention like:
-                        //         "<volume>_snapshot_<snapshot>_clone_<randomSuffix>"
-                        //         Adjust this filter to match your actual naming pattern.
-                        var cloneForThisSnapshot = allClones
-                            .FirstOrDefault(c => c.Contains(snap, StringComparison.OrdinalIgnoreCase)
-                                              && c.StartsWith(vol + "_", StringComparison.OrdinalIgnoreCase));
-                        if (cloneForThisSnapshot != null)
-                        {
-                            info.CloneName = cloneForThisSnapshot;
-
-                            // 5B.6b) If that clone exists, is it mounted on this cluster?
-                            //          Fetch mount info once again, only for this one clone.
-                            var singleMount = (await _netappVolumeService
-                                                    .GetVolumesWithMountInfoAsync(controllerId, ct))
-                                              .FirstOrDefault(m => m.VolumeName == cloneForThisSnapshot);
-                            info.CloneMountIp = singleMount?.MountIp;
-
-                            // 5B.6c) If it’s mounted, check if any VM on *this cluster* is using it:
-                            if (info.CloneName is not null)
-                            {
-                                var vmsOnClone = new List<ProxmoxVM>();
-                                foreach (var host in cluster.Hosts)
-                                {
-                                    var nodeName = host.Hostname ?? host.HostAddress!;
-                                    var vms = await _proxmoxService
-                                        .GetVmsOnNodeAsync(cluster, nodeName, cloneForThisSnapshot, ct);
-                                    if (vms?.Any() == true)
-                                        vmsOnClone.AddRange(vms);
-                                }
-
-                                info.CloneAttachedVms = vmsOnClone;
-                            }
-                        }
-
-                        orphanedInfos.Add(info);
-                    }
-
-                    pvs.OrphanedSnapshots = orphanedInfos;
-                    clusterVm.Volumes.Add(pvs);
-                }
 
                 pageVm.Clusters.Add(clusterVm);
             }
@@ -230,9 +201,11 @@ namespace BareProx.Controllers
         }
 
 
+
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> Cleanup(string volumeName, string mountIp, CancellationToken ct)
+        public async Task<IActionResult> Cleanup(string volumeName, string mountIp, int controllerId,
+        int clusterId, CancellationToken ct)
         {
             if (string.IsNullOrWhiteSpace(volumeName) || string.IsNullOrWhiteSpace(mountIp))
                 return BadRequest(new { error = "Missing volume or mount IP." });
@@ -240,7 +213,7 @@ namespace BareProx.Controllers
             // Reload cluster + hosts
             var cluster = await _context.ProxmoxClusters
                                         .Include(c => c.Hosts)
-                                        .FirstOrDefaultAsync(ct);
+                                        .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
             if (cluster == null)
                 return NotFound(new { error = "Proxmox cluster not configured." });
 
@@ -274,9 +247,7 @@ namespace BareProx.Controllers
             // Delete the NetApp flexclone
             var deleted = await _netappVolumeService.DeleteVolumeAsync(
                               volumeName,
-                              controllerId: _context.NetappControllers
-                                                 .Select(c => c.Id)
-                                                 .First());
+                              controllerId);
 
             if (!deleted)
             {

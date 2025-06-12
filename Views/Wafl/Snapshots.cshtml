@@ -97,7 +97,7 @@
                     <input type="hidden" name="Vserver" id="modalVserver" />
                     <input type="hidden" name="SnapshotName" id="modalSnapshotName" />
                     <input type="hidden" name="ControllerId" id="modalControllerId" />
-                    <input type="hidden" name="IsPrimary" id="modalIsPrimary" />
+                    <input type="hidden" name="IsSecondary" id="modalIsSecondary" />
 
                     <!--
                     <div id="secondaryWarning" class="alert alert-warning" style="display: none;">
@@ -151,7 +151,7 @@
             document.getElementById('modalVserver').value      = vserver;
             document.getElementById('modalSnapshotName').value = snapshot;
             document.getElementById('modalControllerId').value = controllerId;
-            document.getElementById('modalIsPrimary').value    = isPrimary ? "true" : "false";
+            document.getElementById('modalIsSecondary').value = isPrimary ? "false" : "true";
 
             // Optionally show/hide secondary warning
             const warningEl = document.getElementById('secondaryWarning');

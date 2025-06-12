@@ -133,7 +133,10 @@ namespace BareProx.Models
         public string ReadWrite { get; set; } = "ro";  // "ro" or "rw"
         public string MountIp { get; set; } = null!;
         public int ControllerId { get; set; }
+        public int ClusterId { get; set; }
         public bool IsSecondary { get; set; }
+        public int? PrimaryControllerId { get; set; }
+        public string? PrimaryVolumeName { get; set; }
 
     }
 

@@ -15,19 +15,19 @@
     <PackageReference Include="Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore" Version="8.0.16" />
     <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="8.0.16" />
     <PackageReference Include="Microsoft.AspNetCore.Identity.UI" Version="8.0.16" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.5">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.6">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.5" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.5" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.6" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.6" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="9.0.5">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.VisualStudio.Web.CodeGeneration.Design" Version="8.0.7" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-    <PackageReference Include="Polly" Version="8.5.2" />
+    <PackageReference Include="Polly" Version="8.6.0" />
     <PackageReference Include="RestSharp" Version="112.1.0" />
     <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />

@@ -76,7 +76,10 @@
                 <tbody>
                     @foreach (var item in clusterVm.Orphaned)
                     {
-                        <tr data-volume="@item.VolumeName" data-ip="@item.MountIp">
+                        <tr data-volume="@item.VolumeName"
+                            data-ip="@item.MountIp"
+                            data-controller-id="@item.ControllerId"
+                            data-cluster-id="@item.ClusterId">
                             <td>@item.VolumeName</td>
                             <td>@item.MountIp</td>
                             <td>
@@ -162,6 +165,8 @@
                 const row       = button.closest("tr");
                 const volume    = row.dataset.volume;
                 const mountIp   = row.dataset.ip;
+                const controllerId = row.dataset.controllerId; // ← added
+                const clusterId    = row.dataset.clusterId;    // ← added
                 const section   = row.closest("section[id^='cluster-']");
                 const token     = section.querySelector("form input[name='__RequestVerificationToken']").value;
 
@@ -176,7 +181,9 @@
                     },
                     body: new URLSearchParams({
                         volumeName: volume,
-                        mountIp:    mountIp
+                        mountIp:    mountIp,
+                        controllerId: controllerId, // ← added
+                        clusterId:    clusterId     // ← added
                     })
                 }).catch(err => {
                     alert("Network error: " + err.message);
