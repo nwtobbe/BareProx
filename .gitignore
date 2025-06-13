@@ -366,3 +366,4 @@ FodyWeavers.xsd
 /DatabaseConfig.json
 /Gitkeys.txt
 /Tools/Set-VersionFromGit.ps1
+/Tools/info.txt
