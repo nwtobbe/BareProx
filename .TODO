@@ -1,2 +1,5 @@
-Fix file rename
+
 Fix intermittent copy export failue
+
+Fix file rename not working when low on space
+	Fixed, changed function to create symlinks instead of moving vm-disks.

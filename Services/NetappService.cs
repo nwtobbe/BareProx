@@ -925,47 +925,49 @@ namespace BareProx.Services
                         if (!name.Contains(oldvmid))
                             continue;
 
-                        var oldFilePath = $"{oldFolder}/{name}";
+                        // 1) Compute new names
                         var newFileName = name.Replace(oldvmid, newvmid);
-                        var newFilePath = oldFilePath
-                            .Replace($"{oldvmid}/", $"{newvmid}/")
-                            .Replace(name, newFileName);
 
-                        // Remove any leading slash
-                        if (oldFilePath.StartsWith("/")) oldFilePath = oldFilePath.Substring(1);
-                        if (newFilePath.StartsWith("/")) newFilePath = newFilePath.Substring(1);
+                        // 2) Build the raw link path inside the volume (no leading slash)
+                        var rawLinkPath = $"images/{newvmid}/{newFileName}";
 
-                        expectedFiles.Add(newFileName);
+                        // 3) Percent-encode '/' → '%2F' and '.' → '%2E'
+                        var encodedLinkPath = rawLinkPath
+                            .Replace("/", "%2F")
+                            .Replace(".", "%2E");
 
-                        var moveUrl = $"{baseUrl}storage/file/moves";
-                        var moveBody = new
+                        // 4) Lookup the clone’s UUID once (you should have done this earlier):
+                        //    var volumeUuid = (await _netappVolumeService.LookupVolumeAsync(cloneName, controllerId, ct)).Uuid;
+
+                        // 5) Build the symlink-create URL (baseUrl already ends with "/api/")
+                        var symlinkUrl = $"{baseUrl}storage/volumes/{volumeUuid}/files/{encodedLinkPath}";
+
+                        // 6) Build a relative target so NFS clients resolve it under the same mount
+                        //    From images/{newvmid}/, go up one and into images/{oldvmid}/
+                        var relativeTarget = $"../{oldvmid}/{name}";
+
+                        // 7) POST the symlink request
+                        var payload = new { target = relativeTarget };
+                        var content = new StringContent(
+                            System.Text.Json.JsonSerializer.Serialize(payload),
+                            Encoding.UTF8,
+                            "application/json"
+                        );
+
+                        var resp = await httpClient.PostAsync(symlinkUrl, content, ct);
+                        var respText = await resp.Content.ReadAsStringAsync(ct);
+
+                        if (!resp.IsSuccessStatusCode)
                         {
-                            files_to_move = new
-                            {
-                                sources = new[] {
-                            new {
-                                path = oldFilePath,
-                                volume = new { name = volumeName, uuid = volumeUuid }
-                            }
-                        },
-                                destinations = new[] {
-                            new {
-                                path = newFilePath,
-                                volume = new { name = volumeName, uuid = volumeUuid }
-                            }
-                        }
-                            }
-                        };
-                        var moveContent = new StringContent(System.Text.Json.JsonSerializer.Serialize(moveBody), Encoding.UTF8, "application/json");
-                        var moveResp = await httpClient.PostAsync(moveUrl, moveContent, ct);
-                        var moveErrBody = await moveResp.Content.ReadAsStringAsync(ct);
-                        if (!moveResp.IsSuccessStatusCode)
-                        {
-                            _logger.LogError("Failed to move NetApp file {OldPath} → {NewPath}: {Status} {Body}",
-                                oldFilePath, newFilePath, moveResp.StatusCode, moveErrBody);
+                            _logger.LogError(
+                                "Symlink create failed for {Link} → {Target}: {Status} {Body}",
+                                rawLinkPath, relativeTarget, resp.StatusCode, respText
+                            );
                             return false;
                         }
-                        _logger.LogInformation("Moved NetApp file: {OldPath} → {NewPath}", oldFilePath, newFilePath);
+
+                        _logger.LogInformation("Created symlink {Link} → {Target}", rawLinkPath, relativeTarget);
+
                     }
                 }
                 return true;

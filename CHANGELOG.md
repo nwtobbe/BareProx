@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - …
 
-## [1.0.2506.1117] – 2025-06-11
+## [1.0.2506.1309] – 2025-06-13
 
 ### Added
 
@@ -22,3 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - User management. Now we can create lock and delete users again.
+- Restore vm as create new vm. Changed move vm-disks to new vmid to instead create symlink to new id. Just to mitigate low space issues.
+  And it's faster.
+- Mount from Secondary is now working
+- Restore from Secondary is now working.
