@@ -27,6 +27,7 @@ using BareProx.Models;
 using BareProx.Repositories;
 using BareProx.Services;
 using BareProx.Services.Background;
+using BareProx.Services.Interceptors;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -194,6 +195,9 @@ builder.Services.AddSingleton<IEncryptionService, EncryptionService>();
 
 if (isConfigured)
 {
+    // Register the interceptor as a singleton
+    builder.Services.AddSingleton<WalOnOpenConnectionInterceptor>();
+
     builder.Services.AddDbContext<ApplicationDbContext>((sp, opts) =>
     {
         var cfg = sp.GetRequiredService<IOptionsMonitor<DbConfigModel>>().CurrentValue;
@@ -202,8 +206,14 @@ if (isConfigured)
         if (cfg.DbType?.Equals("Sqlite", StringComparison.OrdinalIgnoreCase) == true)
         {
             var dbPath = Path.Combine(dataPath, $"{cfg.DbName}.db");
-            var connStr = $"Data Source={dbPath}";
-            opts.UseSqlite(connStr);
+            var connStr = $"Data Source={dbPath};Mode=ReadWriteCreate;Cache=Shared";
+
+            opts.UseSqlite(connStr, sqliteOpts =>
+            {
+                // Optional: only needed if migrations live in a different assembly
+                sqliteOpts.MigrationsAssembly(typeof(ApplicationDbContext).Assembly.FullName);
+            });
+            opts.AddInterceptors(sp.GetRequiredService<WalOnOpenConnectionInterceptor>());
         }
         else
         {

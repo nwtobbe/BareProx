@@ -7,78 +7,155 @@
 <h2>Restore Backups</h2>
 
 <link rel="stylesheet" href="~/lib/datatables/media/css/jquery.dataTables.min.css" />
+<link rel="stylesheet" href="~/lib/datatables-plugins/rowgroup.dataTables.min.css" />
 
 <table id="restoreTable" class="table table-bordered table-striped">
     <thead>
         <tr>
-            <th>VM Name</th>
+            <th>VM Name (ID)</th>
             <th>Snapshot</th>
             <th>Volume</th>
             <th>Storage</th>
             <th>Cluster</th>
-            <th>Date</th>
-            <th>Restore</th>
+            <th>Last Backup</th>
         </tr>
     </thead>
     <tbody>
         @foreach (var item in Model)
         {
-            <tr>
+            <tr data-vm-id="@item.VmId"
+                data-vm-name="@item.VmName"
+                data-cluster-id="@item.ClusterId"
+                data-backup-id="@item.BackupId"
+                data-snapshot-name="@item.SnapshotName"
+                data-timestamp="@item.TimeStamp.ToString("yyyy-MM-dd HH:mm")"
+                data-primary="@item.IsOnPrimary.ToString().ToLower()"
+                data-primary-controller="@item.PrimaryControllerId"
+                data-secondary="@item.IsOnSecondary.ToString().ToLower()"
+                data-secondary-controller="@item.SecondaryControllerId">
+
                 <td>@item.VmName (ID: @item.VmId)</td>
                 <td>@item.SnapshotName</td>
                 <td>@item.VolumeName</td>
                 <td>@item.StorageName</td>
                 <td>@item.ClusterName</td>
                 <td>@item.TimeStamp.ToString("yyyy-MM-dd HH:mm")</td>
-                <td>
-                    @* Primary button *@
-                    @if (item.IsOnPrimary)
-                    {
-                        <form asp-controller="Restore"
-                              asp-action="Restore"
-                              method="get"
-                              style="display:inline-block; margin-right:4px;">
-                            <input type="hidden" name="backupId" value="@item.BackupId" />
-                            <input type="hidden" name="clusterId" value="@item.ClusterId" />
-                            <input type="hidden" name="controllerId" value="@item.PrimaryControllerId" />
-                            <input type="hidden" name="target" value="Primary" />
-                            <button type="submit" class="btn btn-sm btn-primary">
-                                Primary
-                            </button>
-                        </form>
-                    }
-
-                    @* Secondary button *@
-                    @if (item.IsOnSecondary && item.SecondaryControllerId.HasValue)
-                    {
-                        <form asp-controller="Restore"
-                              asp-action="Restore"
-                              method="get"
-                              style="display:inline-block;">
-                            <input type="hidden" name="backupId" value="@item.BackupId" />
-                            <input type="hidden" name="clusterId" value="@item.ClusterId" />
-                            <input type="hidden" name="controllerId" value="@item.SecondaryControllerId" />
-                            <input type="hidden" name="target" value="Secondary" />
-                            <button type="submit" class="btn btn-sm btn-secondary">
-                                Secondary
-                            </button>
-                        </form>
-                    }
-                </td>
             </tr>
         }
     </tbody>
 </table>
 
+<!-- Modal -->
+<div class="modal fade" id="restoreModal" tabindex="-1" aria-labelledby="restoreModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form asp-controller="Restore" asp-action="Restore" method="get">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="restoreModalLabel">Restore VM</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="modalVmId" name="vmId" />
+                    <input type="hidden" id="modalClusterId" name="clusterId" />
+
+                    <div class="mb-3">
+                        <label class="form-label">VM Name:</label>
+                        <p id="modalVmName" class="fw-bold"></p>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="modalControllerSelect" class="form-label">Source Controller:</label>
+                        <select id="modalControllerSelect" class="form-select" name="controllerId" required>
+                            <option value="" disabled selected>Choose source...</option>
+                            <option data-target="Primary">Primary</option>
+                            <option data-target="Secondary">Secondary</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="modalSnapshotSelect" class="form-label">Snapshots (by date):</label>
+                        <select id="modalSnapshotSelect" class="form-select" name="backupId" required disabled>
+                            <!-- options injected after controller pick -->
+                        </select>
+                    </div>
+
+                    <input type="hidden" name="target" id="modalTarget" />
+                </div>
+                <div class="modal-footer">
+                    <button type="submit" class="btn btn-primary">Next</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
 @section Scripts {
     <script src="~/lib/jquery/dist/jquery.min.js"></script>
     <script src="~/lib/datatables/media/js/jquery.dataTables.min.js"></script>
+    <script src="~/lib/datatables-plugins/dataTables.rowGroup.min.js"></script>
     <script>
         $(function () {
-            $('#restoreTable').DataTable({
-                order: [[5, 'desc']],  // sort by Date column
-                pageLength: 25
+          var table = $('#restoreTable').DataTable({
+            order: [[0, 'asc'], [5, 'desc']],
+            rowGroup: { dataSrc: 0 },
+            pageLength: 25
+          });
+
+          $('#restoreTable tbody').on('click', 'tr', function () {
+            var $row      = $(this);
+            var vmId      = $row.data('vm-id');
+            var vmName    = $row.data('vm-name');
+            var clusterId = $row.data('cluster-id');
+
+            // Gather all rows for this VM
+            var allRows = table.rows().nodes().to$()
+                               .filter((_,r) => $(r).data('vm-name') === vmName);
+
+            // Pull real controller IDs from the first record
+            var primaryCtrl   = allRows.first().data('primary-controller');
+            var secondaryCtrl = allRows.first().data('secondary-controller');
+
+            // Populate hidden basics
+            $('#modalVmId').val(vmId);
+            $('#modalClusterId').val(clusterId);
+            $('#modalVmName').text(vmName);
+
+            // Inject controllerId values into the <option>s
+            var $ctrl = $('#modalControllerSelect');
+            $ctrl.find('option[data-target="Primary"]')
+                 .val(primaryCtrl)
+                 .toggle(!!primaryCtrl);
+            $ctrl.find('option[data-target="Secondary"]')
+                 .val(secondaryCtrl)
+                 .toggle(!!secondaryCtrl);
+
+            // Reset selects
+            $ctrl.val('');
+            $('#modalSnapshotSelect').empty().prop('disabled', true);
+            $('#modalTarget').val('');
+
+            // When user picks source → build snapshot list
+            $ctrl.off('change').on('change', function () {
+              var tgt = $(this).find('option:selected').data('target');
+              $('#modalTarget').val(tgt);
+
+              // Only rows where data-primary/secondary is true
+              var filtered = allRows.filter((_,r) => $(r).data(tgt.toLowerCase()) === true);
+
+              var opts = filtered.map(function () {
+                return '<option value="' + $(this).data('backup-id') + '">' +
+                       $(this).data('timestamp') +
+                       '</option>';
+              }).get().join('');
+
+              $('#modalSnapshotSelect')
+                .html(opts)
+                .prop('disabled', filtered.length === 0);
             });
+
+            $('#restoreModal').modal('show');
+          });
         });
     </script>
 }

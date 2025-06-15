@@ -267,7 +267,7 @@
             const retentionUnitSelect = document.getElementById("RetentionUnit");
 
             function blockInvalidNumberKeys(evt) {
-                if (["e","E","+","-","."].includes(evt.key)) {
+                if (["e", "E", "+", "-", "."].includes(evt.key)) {
                     evt.preventDefault();
                 }
             }
@@ -280,10 +280,27 @@
                 if (isNaN(c) || c < 1) return 0;
                 switch (unit) {
                     case "Hours": return c;
-                    case "Days":  return c * 24;
+                    case "Days": return c * 24;
                     case "Weeks": return c * 168;
                 }
                 return 0;
+            }
+
+            function maxLockCount(totalHours, unit) {
+                const mul = unit === "Days" ? 24 : unit === "Weeks" ? 168 : 1;
+                let maxCnt = Math.floor((totalHours - 1) / mul);
+                return Math.min(Math.max(maxCnt, 0), 30); // can be 0 if not allowed
+            }
+
+            function clampLockInput() {
+                const totalHours = retentionInHours(
+                    retentionCountInput.value,
+                    retentionUnitSelect.value
+                );
+                const maxCnt = maxLockCount(totalHours, lockUnitSelect.value);
+                let val = parseInt(lockCountInput.value, 10);
+                if (isNaN(val) || val < 1) lockCountInput.value = 1;
+                else if (val > maxCnt) lockCountInput.value = maxCnt > 0 ? maxCnt : 1;
             }
 
             function updateVisibility() {
@@ -328,30 +345,51 @@
 
                 lockingCheckbox.disabled = false;
 
+                let selectedUnit = lockUnitSelect.value;
+                let validUnit = false;
+
                 Array.from(lockUnitSelect.options).forEach(opt => {
                     const unit = opt.value;
-                    const mul = unit === "Days" ? 24 : unit === "Weeks" ? 168 : 1;
-                    let maxCnt = Math.floor((totalHours - 1) / mul);
-                    maxCnt = Math.min(maxCnt, 30);
-
+                    const maxCnt = maxLockCount(totalHours, unit);
+                    // Only enable units where maxCnt >= 1
                     opt.disabled = maxCnt < 1;
-                    if (unit === lockUnitSelect.value) {
+                    if (!opt.disabled && unit === selectedUnit) {
+                        validUnit = true;
                         lockCountInput.max = maxCnt;
+                        // Clamp value if needed
                         if (+lockCountInput.value > maxCnt) {
                             lockCountInput.value = maxCnt;
                         }
+                        if (+lockCountInput.value < 1 || isNaN(+lockCountInput.value)) {
+                            lockCountInput.value = 1;
+                        }
                     }
                 });
+
+                // If selected unit is disabled, pick the first enabled
+                if (!validUnit) {
+                    const firstEnabled = Array.from(lockUnitSelect.options).find(o => !o.disabled);
+                    if (firstEnabled) {
+                        lockUnitSelect.value = firstEnabled.value;
+                        // Now set the max and clamp again
+                        const maxCnt = maxLockCount(totalHours, firstEnabled.value);
+                        lockCountInput.max = maxCnt;
+                        lockCountInput.value = Math.max(1, Math.min(lockCountInput.value, maxCnt));
+                    }
+                }
             }
 
-            lockingCheckbox.addEventListener("change", () => {
-                lockingRetentionContainer.classList.toggle("d-none", !lockingCheckbox.checked);
-                if (lockingCheckbox.checked) recalcLockingOptions();
-            });
+            if (lockingCheckbox) {
+                lockingCheckbox.addEventListener("change", () => {
+                    lockingRetentionContainer.classList.toggle("d-none", !lockingCheckbox.checked);
+                    if (lockingCheckbox.checked) recalcLockingOptions();
+                });
+            }
 
             retentionCountInput.addEventListener("input", recalcLockingOptions);
             retentionUnitSelect.addEventListener("change", recalcLockingOptions);
             lockUnitSelect.addEventListener("change", recalcLockingOptions);
+            lockCountInput.addEventListener("input", clampLockInput);
 
             const backupModal = document.getElementById('backupModal');
             backupModal.addEventListener('show.bs.modal', function (event) {
