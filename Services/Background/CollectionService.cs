@@ -19,6 +19,7 @@
  */
 
 using BareProx.Data;
+using BareProx.Models;
 using BareProx.Services;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -81,7 +82,6 @@ public class CollectionService
     {
         using var scope = _services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        var netapp = scope.ServiceProvider.GetRequiredService<INetappService>();
         var netappSnapmirrorService = scope.ServiceProvider.GetRequiredService<INetappSnapmirrorService>();
 
         // Step 1: Find all PolicyUuids in use
@@ -93,24 +93,71 @@ public class CollectionService
 
         foreach (var pair in refs)
         {
-            if (await db.SnapMirrorPolicies.AnyAsync(p => p.Uuid == pair.PolicyUuid, ct))
-                continue; // Already present
-
             try
             {
-                // This method should fetch and map policy+retentions for a single controller+uuid
-                var policy = await netappSnapmirrorService.SnapMirrorPolicyGet(pair.DestinationControllerId, pair.PolicyUuid!);
-                if (policy != null)
+                var fetchedPolicy = await netappSnapmirrorService.SnapMirrorPolicyGet(pair.DestinationControllerId, pair.PolicyUuid!);
+                if (fetchedPolicy == null)
+                    continue;
+
+                var dbPolicy = await db.SnapMirrorPolicies
+                    .Include(p => p.Retentions)
+                    .FirstOrDefaultAsync(p => p.Uuid == pair.PolicyUuid, ct);
+
+                if (dbPolicy == null)
                 {
-                    db.SnapMirrorPolicies.Add(policy);
+                    // Not present: Add new
+                    db.SnapMirrorPolicies.Add(fetchedPolicy);
                     await db.SaveChangesAsync(ct);
+                    continue;
                 }
+
+                // --- Compare fields, update if changed ---
+                bool changed = false;
+                if (dbPolicy.Name != fetchedPolicy.Name) { dbPolicy.Name = fetchedPolicy.Name; changed = true; }
+                if (dbPolicy.Scope != fetchedPolicy.Scope) { dbPolicy.Scope = fetchedPolicy.Scope; changed = true; }
+                if (dbPolicy.Type != fetchedPolicy.Type) { dbPolicy.Type = fetchedPolicy.Type; changed = true; }
+                if (dbPolicy.NetworkCompressionEnabled != fetchedPolicy.NetworkCompressionEnabled) { dbPolicy.NetworkCompressionEnabled = fetchedPolicy.NetworkCompressionEnabled; changed = true; }
+                if (dbPolicy.Throttle != fetchedPolicy.Throttle) { dbPolicy.Throttle = fetchedPolicy.Throttle; changed = true; }
+
+                // --- Deep compare retentions ---
+                // Simplest: Remove all and re-add if any difference (you can optimize if needed)
+                if (!AreRetentionsEqual(dbPolicy.Retentions, fetchedPolicy.Retentions))
+                {
+                    dbPolicy.Retentions.Clear();
+                    foreach (var ret in fetchedPolicy.Retentions)
+                        dbPolicy.Retentions.Add(ret);
+                    changed = true;
+                }
+
+                if (changed)
+                    await db.SaveChangesAsync(ct);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to sync SnapMirror policy for controller {ControllerId} and policy {PolicyUuid}", pair.DestinationControllerId, pair.PolicyUuid);
             }
-        } }
+        }
+    }
+
+    // Helper for deep comparing two retention lists
+    private static bool AreRetentionsEqual(
+        IList<SnapMirrorPolicyRetention> a,
+        IList<SnapMirrorPolicyRetention> b)
+    {
+        if (a.Count != b.Count)
+            return false;
+        for (int i = 0; i < a.Count; i++)
+        {
+            if (a[i].Label != b[i].Label ||
+                a[i].Count != b[i].Count ||
+                a[i].Preserve != b[i].Preserve ||
+                a[i].Warn != b[i].Warn ||
+                a[i].Period != b[i].Period)
+                return false;
+        }
+        return true;
+    }
+
 
     private async Task CheckProxmoxClusterAndHostsStatusAsync(CancellationToken ct)
     {
@@ -194,12 +241,3 @@ public class CollectionService
     }
 
 }
-
-
-
-
-
-
-
-
-
