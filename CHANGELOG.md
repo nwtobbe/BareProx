@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - …
 
-## [1.0.2506.1309] – 2025-06-13
+## [1.0.2506.1614] – 2025-06-16
 
 ### Added
 
@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Restore view now grouping vm:s and a new dialogue appears to select restore point when clicking on a vm.
 - User management. Now we can create lock and delete users again.
 - Restore vm as create new vm. Changed move vm-disks to new vmid to instead create symlink to new id. Just to mitigate low space issues.
   And it's faster.

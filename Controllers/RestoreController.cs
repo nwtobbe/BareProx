@@ -54,32 +54,30 @@ namespace BareProx.Controllers
 
         public async Task<IActionResult> Index(CancellationToken ct)
         {
-            // 1) Load all backup‐points
+            // 1) Load all backup points
             var backups = await _context.BackupRecords
-                                        .OrderByDescending(r => r.TimeStamp)
-                                        .ToListAsync(ct);
+                .OrderByDescending(r => r.TimeStamp)
+                .ToListAsync(ct);
 
             // 2) Load all snapshots, keyed by their JobId
             var snapsByJob = await _context.NetappSnapshots
-                                           .ToDictionaryAsync(s => s.JobId, ct);
+                .ToDictionaryAsync(s => s.JobId, ct);
 
             // 3) Get the Proxmox cluster info
             var proxCluster = await _context.ProxmoxClusters
-                                            .Select(c => new { c.Id, c.Name })
-                                            .FirstOrDefaultAsync(ct);
+                .Select(c => new { c.Id, c.Name })
+                .FirstOrDefaultAsync(ct);
             if (proxCluster == null)
                 return StatusCode(500, "Cluster not configured");
 
-            // 4) Build your list
-            var vmList = backups.Select(r =>
+            // 4) Build the flat list
+            var vmRestorePoints = backups.Select(r =>
             {
-                // find the snapshot row for this record’s JobId (if any)
                 snapsByJob.TryGetValue(r.JobId, out var snap);
-
                 return new RestoreViewModel
                 {
                     BackupId = r.Id,
-                    JobId = r.JobId,                   // carry it if you need it
+                    JobId = r.JobId,
                     VmName = r.VmName.ToString(),
                     VmId = r.VMID.ToString(),
                     SnapshotName = r.SnapshotName,
@@ -88,18 +86,30 @@ namespace BareProx.Controllers
                     ClusterName = proxCluster.Name,
                     ClusterId = proxCluster.Id,
                     TimeStamp = _tz.ConvertUtcToApp(r.TimeStamp),
-
-                    // these come straight from that one NetappSnapshot row
                     IsOnPrimary = snap?.ExistsOnPrimary ?? false,
                     PrimaryControllerId = snap?.PrimaryControllerId ?? 0,
                     IsOnSecondary = snap?.ExistsOnSecondary ?? false,
                     SecondaryControllerId = snap?.SecondaryControllerId
                 };
-            })
-            .ToList();
+            }).ToList();
 
-            return View(vmList);
+            // 5) Group by VM (using both ID and Name for uniqueness)
+            var grouped = vmRestorePoints
+                .GroupBy(x => new { x.VmId, x.VmName })
+                .Select(g => new RestoreVmGroupViewModel
+                {
+                    VmId = g.Key.VmId,
+                    VmName = g.Key.VmName,
+                    ClusterName = g.First().ClusterName,
+                    ClusterId = g.First().ClusterId,
+                    RestorePoints = g.OrderByDescending(x => x.TimeStamp).ToList()
+                })
+                .OrderBy(x => x.VmName)
+                .ToList();
+
+            return View(grouped);
         }
+
 
         public async Task<IActionResult> Restore(
             int backupId,

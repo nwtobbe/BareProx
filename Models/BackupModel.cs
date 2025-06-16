@@ -140,9 +140,13 @@ namespace BareProx.Models
         public string MountIp { get; set; } = string.Empty;
     }
 
-
-
-
-
+    public class RestoreVmGroupViewModel
+    {
+        public string VmId { get; set; }
+        public string VmName { get; set; }
+        public string ClusterName { get; set; }
+        public int ClusterId { get; set; }
+        public List<RestoreViewModel> RestorePoints { get; set; }
+    }
 }
 
