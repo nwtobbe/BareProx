@@ -195,16 +195,17 @@ namespace BareProx.Services
             int controllerId,
             CancellationToken ct = default)
         {
-            // 1) Fetch controller
+            // Fetch controller
             var controller = await _context.NetappControllers.FindAsync(controllerId, ct);
             if (controller == null) return false;
 
             var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
 
-            // 2) Lookup source export policy *name*
+            // Lookup source export policy
             var srcLookupUrl = $"{baseUrl}storage/volumes" +
                 $"?name={Uri.EscapeDataString(sourceVolumeName)}" +
                 "&fields=nas.export_policy.name";
+
             var srcResp = await httpClient.GetAsync(srcLookupUrl, ct);
             srcResp.EnsureSuccessStatusCode();
 
@@ -221,19 +222,41 @@ namespace BareProx.Services
             if (string.IsNullOrWhiteSpace(policyName))
                 return false;
 
-            // 3) Lookup clone’s UUID
-            var tgtLookupUrl = $"{baseUrl}storage/volumes" +
-                $"?name={Uri.EscapeDataString(targetCloneName)}&fields=uuid";
-            var tgtResp = await httpClient.GetAsync(tgtLookupUrl, ct);
-            tgtResp.EnsureSuccessStatusCode();
+            // Wait for clone to become available and online
+            string? tgtUuid = null;
+            for (int attempt = 0; attempt < 30; attempt++)
+            {
+                var tgtLookupUrl = $"{baseUrl}storage/volumes" +
+                    $"?name={Uri.EscapeDataString(targetCloneName)}&fields=uuid,state";
 
-            using var tgtDoc = JsonDocument.Parse(await tgtResp.Content.ReadAsStringAsync(ct));
-            var tgtRecs = tgtDoc.RootElement.GetProperty("records");
-            if (tgtRecs.GetArrayLength() == 0) return false;
+                var tgtResp = await httpClient.GetAsync(tgtLookupUrl, ct);
+                tgtResp.EnsureSuccessStatusCode();
 
-            var tgtUuid = tgtRecs[0].GetProperty("uuid").GetString()!;
+                using var tgtDoc = JsonDocument.Parse(await tgtResp.Content.ReadAsStringAsync(ct));
+                var tgtRecs = tgtDoc.RootElement.GetProperty("records");
 
-            // 4) PATCH by name instead of id
+                if (tgtRecs.GetArrayLength() > 0)
+                {
+                    var volume = tgtRecs[0];
+                    var state = volume.TryGetProperty("state", out var st) ? st.GetString() : null;
+
+                    if (state != null && state.Equals("online", StringComparison.OrdinalIgnoreCase))
+                    {
+                        tgtUuid = volume.GetProperty("uuid").GetString();
+                        break;
+                    }
+                }
+
+                await Task.Delay(1000, ct);
+            }
+
+            if (string.IsNullOrEmpty(tgtUuid))
+            {
+                _logger.LogError("Clone volume '{TargetClone}' did not become available within timeout.", targetCloneName);
+                return false;
+            }
+
+            // PATCH export policy
             var patchUrl = $"{baseUrl}storage/volumes/{tgtUuid}";
             var payload = new
             {
@@ -248,17 +271,26 @@ namespace BareProx.Services
                 Encoding.UTF8,
                 "application/json"
             );
-            var request = new HttpRequestMessage(HttpMethod.Patch, patchUrl) { Content = content };
-            var patchResp = await httpClient.SendAsync(request, ct);
 
-            if (!patchResp.IsSuccessStatusCode)
+            // Retry PATCH up to 3 times if needed
+            for (int retry = 0; retry < 3; retry++)
             {
+                var request = new HttpRequestMessage(HttpMethod.Patch, patchUrl) { Content = content };
+                var patchResp = await httpClient.SendAsync(request, ct);
+
+                if (patchResp.IsSuccessStatusCode)
+                    return true;
+
                 var err = await patchResp.Content.ReadAsStringAsync(ct);
-                _logger.LogError("Export policy patch failed: {0}", err);
+                _logger.LogWarning("Attempt {Retry}/3: Export policy patch failed: {Error}", retry + 1, err);
+
+                await Task.Delay(2000, ct); // Wait before retry
             }
 
-            return patchResp.IsSuccessStatusCode;
+            _logger.LogError("Failed to apply export policy after multiple retries for volume '{Clone}'.", targetCloneName);
+            return false;
         }
+
 
 
         public async Task<List<string>> ListFlexClonesAsync(int controllerId, CancellationToken ct = default)

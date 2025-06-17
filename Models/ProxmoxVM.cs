@@ -38,4 +38,19 @@ namespace BareProx.Models
         public int Vmstate { get; set; } = 0;  // ← optional: 1 = includes memory
     }
 
+    public class ProxmoxSnapshot
+    {
+        public string Name { get; set; }
+        public Dictionary<string, string> Disks { get; set; } = new();
+        public Dictionary<string, string> Metadata { get; set; } = new();
+    }
+
+    public class ProxmoxVmWithSnapshots
+    {
+        public int VmId { get; set; }
+        public string Name { get; set; }
+        public List<ProxmoxSnapshot> Snapshots { get; set; } = new();
+        // ...other properties (current disks, etc.)
+    }
+
 }

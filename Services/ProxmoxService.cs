@@ -21,11 +21,16 @@
 using BareProx.Data;
 using BareProx.Models;
 using Microsoft.EntityFrameworkCore;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using System.Diagnostics;
+using System.Linq;                    // for OrderBy/Select
+using System.Security.Cryptography;   // for SHA1
+using Renci.SshNet;
+
 
 namespace BareProx.Services
 {
@@ -36,19 +41,22 @@ namespace BareProx.Services
         private readonly INetappService _netappService;
         private readonly IEncryptionService _encryptionService;
         private readonly INetappVolumeService _netappVolumeService;
+        private readonly ILogger<RestoreService> _logger;
 
         public ProxmoxService(
             ApplicationDbContext context,
             IHttpClientFactory httpClientFactory,
             INetappService netappService,
             IEncryptionService encryptionService,
-            INetappVolumeService netappVolumeService)
+            INetappVolumeService netappVolumeService,
+            ILogger<RestoreService> logger)
         {
             _context = context;
             _httpClientFactory = httpClientFactory;
             _netappService = netappService;
             _encryptionService = encryptionService;
             _netappVolumeService = netappVolumeService;
+            _logger = logger;
         }
 
         public async Task<bool> AuthenticateAndStoreTokenAsync(int clusterId, CancellationToken ct)
@@ -128,33 +136,63 @@ namespace BareProx.Services
         /// Sends a request and retries once if a 401 is returned, refreshing the API token.
         /// </summary>
         private async Task<HttpResponseMessage> SendWithRefreshAsync(
-            ProxmoxCluster cluster,
-            HttpMethod method,
-            string url,
-            HttpContent content = null,
-            CancellationToken ct = default)
+        ProxmoxCluster cluster,
+        HttpMethod method,
+        string url,
+        HttpContent content = null,
+        CancellationToken ct = default)
         {
             try
             {
                 var client = await GetAuthenticatedClientAsync(cluster, ct);
-                var request = new HttpRequestMessage(method, url) { Content = content };
+
+                // Buffer the request content so we can log it
+                string requestBody = null;
+                if (content != null)
+                {
+                    requestBody = await content.ReadAsStringAsync(ct);
+                }
+
+                var request = new HttpRequestMessage(method, url)
+                {
+                    Content = content
+                };
+
+                _logger.LogDebug(
+                    "▶ Proxmox {Method} {Url}\nPayload:\n{Payload}",
+                    method, url, requestBody ?? "<no content>");
+
+                // first attempt
                 var response = await client.SendAsync(request, ct);
-                //string raw = await response.Content.ReadAsStringAsync();
-                //Console.WriteLine($"Snapshot API response ({(int)response.StatusCode}): {raw}");
+
+                // capture the response body
+                var responseBody = await response.Content.ReadAsStringAsync(ct);
+                _logger.LogDebug(
+                    "◀ Proxmox {StatusCode} {ReasonPhrase}\nBody:\n{Body}",
+                    (int)response.StatusCode, response.ReasonPhrase, responseBody);
+
+                // retry on 401
                 if (response.StatusCode == HttpStatusCode.Unauthorized)
                 {
-                    // Re-authenticate and update tokens in DB
+                    _logger.LogInformation("Proxmox auth expired, re-authenticating…");
                     var reauth = await AuthenticateAndStoreTokenAsync(cluster, ct);
                     if (!reauth)
                         throw new ServiceUnavailableException("Authentication failed: missing token or CSRF.");
 
-                    // reload tokens
+                    // reload fresh tokens
                     await _context.Entry(cluster).ReloadAsync(ct);
                     client = await GetAuthenticatedClientAsync(cluster, ct);
 
-                    // retry once
-                    request = new HttpRequestMessage(method, url) { Content = content };
-                    response = await client.SendAsync(request,ct);
+                    // rebuild request (and re-buffer)
+                    request = new HttpRequestMessage(method, url);
+                    if (requestBody != null)
+                        request.Content = new StringContent(requestBody, Encoding.UTF8, content.Headers.ContentType.MediaType);
+
+                    response = await client.SendAsync(request, ct);
+                    responseBody = await response.Content.ReadAsStringAsync(ct);
+                    _logger.LogDebug(
+                        "◀ (retry) Proxmox {StatusCode} {ReasonPhrase}\nBody:\n{Body}",
+                        (int)response.StatusCode, response.ReasonPhrase, responseBody);
                 }
 
                 response.EnsureSuccessStatusCode();
@@ -162,16 +200,21 @@ namespace BareProx.Services
             }
             catch (HttpRequestException ex)
             {
-                // This catches socket errors, timeouts, connection refused, etc.
+                // socket/timeout/etc
                 var host = GetQueryableHosts(cluster).FirstOrDefault()?.HostAddress ?? "unknown";
                 _ = _context.ProxmoxClusters
                     .Where(c => c.Id == cluster.Id)
-                    .ExecuteUpdateAsync(b => b.SetProperty(c => c.LastStatus, _ => $"Unreachable: {ex.Message}")
-                                             .SetProperty(c => c.LastChecked, _ => DateTime.UtcNow), ct);
+                    .ExecuteUpdateAsync(b => b
+                        .SetProperty(c => c.LastStatus, _ => $"Unreachable: {ex.Message}")
+                        .SetProperty(c => c.LastChecked, _ => DateTime.UtcNow),
+                    ct);
+
                 throw new ServiceUnavailableException(
                     $"Cannot reach Proxmox host at {host}:8006. {ex.Message}", ex);
             }
         }
+
+
 
 
         public async Task<bool> CheckIfVmExistsAsync(ProxmoxCluster cluster, ProxmoxHost host, int vmId, CancellationToken ct = default)
@@ -267,7 +310,7 @@ namespace BareProx.Services
                     // fetch full config
                     var cfgJson = await GetVmConfigAsync(cluster, host.Hostname, vmId, ct);
                     using var cfgDoc = JsonDocument.Parse(cfgJson);
-                    var cfgData = cfgDoc.RootElement.GetProperty("data");
+                    var cfgData = cfgDoc.RootElement.GetProperty("config");
 
                     var vmDescriptor = new ProxmoxVM
                     {
@@ -304,7 +347,7 @@ namespace BareProx.Services
 
 
 
-        public async Task<string> GetVmConfigAsync(
+        public async Task<string> GetVmConfigAsync2(
             ProxmoxCluster cluster,
             string host,
             int vmId,
@@ -315,6 +358,104 @@ namespace BareProx.Services
 
             var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
             return await resp.Content.ReadAsStringAsync(ct);
+        }
+
+        public async Task<string> GetRawProxmoxVmConfigAsync(
+            string host,
+            string username,
+            string password,
+            int vmId)
+        {
+            return await Task.Run(() =>
+            {
+                var configPath = $"/etc/pve/qemu-server/{vmId}.conf";
+                using var client = new SshClient(host, username, password);
+                client.Connect();
+                using var cmd = client.CreateCommand($"cat {configPath}");
+                var result = cmd.Execute();
+                client.Disconnect();
+                return result;
+            });
+        }
+
+        public async Task<string> GetVmConfigAsync(
+    ProxmoxCluster cluster,
+    string host,
+    int vmId,
+    CancellationToken ct = default)
+        {
+            // Find the correct host address
+            var hostAddress = GetQueryableHosts(cluster).First(h => h.Hostname == host).HostAddress;
+            // Prepare SSH user (strip @pam/@pve if present)
+            var sshUser = cluster.Username;
+            int atIndex = sshUser.IndexOf('@');
+            if (atIndex > 0)
+                sshUser = sshUser.Substring(0, atIndex);
+
+            // Get raw config text via SSH
+            var rawConfig = await GetRawProxmoxVmConfigAsync(
+                hostAddress,
+                sshUser,
+                _encryptionService.Decrypt(cluster.PasswordHash),
+                vmId
+            );
+
+            // Parse raw config into a C# object with:
+            // - root config
+            // - snapshots (dictionary: name => dictionary)
+            var (rootConfig, snapshots) = ParseProxmoxConfigWithSnapshots(rawConfig);
+
+            // Build JSON result
+            var result = new Dictionary<string, object>
+            {
+                ["config"] = rootConfig
+            };
+
+            if (snapshots.Count > 0)
+            {
+                result["snapshots"] = snapshots;
+            }
+
+            return JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
+        }
+
+        private (Dictionary<string, string> config, Dictionary<string, Dictionary<string, string>> snapshots)
+       ParseProxmoxConfigWithSnapshots(string raw)
+        {
+            var config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var snapshots = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+
+            Dictionary<string, string> currentSection = config;
+            string? currentSnapshot = null;
+
+            foreach (var line in raw.Split('\n'))
+            {
+                var trimmed = line.Trim();
+                if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith("#"))
+                    continue;
+
+                // Section header (e.g. [test1], [snapshot_xyz])
+                var sectionMatch = Regex.Match(trimmed, @"^\[(.+)\]$");
+                if (sectionMatch.Success)
+                {
+                    currentSnapshot = sectionMatch.Groups[1].Value;
+                    currentSection = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    snapshots[currentSnapshot] = currentSection;
+                    continue;
+                }
+
+                // Key: value line
+                var idx = trimmed.IndexOf(':');
+                if (idx < 0)
+                    continue;
+
+                var key = trimmed.Substring(0, idx).Trim();
+                var val = trimmed.Substring(idx + 1).Trim();
+
+                currentSection[key] = val;
+            }
+
+            return (config, snapshots);
         }
 
         public async Task PauseVmAsync(
@@ -589,110 +730,265 @@ namespace BareProx.Services
         }
 
         public async Task<bool> RestoreVmFromConfigAsync(
-            string originalConfigJson,
-            string hostAddress,
-            string newVmName,
-            string cloneStorageName,
-            int ControllerId,
-            bool startDisconnected,
-            CancellationToken ct = default)
+        string originalConfigJson,
+        string hostAddress,
+        string newVmName,
+        string cloneStorageName,
+        int controllerId,
+        bool startDisconnected,
+        CancellationToken ct = default)
         {
-            // 1) Parse and validate input JSON
             using var rootDoc = JsonDocument.Parse(originalConfigJson);
-            if (!rootDoc.RootElement.TryGetProperty("data", out var config))
+            if (!rootDoc.RootElement.TryGetProperty("config", out var config))
                 return false;
 
-            // 2) Lookup host
             var host = await _context.ProxmoxHosts
                 .FirstOrDefaultAsync(h => h.HostAddress == hostAddress, ct);
             if (host == null || string.IsNullOrWhiteSpace(host.Hostname))
                 return false;
             var nodeName = host.Hostname;
 
-            // 3) Lookup cluster (for auth context)
             var cluster = await _context.ProxmoxClusters
                 .Include(c => c.Hosts)
                 .FirstOrDefaultAsync(ct);
             if (cluster == null || !GetQueryableHosts(cluster).Any())
                 return false;
 
-            // 4) Get next free VMID
             var nextIdUrl = $"https://{hostAddress}:8006/api2/json/cluster/nextid";
             var idResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, nextIdUrl, null, ct);
-            var idJson = await idResp.Content.ReadAsStringAsync(ct);
-            using var idDoc = JsonDocument.Parse(idJson);
+            using var idDoc = JsonDocument.Parse(await idResp.Content.ReadAsStringAsync(ct));
             var vmid = idDoc.RootElement.GetProperty("data").GetString();
             if (string.IsNullOrEmpty(vmid))
                 return false;
 
-            // 5) Flatten existing config into form fields
             var payload = FlattenConfig(config);
 
-            // 6) Apply our overrides
+            // Detect old storage name from any disk key
+            string? oldStorageName = null;
+            var diskKeys = payload.Keys
+                .Where(k => Regex.IsMatch(k, @"^(scsi|virtio|ide|sata)\d+$", RegexOptions.IgnoreCase))
+                .ToList();
+
+            foreach (var key in diskKeys)
+            {
+                var val = payload[key];
+                if (!string.IsNullOrEmpty(val) && val.Contains(":"))
+                {
+                    oldStorageName = val.Split(':', 2)[0].Trim();
+                    break;
+                }
+            }
+
+            if (string.IsNullOrEmpty(oldStorageName))
+                throw new InvalidOperationException("Failed to determine oldStorageName from config.");
+
+
             payload["name"] = newVmName;
             payload["vmid"] = vmid;
             payload.Remove("meta");
             payload.Remove("digest");
             payload["protection"] = "0";
 
-            // 7) Handle disconnected start
             if (startDisconnected)
             {
-                // find any key like "net0", "net1", "net2", etc.
-                var nets = payload.Keys
-                    .Where(k => Regex.IsMatch(k, @"^net\d+$", RegexOptions.IgnoreCase))
-                    .ToList();
+                foreach (var netKey in payload.Keys
+                         .Where(k => Regex.IsMatch(k, @"^net\d+$", RegexOptions.IgnoreCase))
+                         .ToList())
+                {
+                    var def = payload[netKey];
 
-                foreach (var netKey in nets)
-                    payload.Remove(netKey);
+                    // if there's already a link_down setting, just overwrite it
+                    if (Regex.IsMatch(def, @"\blink_down=\d"))
+                    {
+                        payload[netKey] = Regex.Replace(def, @"\blink_down=\d", "link_down=1");
+                    }
+                    else
+                    {
+                        // otherwise append it
+                        payload[netKey] = def + ",link_down=1";
+                    }
+                }
             }
 
-            // 8) Remap **all** disks to our clone storage
+            var oldVmid = ExtractOldVmidFromConfig(payload);
+            if (string.IsNullOrEmpty(oldVmid))
+                throw new InvalidOperationException("Failed to determine oldVmid from config.");
 
-            // 8a) Extract old VMID from config (uses payload)
-            string oldVmid = ExtractOldVmidFromConfig(payload);
-
-            // 8b) Rename all files/folders in storage
-            await _netappService.MoveAndRenameAllVmFilesAsync(
-                volumeName: cloneStorageName,
-                controllerId: ControllerId,
-                oldvmid: oldVmid,
-                newvmid: vmid);
-
-            // 8c) Update disk paths in config payload
+            await _netappService.MoveAndRenameAllVmFilesAsync(cloneStorageName, controllerId, oldVmid, vmid);
             UpdateDiskPathsInConfig(payload, oldVmid, vmid, cloneStorageName);
 
-            // 9) Ensure a storage parameter is present
+            // --- Global remap of old storage name to new storage name in all values of payload ---
+            foreach (var key in payload.Keys.ToList())
+            {
+                var val = payload[key];
+                if (!string.IsNullOrEmpty(val))
+                {
+                    val = val.Replace(oldStorageName, cloneStorageName, StringComparison.OrdinalIgnoreCase);
+                    payload[key] = val;
+                }
+            }
+
+            // Also explicitly remap vmstate if present (usually handled above, but just in case)
+            if (payload.ContainsKey("vmstate"))
+            {
+                payload["vmstate"] = RemapStorageAndVmid(payload["vmstate"], oldStorageName, cloneStorageName, oldVmid, vmid);
+            }
+
+            var sb = new StringBuilder();
+
+            // Write main config
+            foreach (var kv in payload)
+                sb.AppendLine($"{kv.Key}: {kv.Value}");
+
+            // Handle snapshots if any
+            if (rootDoc.RootElement.TryGetProperty("snapshots", out var snapElem) && snapElem.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var snapProp in snapElem.EnumerateObject())
+                {
+                    // Write snapshot section header WITHOUT "snapshot_" prefix
+                    sb.AppendLine($"[{snapProp.Name}]");
+
+                    // Flatten snapshot dictionary
+                    var snapDict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var snapLine in snapProp.Value.EnumerateObject())
+                    {
+                        snapDict[snapLine.Name] = snapLine.Value.GetString() ?? "";
+                    }
+
+                    if (startDisconnected)
+                    {
+                        foreach (var netKey in payload.Keys
+                                 .Where(k => Regex.IsMatch(k, @"^net\d+$", RegexOptions.IgnoreCase))
+                                 .ToList())
+                        {
+                            var def = payload[netKey];
+
+                            // if there's already a link_down setting, just overwrite it
+                            if (Regex.IsMatch(def, @"\blink_down=\d"))
+                            {
+                                payload[netKey] = Regex.Replace(def, @"\blink_down=\d", "link_down=1");
+                            }
+                            else
+                            {
+                                // otherwise append it
+                                payload[netKey] = def + ",link_down=1";
+                            }
+                        }
+                    }
+
+                    // Remap disk paths inside snapshot (keys like scsi0, virtio1, etc.)
+                    UpdateDiskPathsInConfig(snapDict, oldVmid, vmid, cloneStorageName);
+
+                    // Global remap for all snapshot values: old storage → new storage
+                    foreach (var key in snapDict.Keys.ToList())
+                    {
+                        var val = snapDict[key];
+                        if (!string.IsNullOrEmpty(val))
+                        {
+                            snapDict[key] = val.Replace(oldStorageName, cloneStorageName, StringComparison.OrdinalIgnoreCase);
+                        }
+                    }
+
+                    // Explicitly remap vmstate value (may contain storage & vmid)
+                    if (snapDict.TryGetValue("vmstate", out var vmstateValue))
+                    {
+                        snapDict["vmstate"] = RemapStorageAndVmid(vmstateValue, oldStorageName, cloneStorageName, oldVmid, vmid);
+                    }
+
+                    // Write out remapped snapshot properties
+                    foreach (var snapKvp in snapDict)
+                        sb.AppendLine($"{snapKvp.Key}: {snapKvp.Value}");
+                }
+            }
+
+
+            // Ensure "storage" key in main payload is set to cloneStorageName
             if (!payload.ContainsKey("storage"))
-            {
                 payload["storage"] = cloneStorageName;
+
+            var sshUser = cluster.Username;
+            int atIdx = sshUser.IndexOf('@');
+            if (atIdx > 0) sshUser = sshUser.Substring(0, atIdx);
+            string sshPass = _encryptionService.Decrypt(cluster.PasswordHash);
+
+            var configPath = $"/etc/pve/qemu-server/{vmid}.conf";
+            var configContent = sb.ToString();
+
+            // Generate a unique EOF marker to avoid conflicts
+            var eofMarker = "EOF_" + Guid.NewGuid().ToString("N");
+
+            var sshCmd = $"cat > {configPath} <<'{eofMarker}'\n{configContent}\n{eofMarker}\n";
+
+            using (var ssh = new Renci.SshNet.SshClient(hostAddress, sshUser, sshPass))
+            {
+                ssh.Connect();
+                using (var cmd = ssh.CreateCommand(sshCmd))
+                {
+                    var result = cmd.Execute();
+                    if (cmd.ExitStatus != 0)
+                    {
+                        ssh.Disconnect();
+                        return false; // or throw exception if preferred
+                    }
+                }
+                ssh.Disconnect();
             }
 
-            // 10) POST to create the new VM
-            var url = $"https://{hostAddress}:8006/api2/json/nodes/{nodeName}/qemu";
-            var content = new FormUrlEncodedContent(payload);
-
-            try
-            {
-                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Post, url, content, ct);
-                var respBody = await resp.Content.ReadAsStringAsync(ct);
-                Console.WriteLine($"RESTORE VM HTTP {(int)resp.StatusCode}: {respBody}");
-                return resp.IsSuccessStatusCode;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error restoring VM: {ex}");
-                return false;
-            }
+            return true;
 
         }
 
+
+
+
+
+
+        string RemapStorageAndVmid(string input, string oldStorage, string newStorage, string oldVmid, string newVmid)
+        {
+            if (string.IsNullOrEmpty(input))
+                return input;
+
+            // Replace old storage name
+            var updated = input.Replace(oldStorage, newStorage, StringComparison.OrdinalIgnoreCase);
+
+            // Replace old VMID in paths — both in directory and filename
+            updated = Regex.Replace(updated, $@"(?<=[:/]){oldVmid}(?=[/\\])", newVmid);
+            updated = Regex.Replace(updated, $@"vm-{oldVmid}-", $"vm-{newVmid}-");
+
+            return updated;
+        }
+
+          public static string CalculateDigest(IDictionary<string, string> payload)
+        {
+            // 1) Sort keys and build lines
+            var lines = payload
+                .OrderBy(kvp => kvp.Key, StringComparer.Ordinal)
+                .Select(kvp => $"{kvp.Key}: {kvp.Value}");
+
+            // 2) Join with newlines and add a trailing newline
+            var configText = string.Join("\n", lines) + "\n";
+
+            // 3) Compute SHA-1 hash
+            using var sha1 = SHA1.Create();
+            var bytes = Encoding.UTF8.GetBytes(configText);
+            var hash = sha1.ComputeHash(bytes);
+
+            // 4) Convert to lowercase hex string
+            var sb = new StringBuilder(hash.Length * 2);
+            foreach (var b in hash)
+                sb.Append(b.ToString("x2"));
+
+            return sb.ToString();
+        }
         private string ExtractOldVmidFromConfig(Dictionary<string, string> payload)
         {
             var diskRegex = new Regex(@"^(scsi|virtio|sata|ide)\d+$", RegexOptions.IgnoreCase);
             foreach (var diskKey in payload.Keys.Where(k => diskRegex.IsMatch(k)))
             {
-                var diskVal = payload[diskKey];
+                var diskVal = payload[diskKey]?.Trim() ?? "";
+                if (string.IsNullOrEmpty(diskVal))
+                    continue;
+
                 if (!diskVal.Contains(":"))
                     continue;
 
@@ -700,18 +996,29 @@ namespace BareProx.Services
                 if (parts.Length < 2)
                     continue;
 
-                var diskPath = parts[1]; // e.g. "101/vm-101-disk-0.qcow2,discard=on,size=32G,ssd=1"
-                                         // Look for pattern /{vmid}/vm-{vmid}- or just vm-{vmid}- in the filename
+                var diskPath = parts[1].Trim(); // e.g. "111/vm-111-disk-0.qcow2,iothread=1,size=32G"
+
+                // Look for pattern "/{vmid}/vm-{vmid}-"
                 var match = Regex.Match(diskPath, @"(\d+)/vm-(\d+)-");
                 if (match.Success)
-                    return match.Groups[2].Value; // VMID from "vm-101-disk-0.qcow2"
-                                                  // fallback: look for just vm-{vmid}- in the string
+                {
+                    var vmid = match.Groups[2].Value.Trim();
+                    if (!string.IsNullOrEmpty(vmid))
+                        return vmid;
+                }
+
+                // Fallback: look for just "vm-{vmid}-" in the string
                 match = Regex.Match(diskPath, @"vm-(\d+)-");
                 if (match.Success)
-                    return match.Groups[1].Value;
+                {
+                    var vmid = match.Groups[1].Value.Trim();
+                    if (!string.IsNullOrEmpty(vmid))
+                        return vmid;
+                }
             }
             throw new Exception("Could not determine old VMID from disk configuration.");
         }
+
         private void UpdateDiskPathsInConfig(
            Dictionary<string, string> payload,
            string oldVmid,
@@ -753,60 +1060,85 @@ namespace BareProx.Services
             }
         }
 
-
         public async Task<bool> RestoreVmFromConfigWithOriginalIdAsync(
     string originalConfigJson,
     string hostAddress,
     int originalVmId,
-    string storageName,
+    string cloneStorageName,
     bool startDisconnected,
     CancellationToken ct = default)
         {
-            // 1) Parse and validate input JSON
             using var rootDoc = JsonDocument.Parse(originalConfigJson);
-            if (!rootDoc.RootElement.TryGetProperty("data", out var config))
+            // ←— look for either "config" or "data"
+            if (!rootDoc.RootElement.TryGetProperty("config", out var config) &&
+                !rootDoc.RootElement.TryGetProperty("data", out config))
+            {
                 return false;
+            }
 
-            // 2) Lookup host
             var host = await _context.ProxmoxHosts
                 .FirstOrDefaultAsync(h => h.HostAddress == hostAddress, ct);
             if (host == null || string.IsNullOrWhiteSpace(host.Hostname))
                 return false;
             var nodeName = host.Hostname;
 
-            // 3) Lookup cluster (for auth context)
             var cluster = await _context.ProxmoxClusters
                 .Include(c => c.Hosts)
                 .FirstOrDefaultAsync(ct);
             if (cluster == null || !GetQueryableHosts(cluster).Any())
                 return false;
 
-            // 4) Use the original VMID directly
             var vmid = originalVmId.ToString();
 
-            // 5) Flatten existing config into form fields
             var payload = FlattenConfig(config);
 
-            // 6) Set overrides explicitly
+            // Disconnect NICs if requested (main config)
+            if (startDisconnected)
+            {
+                foreach (var netKey in payload.Keys
+                         .Where(k => Regex.IsMatch(k, @"^net\d+$", RegexOptions.IgnoreCase))
+                         .ToList())
+                {
+                    var def = payload[netKey];
+
+                    // if there's already a link_down setting, just overwrite it
+                    if (Regex.IsMatch(def, @"\blink_down=\d"))
+                    {
+                        payload[netKey] = Regex.Replace(def, @"\blink_down=\d", "link_down=1");
+                    }
+                    else
+                    {
+                        // otherwise append it
+                        payload[netKey] = def + ",link_down=1";
+                    }
+                }
+            }
+
+            // Detect old storage name from any disk key
+            string? oldStorageName = null;
+            var diskKeys = payload.Keys
+                .Where(k => Regex.IsMatch(k, @"^(scsi|virtio|ide|sata)\d+$", RegexOptions.IgnoreCase))
+                .ToList();
+
+            foreach (var key in diskKeys)
+            {
+                var val = payload[key];
+                if (!string.IsNullOrEmpty(val) && val.Contains(":"))
+                {
+                    oldStorageName = val.Split(':', 2)[0].Trim();
+                    break;
+                }
+            }
+            if (string.IsNullOrEmpty(oldStorageName))
+                throw new InvalidOperationException("Failed to determine oldStorageName from config.");
+
             payload["vmid"] = vmid;
             payload.Remove("meta");
             payload.Remove("digest");
-            payload["protection"] = "0"; // explicitly disable protection
+            payload["protection"] = "0";
+            payload["storage"] = cloneStorageName; // ensure storage is set to new storage
 
-            // 7) Handle disconnected start (remove network interfaces)
-            if (startDisconnected)
-            {
-                var nets = payload.Keys
-                    .Where(k => Regex.IsMatch(k, @"^net\d+$", RegexOptions.IgnoreCase))
-                    .ToList();
-                foreach (var netKey in nets)
-                    payload.Remove(netKey);
-            }
-
-            // 8) Remap all disks to the specified storage
-            var diskRegex = new Regex(@"^(scsi|virtio|sata|ide)\d+$", RegexOptions.IgnoreCase);
-            var diskKeys = payload.Keys.Where(k => diskRegex.IsMatch(k)).ToList();
-
+            // Remap disk paths to new storage (main config)
             foreach (var diskKey in diskKeys)
             {
                 var diskVal = payload[diskKey];
@@ -817,35 +1149,143 @@ namespace BareProx.Services
                 var diskDef = parts[1]; // "vm-100-disk-0.qcow2,discard=on,iothread=1"
                 var sub = diskDef.Split(new[] { ',' }, 2);
 
-                var filenameWithExt = sub[0]; // "vm-100-disk-0.qcow2"
+                var filenameWithExt = sub[0];
                 var options = sub.Length > 1 ? "," + sub[1] : string.Empty;
 
-                payload[diskKey] = $"{storageName}:{filenameWithExt}{options}";
+                payload[diskKey] = $"{cloneStorageName}:{filenameWithExt}{options}";
             }
 
-            // 9) Ensure a storage parameter is present
-            if (!payload.ContainsKey("storage"))
-                payload["storage"] = storageName;
-
-            // 10) POST request to recreate VM with original VMID
-            var url = $"https://{hostAddress}:8006/api2/json/nodes/{nodeName}/qemu";
-            var content = new FormUrlEncodedContent(payload);
-
-            try
+            // Global replace oldStorageName → cloneStorageName in all payload values (catch anything missed)
+            foreach (var key in payload.Keys.ToList())
             {
-                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Post, url, content, ct);
-                var respBody = await resp.Content.ReadAsStringAsync(ct);
-                Console.WriteLine($"RESTORE VM (Replace) HTTP {(int)resp.StatusCode}: {respBody}");
-                return resp.IsSuccessStatusCode;
+                var val = payload[key];
+                if (!string.IsNullOrEmpty(val))
+                {
+                    payload[key] = val.Replace(oldStorageName, cloneStorageName, StringComparison.OrdinalIgnoreCase);
+                }
             }
-            catch (Exception ex)
+
+            // Explicitly remap vmstate if present
+            if (payload.ContainsKey("vmstate"))
             {
-                Console.WriteLine($"Error replacing VM: {ex}");
-                return false;
+                payload["vmstate"] = RemapStorageAndVmid(payload["vmstate"], oldStorageName, cloneStorageName, vmid, vmid);
             }
+
+            var sb = new StringBuilder();
+
+            // Write main config
+            foreach (var kv in payload)
+                sb.AppendLine($"{kv.Key}: {kv.Value}");
+
+            // Handle snapshots if any
+            if (rootDoc.RootElement.TryGetProperty("snapshots", out var snapElem) && snapElem.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var snapProp in snapElem.EnumerateObject())
+                {
+                    // Snapshot header (no snapshot_ prefix)
+                    sb.AppendLine($"[{snapProp.Name}]");
+
+                    // Flatten snapshot dictionary
+                    var snapDict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var snapLine in snapProp.Value.EnumerateObject())
+                    {
+                        snapDict[snapLine.Name] = snapLine.Value.GetString() ?? "";
+                    }
+
+                    // Disconnect NICs if requested (snapshots)
+                    if (startDisconnected)
+                        if (startDisconnected)
+                        {
+                            foreach (var netKey in payload.Keys
+                                     .Where(k => Regex.IsMatch(k, @"^net\d+$", RegexOptions.IgnoreCase))
+                                     .ToList())
+                            {
+                                var def = payload[netKey];
+
+                                // if there's already a link_down setting, just overwrite it
+                                if (Regex.IsMatch(def, @"\blink_down=\d"))
+                                {
+                                    payload[netKey] = Regex.Replace(def, @"\blink_down=\d", "link_down=1");
+                                }
+                                else
+                                {
+                                    // otherwise append it
+                                    payload[netKey] = def + ",link_down=1";
+                                }
+                            }
+                        }
+
+                    // Remap disk paths in snapshot
+                    var snapDiskKeys = snapDict.Keys.Where(k => Regex.IsMatch(k, @"^(scsi|virtio|ide|sata)\d+$", RegexOptions.IgnoreCase)).ToList();
+                    foreach (var diskKey in snapDiskKeys)
+                    {
+                        var diskVal = snapDict[diskKey];
+                        if (!diskVal.Contains(":"))
+                            continue;
+
+                        var parts = diskVal.Split(new[] { ':' }, 2);
+                        var diskDef = parts[1];
+                        var sub = diskDef.Split(new[] { ',' }, 2);
+
+                        var filenameWithExt = sub[0];
+                        var options = sub.Length > 1 ? "," + sub[1] : string.Empty;
+
+                        snapDict[diskKey] = $"{cloneStorageName}:{filenameWithExt}{options}";
+                    }
+
+                    // Global replace oldStorageName → cloneStorageName in all snapshot values
+                    foreach (var key in snapDict.Keys.ToList())
+                    {
+                        var val = snapDict[key];
+                        if (!string.IsNullOrEmpty(val))
+                        {
+                            snapDict[key] = val.Replace(oldStorageName, cloneStorageName, StringComparison.OrdinalIgnoreCase);
+                        }
+                    }
+
+                    // Explicitly remap vmstate in snapshot
+                    if (snapDict.TryGetValue("vmstate", out var vmstateValue))
+                    {
+                        snapDict["vmstate"] = RemapStorageAndVmid(vmstateValue, oldStorageName, cloneStorageName, vmid, vmid);
+                    }
+
+                    // Write snapshot properties
+                    foreach (var snapKvp in snapDict)
+                        sb.AppendLine($"{snapKvp.Key}: {snapKvp.Value}");
+                }
+            }
+
+            // Upload config file via SSH (cat << EOF style)
+            var sshUser = cluster.Username;
+            int atIdx = sshUser.IndexOf('@');
+            if (atIdx > 0) sshUser = sshUser.Substring(0, atIdx);
+            string sshPass = _encryptionService.Decrypt(cluster.PasswordHash);
+
+            var configPath = $"/etc/pve/qemu-server/{vmid}.conf";
+            var configContent = sb.ToString();
+
+            var eofMarker = "EOF_" + Guid.NewGuid().ToString("N");
+            var sshCmd = $"cat > {configPath} <<'{eofMarker}'\n{configContent}\n{eofMarker}\n";
+
+            using (var ssh = new Renci.SshNet.SshClient(hostAddress, sshUser, sshPass))
+            {
+                ssh.Connect();
+                using (var cmd = ssh.CreateCommand(sshCmd))
+                {
+                    var result = cmd.Execute();
+                    if (cmd.ExitStatus != 0)
+                    {
+                        ssh.Disconnect();
+                        return false;
+                    }
+                }
+                ssh.Disconnect();
+            }
+
+            return true;
         }
 
-        public async Task<bool> MountNfsStorageViaApiAsync(
+         public async Task<bool> MountNfsStorageViaApiAsync(
     ProxmoxCluster cluster,
     string node,
     string storageName,
@@ -925,7 +1365,7 @@ namespace BareProx.Services
         /// <summary>
         /// Unmounts (deletes) an NFS storage entry from a Proxmox node.
         /// </summary>
-        public async Task<bool> UnmountNfsStorageViaApiAsync(
+        public async Task<bool> UnmountNfsStorageViaApiAsync_old(
             ProxmoxCluster cluster,
             string nodeName,
             string storageName, 
@@ -949,6 +1389,55 @@ namespace BareProx.Services
                 return false;
             }
         }
+
+        public async Task<bool> UnmountNfsStorageViaApiAsync(
+    ProxmoxCluster cluster,
+    string nodenNAme,
+    string storageName,
+    CancellationToken ct = default)
+        {
+            // 1) Delete the storage via the Proxmox API
+            var primaryHost = cluster.Hosts.First();
+            var deleteUrl = $"https://{primaryHost.HostAddress}:8006/api2/json/storage/{storageName}";
+            var apiResp = await SendWithRefreshAsync(cluster, HttpMethod.Delete, deleteUrl, null, ct);
+            if (!apiResp.IsSuccessStatusCode)
+                return false;
+
+            // 2) Compute the mount-point
+            var mountPoint = $"/mnt/pve/{storageName}";
+
+            // 3) SSH into each node and unmount + remove directory
+            var sshUser = cluster.Username.Split('@')[0];
+            var sshPass = _encryptionService.Decrypt(cluster.PasswordHash);
+
+            foreach (var node in cluster.Hosts)
+            {
+                try
+                {
+                    using var ssh = new Renci.SshNet.SshClient(
+                        node.HostAddress, sshUser, sshPass);
+                    ssh.Connect();
+
+                    // Unmount (ignore errors if already unmounted)
+                    var umount = ssh.CreateCommand($"umount {mountPoint}");
+                    umount.Execute();
+
+                    // Remove the (now-empty) mount-point directory
+                    var remove = ssh.CreateCommand($"rm -rf {mountPoint}");
+                    remove.Execute();
+
+                    ssh.Disconnect();
+                }
+                catch (Exception ex)
+                {
+                    // Log and continue; cleanup failure isn't fatal
+                    _logger.LogWarning(ex, "Failed to clean up {MountPoint} on {Node}", mountPoint, node.HostAddress);
+                }
+            }
+
+            return true;
+        }
+
 
         public async Task<Dictionary<string, List<ProxmoxVM>>> GetVmsByStorageListAsync(
     ProxmoxCluster cluster,
@@ -1165,7 +1654,26 @@ namespace BareProx.Services
             return up.Any() ? up : cluster.Hosts;
         }
 
+        public async Task<List<StorageConfig>> GetStorageListAsync(
+            ProxmoxCluster cluster,
+            string node,
+            CancellationToken ct)
+        {
+            // GET /api2/json/nodes/{node}/storage
+            var response = await SendWithRefreshAsync(
+                cluster,
+                HttpMethod.Get,
+                $"/nodes/{node}/storage",
+                null,
+                ct);
 
+            var body = await response.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(body);
+
+            return doc.RootElement
+                      .GetProperty("data")
+                      .Deserialize<List<StorageConfig>>()!;
+        }
     }
 
 

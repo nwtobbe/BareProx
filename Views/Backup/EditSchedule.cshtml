@@ -48,6 +48,7 @@
                 required>
             <option value="">-- Select Storage --</option>
         </select>
+        <input type="hidden" name="StorageName" value="@Model.StorageName" />
         <div class="invalid-feedback">Please select a storage.</div>
     </div>
     <input type="hidden" asp-for="ClusterId" id="ClusterId" />

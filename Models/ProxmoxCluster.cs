@@ -18,6 +18,8 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
+using System.Text.Json.Serialization;
+
 namespace BareProx.Models
 {
     public class SelectStorageViewModel
@@ -47,6 +49,21 @@ namespace BareProx.Models
         public int NetappControllerId { get; set; }
         public bool IsReplicable { get; set; }
         public bool SnapshotLockingEnabled { get; set; }  // New property for snapshot locking
+    }
+
+    public class StorageConfig
+    {
+        [JsonPropertyName("storage")]
+        public string Storage { get; set; } = "";
+
+        [JsonPropertyName("type")]
+        public string Type { get; set; } = "";
+
+        [JsonPropertyName("content")]
+        public string Content { get; set; } = "";
+
+        [JsonPropertyName("online")]
+        public int Online { get; set; }  // 1 = mounted/online, 0 = not
     }
 
 }
