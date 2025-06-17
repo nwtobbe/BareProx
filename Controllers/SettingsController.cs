@@ -31,6 +31,7 @@ using TimeZoneConverter;
 using DbConfigModel = BareProx.Models.DatabaseConfigModels;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using System.Runtime.InteropServices;
+using BareProx.Services.Proxmox.Authentication;
 
 
 namespace BareProx.Controllers
@@ -46,6 +47,7 @@ namespace BareProx.Controllers
         private readonly SelfSignedCertificateService _certService;
         private readonly IHostApplicationLifetime _appLifetime;
         private readonly INetappVolumeService _netappVolumeService;
+        private readonly IProxmoxAuthenticator _proxmoxAuthenticator;
 
 
         public SettingsController(
@@ -55,8 +57,9 @@ namespace BareProx.Controllers
             IEncryptionService encryptionService,
             IWebHostEnvironment env,
             SelfSignedCertificateService certService,
-    IHostApplicationLifetime appLifetime,
-    INetappVolumeService netappVolumeService)
+            IHostApplicationLifetime appLifetime,
+            INetappVolumeService netappVolumeService,
+            IProxmoxAuthenticator proxmoxAuthenticator)
         {
             _context = context;
             _proxmoxService = proxmoxService;
@@ -67,6 +70,7 @@ namespace BareProx.Controllers
             _certService = certService;
             _appLifetime = appLifetime;
             _netappVolumeService = netappVolumeService;
+            _proxmoxAuthenticator = proxmoxAuthenticator;
         }
 
         // helper properties to resolve only when needed:
@@ -418,7 +422,7 @@ namespace BareProx.Controllers
         [HttpPost]
         public async Task<IActionResult> AuthenticateCluster(int id, CancellationToken ct)
         {
-            var success = await _proxmoxService.AuthenticateAndStoreTokenAsync(id, ct);
+            var success = await _proxmoxAuthenticator.AuthenticateAndStoreTokenCidAsync(id, ct);
             TempData["Message"] = success ? "Authentication successful." : "Authentication failed.";
             return RedirectToAction("Proxmox");
         }

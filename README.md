@@ -148,6 +148,11 @@ When done click authenticate.
 
 And don't forget to select storage.
 
+## Ports used / Firewall
+443 to Proxmox host for api access.
+22 to Proxmox host for ssh access.
+443 to Netapp controllers for api access.
+
 #### Contributing
 
 1. Fork the repository.

@@ -43,7 +43,6 @@
   <ItemGroup>
     <Folder Include="Data\Migrations\" />
     <Folder Include="Migrations\" />
-    <Folder Include="Services\Proxmox\" />
   </ItemGroup>
 
 	<PropertyGroup Condition="'$(Configuration)' == 'Debug'">

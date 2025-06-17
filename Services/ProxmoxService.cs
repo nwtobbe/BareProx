@@ -30,107 +30,39 @@ using System.Text.RegularExpressions;
 using System.Linq;                    // for OrderBy/Select
 using System.Security.Cryptography;   // for SHA1
 using Renci.SshNet;
-
+using BareProx.Services.Proxmox.Authentication;
+using BareProx.Services.Proxmox.Helpers;
 
 namespace BareProx.Services
 {
     public class ProxmoxService
     {
         private readonly ApplicationDbContext _context;
-        private readonly IHttpClientFactory _httpClientFactory;
         private readonly INetappService _netappService;
         private readonly IEncryptionService _encryptionService;
         private readonly INetappVolumeService _netappVolumeService;
         private readonly ILogger<RestoreService> _logger;
+        private readonly IProxmoxHelpers _proxmoxHelpers;
+        private readonly IProxmoxAuthenticator _proxmoxAuthenticator;
 
         public ProxmoxService(
             ApplicationDbContext context,
-            IHttpClientFactory httpClientFactory,
             INetappService netappService,
             IEncryptionService encryptionService,
             INetappVolumeService netappVolumeService,
-            ILogger<RestoreService> logger)
+            ILogger<RestoreService> logger,
+            IProxmoxHelpers proxmoxHelpers,
+            IProxmoxAuthenticator proxmoxAuthenticator)
         {
             _context = context;
-            _httpClientFactory = httpClientFactory;
             _netappService = netappService;
             _encryptionService = encryptionService;
             _netappVolumeService = netappVolumeService;
             _logger = logger;
+            _proxmoxHelpers = proxmoxHelpers;
+            _proxmoxAuthenticator = proxmoxAuthenticator;
         }
 
-        public async Task<bool> AuthenticateAndStoreTokenAsync(int clusterId, CancellationToken ct)
-        {
-            var cluster = await _context.ProxmoxClusters
-                .Include(c => c.Hosts)
-                .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
-
-            if (cluster == null || !GetQueryableHosts(cluster).Any())
-                return false;
-
-            return await AuthenticateAndStoreTokenAsync(cluster, ct);
-        }
-
-        private async Task<bool> AuthenticateAndStoreTokenAsync(ProxmoxCluster cluster, CancellationToken ct)
-        {
-            var host = GetQueryableHosts(cluster).First();
-            var url = $"https://{host.HostAddress}:8006/api2/json/access/ticket";
-
-            var form = new Dictionary<string, string>
-            {
-                { "username", cluster.Username },
-                { "password", _encryptionService.Decrypt(cluster.PasswordHash) }
-            };
-
-            var content = new FormUrlEncodedContent(form);
-            var httpClient = _httpClientFactory.CreateClient("ProxmoxClient");
-
-            try
-            {
-                var response = await httpClient.PostAsync(url, content, ct);
-                if (!response.IsSuccessStatusCode) return false;
-
-                var body = await response.Content.ReadAsStringAsync(ct);
-                using var doc = JsonDocument.Parse(body);
-                var data = doc.RootElement.GetProperty("data");
-
-                cluster.ApiToken = _encryptionService.Encrypt(data.GetProperty("ticket").GetString());
-                cluster.CsrfToken = _encryptionService.Encrypt(data.GetProperty("CSRFPreventionToken").GetString());
-                cluster.LastChecked = DateTime.UtcNow;
-                cluster.LastStatus = "Working";
-
-                await _context.SaveChangesAsync(ct);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                cluster.LastStatus = $"Error: {ex.Message}";
-                cluster.LastChecked = DateTime.UtcNow;
-                await _context.SaveChangesAsync(ct);
-                return false;
-            }
-        }
-        private async Task<HttpClient> GetAuthenticatedClientAsync(ProxmoxCluster cluster, CancellationToken ct)
-        {
-            if (string.IsNullOrEmpty(cluster.ApiToken) || string.IsNullOrEmpty(cluster.CsrfToken))
-            {
-                var ok = await AuthenticateAndStoreTokenAsync(cluster, ct);
-                if (!ok)
-                    throw new Exception("Authentication failed: missing token or CSRF.");
-
-                // reload tokens
-                await _context.Entry(cluster).ReloadAsync(ct);
-            }
-
-            var client = _httpClientFactory.CreateClient("ProxmoxClient");
-            client.DefaultRequestHeaders.Authorization =
-                new AuthenticationHeaderValue("PVEAuthCookie", _encryptionService.Decrypt(cluster.ApiToken));
-
-            client.DefaultRequestHeaders.Remove("CSRFPreventionToken");
-            client.DefaultRequestHeaders.Add("CSRFPreventionToken", _encryptionService.Decrypt(cluster.CsrfToken));
-
-            return client;
-        }
 
         /// <summary>
         /// Sends a request and retries once if a 401 is returned, refreshing the API token.
@@ -144,7 +76,7 @@ namespace BareProx.Services
         {
             try
             {
-                var client = await GetAuthenticatedClientAsync(cluster, ct);
+                var client = await _proxmoxAuthenticator.GetAuthenticatedClientAsync(cluster, ct);
 
                 // Buffer the request content so we can log it
                 string requestBody = null;
@@ -175,13 +107,13 @@ namespace BareProx.Services
                 if (response.StatusCode == HttpStatusCode.Unauthorized)
                 {
                     _logger.LogInformation("Proxmox auth expired, re-authenticating…");
-                    var reauth = await AuthenticateAndStoreTokenAsync(cluster, ct);
+                    var reauth = await _proxmoxAuthenticator.AuthenticateAndStoreTokenCAsync(cluster, ct);
                     if (!reauth)
                         throw new ServiceUnavailableException("Authentication failed: missing token or CSRF.");
 
                     // reload fresh tokens
                     await _context.Entry(cluster).ReloadAsync(ct);
-                    client = await GetAuthenticatedClientAsync(cluster, ct);
+                    client = await _proxmoxAuthenticator.GetAuthenticatedClientAsync(cluster, ct);
 
                     // rebuild request (and re-buffer)
                     request = new HttpRequestMessage(method, url);
@@ -201,7 +133,7 @@ namespace BareProx.Services
             catch (HttpRequestException ex)
             {
                 // socket/timeout/etc
-                var host = GetQueryableHosts(cluster).FirstOrDefault()?.HostAddress ?? "unknown";
+                var host = _proxmoxHelpers.GetQueryableHosts(cluster).FirstOrDefault()?.HostAddress ?? "unknown";
                 _ = _context.ProxmoxClusters
                     .Where(c => c.Id == cluster.Id)
                     .ExecuteUpdateAsync(b => b
@@ -263,7 +195,7 @@ namespace BareProx.Services
 
             // 2) Discover which NFS storages Proxmox actually has mounted
             var proxmoxStorageNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var host in GetQueryableHosts(cluster))
+            foreach (var host in _proxmoxHelpers.GetQueryableHosts(cluster))
             {
                 var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/storage";
                 var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
@@ -292,7 +224,7 @@ namespace BareProx.Services
             );
 
             // 6) For each host, list its VMs and scan their configs
-            foreach (var host in GetQueryableHosts(cluster))
+            foreach (var host in _proxmoxHelpers.GetQueryableHosts(cluster))
             {
                 // a) list VMs
                 var vmListUrl = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/qemu";
@@ -345,15 +277,13 @@ namespace BareProx.Services
         }
 
 
-
-
         public async Task<string> GetVmConfigAsync2(
             ProxmoxCluster cluster,
             string host,
             int vmId,
             CancellationToken ct = default)
         {
-            var hostAddress = GetQueryableHosts(cluster).First(h => h.Hostname == host).HostAddress;
+            var hostAddress = _proxmoxHelpers.GetQueryableHosts(cluster).First(h => h.Hostname == host).HostAddress;
             var url = $"https://{hostAddress}:8006/api2/json/nodes/{host}/qemu/{vmId}/config";
 
             var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
@@ -385,7 +315,7 @@ namespace BareProx.Services
     CancellationToken ct = default)
         {
             // Find the correct host address
-            var hostAddress = GetQueryableHosts(cluster).First(h => h.Hostname == host).HostAddress;
+            var hostAddress = _proxmoxHelpers.GetQueryableHosts(cluster).First(h => h.Hostname == host).HostAddress;
             // Prepare SSH user (strip @pam/@pve if present)
             var sshUser = cluster.Username;
             int atIndex = sshUser.IndexOf('@');
@@ -513,7 +443,7 @@ namespace BareProx.Services
             bool dontTrySuspend,
             CancellationToken ct = default)
         {
-            var client = await GetAuthenticatedClientAsync(cluster, ct);
+            var client = await _proxmoxAuthenticator.GetAuthenticatedClientAsync(cluster, ct);
 
             var url = $"https://{hostAddress}:8006/api2/json/nodes/{node}/qemu/{vmid}/snapshot";
 
@@ -589,7 +519,7 @@ namespace BareProx.Services
 
         public async Task<string?> GetVmStatusAsync(ProxmoxCluster cluster, string node, string hostAddress, int vmid, CancellationToken ct = default)
         {
-            var client = await GetAuthenticatedClientAsync(cluster, ct);
+            var client = await _proxmoxAuthenticator.GetAuthenticatedClientAsync(cluster, ct);
             var url = $"https://{hostAddress}:8006/api2/json/nodes/{node}/qemu/{vmid}/status/current";
 
             var response = await client.GetAsync(url, ct);
@@ -610,7 +540,7 @@ namespace BareProx.Services
             int vmid, 
             CancellationToken ct = default)
         {
-            var client = await GetAuthenticatedClientAsync(cluster, ct);
+            var client = await _proxmoxAuthenticator.GetAuthenticatedClientAsync(cluster, ct);
             var url = $"https://{hostAddress}:8006/api2/json/nodes/{node}/qemu/{vmid}/snapshot";
             var response = await client.GetAsync(url, ct);
             response.EnsureSuccessStatusCode();
@@ -677,7 +607,7 @@ namespace BareProx.Services
             CancellationToken ct = default)
         {
             // 1) Find the hostAddress for that node
-            var host = GetHostByNodeName(cluster, nodeName);
+            var host = _proxmoxHelpers.GetHostByNodeName(cluster, nodeName);
 
             var hostAddress = host.HostAddress;
             var result = new List<ProxmoxVM>();
@@ -751,7 +681,7 @@ namespace BareProx.Services
             var cluster = await _context.ProxmoxClusters
                 .Include(c => c.Hosts)
                 .FirstOrDefaultAsync(ct);
-            if (cluster == null || !GetQueryableHosts(cluster).Any())
+            if (cluster == null || !_proxmoxHelpers.GetQueryableHosts(cluster).Any())
                 return false;
 
             var nextIdUrl = $"https://{hostAddress}:8006/api2/json/cluster/nextid";
@@ -761,7 +691,7 @@ namespace BareProx.Services
             if (string.IsNullOrEmpty(vmid))
                 return false;
 
-            var payload = FlattenConfig(config);
+            var payload = _proxmoxHelpers.FlattenConfig(config);
 
             // Detect old storage name from any disk key
             string? oldStorageName = null;
@@ -939,10 +869,6 @@ namespace BareProx.Services
         }
 
 
-
-
-
-
         string RemapStorageAndVmid(string input, string oldStorage, string newStorage, string oldVmid, string newVmid)
         {
             if (string.IsNullOrEmpty(input))
@@ -958,28 +884,6 @@ namespace BareProx.Services
             return updated;
         }
 
-          public static string CalculateDigest(IDictionary<string, string> payload)
-        {
-            // 1) Sort keys and build lines
-            var lines = payload
-                .OrderBy(kvp => kvp.Key, StringComparer.Ordinal)
-                .Select(kvp => $"{kvp.Key}: {kvp.Value}");
-
-            // 2) Join with newlines and add a trailing newline
-            var configText = string.Join("\n", lines) + "\n";
-
-            // 3) Compute SHA-1 hash
-            using var sha1 = SHA1.Create();
-            var bytes = Encoding.UTF8.GetBytes(configText);
-            var hash = sha1.ComputeHash(bytes);
-
-            // 4) Convert to lowercase hex string
-            var sb = new StringBuilder(hash.Length * 2);
-            foreach (var b in hash)
-                sb.Append(b.ToString("x2"));
-
-            return sb.ToString();
-        }
         private string ExtractOldVmidFromConfig(Dictionary<string, string> payload)
         {
             var diskRegex = new Regex(@"^(scsi|virtio|sata|ide)\d+$", RegexOptions.IgnoreCase);
@@ -1085,12 +989,12 @@ namespace BareProx.Services
             var cluster = await _context.ProxmoxClusters
                 .Include(c => c.Hosts)
                 .FirstOrDefaultAsync(ct);
-            if (cluster == null || !GetQueryableHosts(cluster).Any())
+            if (cluster == null || !_proxmoxHelpers.GetQueryableHosts(cluster).Any())
                 return false;
 
             var vmid = originalVmId.ToString();
 
-            var payload = FlattenConfig(config);
+            var payload = _proxmoxHelpers.FlattenConfig(config);
 
             // Disconnect NICs if requested (main config)
             if (startDisconnected)
@@ -1295,7 +1199,7 @@ namespace BareProx.Services
     string options = "vers=3",
     CancellationToken ct = default)
         {
-            var nodeHost = GetQueryableHosts(cluster).FirstOrDefault(h => h.Hostname == node)?.HostAddress ?? "";
+            var nodeHost = _proxmoxHelpers.GetQueryableHosts(cluster).FirstOrDefault(h => h.Hostname == node)?.HostAddress ?? "";
             if (string.IsNullOrEmpty(nodeHost)) return false;
 
             var url = $"https://{nodeHost}:8006/api2/json/storage";
@@ -1325,7 +1229,7 @@ namespace BareProx.Services
         // Shutdown VM
         public async Task ShutdownAndRemoveVmAsync(ProxmoxCluster cluster, string nodeName, int vmId, CancellationToken ct = default)
         {
-            var host = GetQueryableHosts(cluster).First(h => h.Hostname == nodeName);
+            var host = _proxmoxHelpers.GetQueryableHosts(cluster).First(h => h.Hostname == nodeName);
             var baseApiUrl = $"https://{host.HostAddress}:8006/api2/json/nodes/{nodeName}/qemu/{vmId}";
 
             // 1) Get current VM status
@@ -1372,7 +1276,7 @@ namespace BareProx.Services
             CancellationToken ct = default)
         {
             // Find the host entry for this node
-            var host = GetHostByNodeName(cluster, nodeName);
+            var host = _proxmoxHelpers.GetHostByNodeName(cluster, nodeName);
 
             // Build the DELETE URL
             var url = $"https://{host.HostAddress}:8006/api2/json/storage/{storageName}";
@@ -1392,7 +1296,7 @@ namespace BareProx.Services
 
         public async Task<bool> UnmountNfsStorageViaApiAsync(
     ProxmoxCluster cluster,
-    string nodenNAme,
+    string nodenName,
     string storageName,
     CancellationToken ct = default)
         {
@@ -1450,7 +1354,7 @@ namespace BareProx.Services
             {
                 result[storage] = new List<ProxmoxVM>();
 
-                foreach (var host in GetQueryableHosts(cluster))
+                foreach (var host in _proxmoxHelpers.GetQueryableHosts(cluster))
                 {
                     var vms = await GetVmsOnNodeAsync(cluster, host.Hostname, storage, ct);
                     result[storage].AddRange(vms);
@@ -1465,7 +1369,7 @@ namespace BareProx.Services
             var result = new List<ProxmoxStorageDto>();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase); // avoid duplicates by name
 
-            foreach (var host in GetQueryableHosts(cluster))
+            foreach (var host in _proxmoxHelpers.GetQueryableHosts(cluster))
             {
                 var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/storage";
 
@@ -1506,35 +1410,6 @@ namespace BareProx.Services
             }
 
             return result;
-        }
-
-
-        // --- Helper Functions ---
-
-        private static Dictionary<string, string> FlattenConfig(JsonElement config)
-        {
-            var payload = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var prop in config.EnumerateObject())
-            {
-                switch (prop.Value.ValueKind)
-                {
-                    case JsonValueKind.String:
-                        payload[prop.Name] = prop.Value.GetString()!;
-                        break;
-                    case JsonValueKind.Number:
-                        payload[prop.Name] = prop.Value.GetRawText();
-                        break;
-                }
-            }
-            return payload;
-        }
-
-        private static ProxmoxHost GetHostByNodeName(ProxmoxCluster cluster, string nodeName)
-        {
-            var host = cluster.Hosts.FirstOrDefault(h => h.Hostname == nodeName);
-            if (host == null)
-                throw new InvalidOperationException($"Node '{nodeName}' not found in cluster.");
-            return host;
         }
 
         public async Task<(
@@ -1644,36 +1519,6 @@ namespace BareProx.Services
             return (false, 0, 0, new Dictionary<string, bool>(), $"Cluster unreachable: {errMsg}");
         }
 
-        /// <summary>
-        /// Returns only the hosts that were last marked online. If none have been checked yet,
-        /// or all are offline, returns the full list so we can still attempt a first‐time call.
-        /// </summary>
-        private IEnumerable<ProxmoxHost> GetQueryableHosts(ProxmoxCluster cluster)
-        {
-            var up = cluster.Hosts.Where(h => h.IsOnline == true).ToList();
-            return up.Any() ? up : cluster.Hosts;
-        }
-
-        public async Task<List<StorageConfig>> GetStorageListAsync(
-            ProxmoxCluster cluster,
-            string node,
-            CancellationToken ct)
-        {
-            // GET /api2/json/nodes/{node}/storage
-            var response = await SendWithRefreshAsync(
-                cluster,
-                HttpMethod.Get,
-                $"/nodes/{node}/storage",
-                null,
-                ct);
-
-            var body = await response.Content.ReadAsStringAsync(ct);
-            using var doc = JsonDocument.Parse(body);
-
-            return doc.RootElement
-                      .GetProperty("data")
-                      .Deserialize<List<StorageConfig>>()!;
-        }
     }
 
 

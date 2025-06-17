@@ -37,6 +37,8 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Serilog;
 using Serilog.Events;
+using BareProx.Services.Proxmox.Helpers;
+using BareProx.Services.Proxmox.Authentication;
 
 // Alias for clarity
 using DbConfigModel = BareProx.Models.DatabaseConfigModels;
@@ -254,6 +256,8 @@ if (isConfigured)
     builder.Services.AddScoped<INetappSnapmirrorService, NetappSnapmirrorService>();
     builder.Services.AddScoped<INetappSnapshotService, NetappSnapshotService>();
     builder.Services.AddScoped<ProxmoxService>();
+    builder.Services.AddScoped<IProxmoxAuthenticator, ProxmoxAuthenticator>();
+    builder.Services.AddScoped<IProxmoxHelpers, ProxmoxHelpers>();
     builder.Services.AddScoped<IRestoreService, RestoreService>();
 
 
