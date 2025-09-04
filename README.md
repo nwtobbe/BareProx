@@ -167,6 +167,11 @@ And don't forget to select storage.
 22 to Proxmox host for ssh access.
 443 to Netapp controllers for api access.
 
+## Things not working // Known issues
+TPM-devices. Proxmox does not allow snapshots of vm:s with TPM-devices.
+Cloud-Init drives. Delete them and recreate them after restore. They are temporary devices.
+EFI-drives. Move them offline after restore.
+
 #### Contributing
 
 1. Fork the repository.
