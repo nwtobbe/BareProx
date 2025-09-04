@@ -112,7 +112,8 @@ docker build -t nwtobbe/bareprox:latest .
 docker run -d --name BareProx --restart unless-stopped -p 443:443 -v /var/bareprox/config:/config -v /var/bareprox/data:/data nwtobbe/bareprox:latest
 ```
 
-``` Example docker-compose.yml
+``` 
+Example docker-compose.yml
 services:
   web:
     image: nwtobbe/bareprox:latest
