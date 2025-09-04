@@ -955,6 +955,10 @@ namespace BareProx.Services
                         if (!name.Contains(oldvmid))
                             continue;
 
+                        // Skip CD-ROM/ISO
+                        if (name.EndsWith(".iso", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
                         // 1) Compute new names
                         var newFileName = name.Replace(oldvmid, newvmid);
 

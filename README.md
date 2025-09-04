@@ -109,7 +109,20 @@ cd BareProx
 docker build -t nwtobbe/bareprox:latest .
 
 # Run container interactively
-docker run -p 443:443 --rm nwtobbe/bareprox:latest
+docker run -d --name BareProx --restart unless-stopped -p 443:443 -v /var/bareprox/config:/config -v /var/bareprox/data:/data nwtobbe/bareprox:latest
+```
+
+``` Example docker-compose.yml
+services:
+  web:
+    image: nwtobbe/bareprox:latest
+    container_name: bareprox
+    restart: unless-stopped
+    ports:
+      - "443:443"
+    volumes:
+      - /var/bareprox/config:/config  # config
+      - /var/bareprox/data:/data    # db
 ```
 
 ## Configuration

@@ -33,3 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   And it's faster.
 - Mount from Secondary is now working
 - Restore from Secondary is now working.
+
+## [1.0.2506.1614] – 2025-09-04
+
+
+### Fixed
+
+- Restore of EFI boot disks.
+- 

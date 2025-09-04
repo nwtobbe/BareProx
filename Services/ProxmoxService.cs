@@ -255,7 +255,7 @@ namespace BareProx.Services
                     // b) scan every disk line
                     foreach (var prop in cfgData.EnumerateObject())
                     {
-                        if (!Regex.IsMatch(prop.Name, @"^(scsi|sata|virtio|ide)\d+$", RegexOptions.IgnoreCase))
+                        if (!Regex.IsMatch(prop.Name, @"^(scsi|virtio|ide|sata|efidisk|tpmstate)\d+$", RegexOptions.IgnoreCase))
                             continue;
 
                         var val = prop.Value.GetString() ?? "";
@@ -619,7 +619,7 @@ namespace BareProx.Services
             var vmArray = listDoc.RootElement.GetProperty("data").EnumerateArray();
 
             // regex to find disk lines: scsi0, virtio1, ide2, etc.
-            var diskRegex = new Regex(@"^(scsi|virtio|sata|ide)\d+$", RegexOptions.IgnoreCase);
+            var diskRegex = new Regex(@"^(scsi|virtio|ide|sata|efidisk|tpmstate)\d+$", RegexOptions.IgnoreCase);
 
             foreach (var vmElem in vmArray)
             {
@@ -696,7 +696,7 @@ namespace BareProx.Services
             // Detect old storage name from any disk key
             string? oldStorageName = null;
             var diskKeys = payload.Keys
-                .Where(k => Regex.IsMatch(k, @"^(scsi|virtio|ide|sata)\d+$", RegexOptions.IgnoreCase))
+                .Where(k => Regex.IsMatch(k, @"^(scsi|virtio|sata|efidisk|tpmstate)\d+$", RegexOptions.IgnoreCase))
                 .ToList();
 
             foreach (var key in diskKeys)
@@ -886,7 +886,7 @@ namespace BareProx.Services
 
         private string ExtractOldVmidFromConfig(Dictionary<string, string> payload)
         {
-            var diskRegex = new Regex(@"^(scsi|virtio|sata|ide)\d+$", RegexOptions.IgnoreCase);
+            var diskRegex = new Regex(@"^(scsi|virtio|ide|sata|efidisk|tpmstate)\d+$", RegexOptions.IgnoreCase);
             foreach (var diskKey in payload.Keys.Where(k => diskRegex.IsMatch(k)))
             {
                 var diskVal = payload[diskKey]?.Trim() ?? "";
@@ -929,7 +929,7 @@ namespace BareProx.Services
            string newVmid,
            string cloneStorageName)
         {
-            var diskRegex = new Regex(@"^(scsi|virtio|sata|ide)\d+$", RegexOptions.IgnoreCase);
+            var diskRegex = new Regex(@"^(scsi|virtio|sata|ide|efidisk|tpmstate)\d+$", RegexOptions.IgnoreCase);
 
             var diskKeys = payload.Keys
                 .Where(k => diskRegex.IsMatch(k))
@@ -950,6 +950,13 @@ namespace BareProx.Services
 
                 var pathWithFilename = sub[0]; // e.g. "101/vm-101-disk-0.qcow2"
                 var options = sub.Length > 1 ? "," + sub[1] : string.Empty;
+
+                // ✅ Skip pure CD-ROM (media=cdrom but NOT cloudinit)
+                if (options.Contains("media=cdrom", StringComparison.OrdinalIgnoreCase) &&
+                    !options.Contains("cloudinit", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
 
                 // Update both folder and filename
                 var newPathWithFilename = pathWithFilename
@@ -1021,7 +1028,7 @@ namespace BareProx.Services
             // Detect old storage name from any disk key
             string? oldStorageName = null;
             var diskKeys = payload.Keys
-                .Where(k => Regex.IsMatch(k, @"^(scsi|virtio|ide|sata)\d+$", RegexOptions.IgnoreCase))
+                .Where(k => Regex.IsMatch(k, @"^(scsi|virtio|ide|sata|efidisk|tpmstate)\d+$", RegexOptions.IgnoreCase))
                 .ToList();
 
             foreach (var key in diskKeys)
@@ -1120,12 +1127,19 @@ namespace BareProx.Services
                         }
 
                     // Remap disk paths in snapshot
-                    var snapDiskKeys = snapDict.Keys.Where(k => Regex.IsMatch(k, @"^(scsi|virtio|ide|sata)\d+$", RegexOptions.IgnoreCase)).ToList();
+                    var snapDiskKeys = snapDict.Keys.Where(k => Regex.IsMatch(k, @"^(scsi|virtio|ide|sata|efidisk|tpmstate)\d+$", RegexOptions.IgnoreCase)).ToList();
                     foreach (var diskKey in snapDiskKeys)
                     {
                         var diskVal = snapDict[diskKey];
                         if (!diskVal.Contains(":"))
                             continue;
+
+                        // skip plain CD-ROMs, but allow cloud-init
+                        if (diskVal.Contains("media=cdrom", StringComparison.OrdinalIgnoreCase) &&
+                            !diskVal.Contains("cloudinit", StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
 
                         var parts = diskVal.Split(new[] { ':' }, 2);
                         var diskDef = parts[1];
