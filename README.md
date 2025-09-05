@@ -169,7 +169,9 @@ And don't forget to select storage.
 
 ## Things not working // Known issues
 TPM-devices. Proxmox does not allow snapshots of vm:s with TPM-devices.
+
 Cloud-Init drives. Delete them and recreate them after restore. They are temporary devices.
+
 EFI-drives. Move them offline after restore.
 
 #### Contributing
