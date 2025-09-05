@@ -47,6 +47,22 @@ There is a `docker-compose.yml` file included for easy deployment. It uses the o
 2. Configuration files will be created during first run `/var/bareprox/config`:
   
 3. Database will be created in `/var/bareprox/data/BareProxDB.db` on first run.
+
+5. Create a 'docker-compose.yml' file
+
+``` 
+Example docker-compose.yml
+services:
+  web:
+    image: nwtobbe/bareprox:latest
+    container_name: bareprox
+    restart: unless-stopped
+    ports:
+      - "443:443"
+    volumes:
+      - /var/bareprox/config:/config  # config
+      - /var/bareprox/data:/data    # db
+```
   
 4. Start the service:
   
@@ -60,7 +76,7 @@ There is a `docker-compose.yml` file included for easy deployment. It uses the o
 Volumes map as follows:
 
 - `./bareprox-config:/config`
-- `./bareprox-data:/data` ([github.com](https://github.com/nwtobbe/BareProx))
+- `./bareprox-data:/data` 
 
 ## Server Setup
 
@@ -101,30 +117,22 @@ sudo usermod -aG docker bareprox
 
 ### 4. Clone, build, and run
 
-```bash
+```
+bash
+
+You can skip clone and build since we have a prebuilt image on dockerhub.
+
+# Clone the repository
 git clone git@github.com:nwtobbe/BareProx.git
 cd BareProx
 
 # Build the Docker image
 docker build -t nwtobbe/bareprox:latest .
 
-# Run container interactively
+# Run container in the background
 docker run -d --name BareProx --restart unless-stopped -p 443:443 -v /var/bareprox/config:/config -v /var/bareprox/data:/data nwtobbe/bareprox:latest
 ```
 
-``` 
-Example docker-compose.yml
-services:
-  web:
-    image: nwtobbe/bareprox:latest
-    container_name: bareprox
-    restart: unless-stopped
-    ports:
-      - "443:443"
-    volumes:
-      - /var/bareprox/config:/config  # config
-      - /var/bareprox/data:/data    # db
-```
 
 ## Configuration
 
