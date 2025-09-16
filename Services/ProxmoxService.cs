@@ -422,7 +422,7 @@ namespace BareProx.Services
             var statusResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, statusUrl, null, ct);
             var statusJson = await statusResp.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(statusJson);
-            var current = doc.RootElement.GetProperty("data").GetProperty("status").GetString();
+            var current = doc.RootElement.GetProperty("data").GetProperty("qmpstatus").GetString();
 
             // Only resume if it’s paused
             if (string.Equals(current, "paused", StringComparison.OrdinalIgnoreCase))
