@@ -20,6 +20,7 @@
 
 using BareProx.Data;
 using BareProx.Models;
+using BareProx.Services.Netapp;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
@@ -45,6 +46,7 @@ namespace BareProx.Services.Background
                 {
                     await CleanupExpired(stoppingToken);
                     await TrackNetappSnapshots(stoppingToken);
+                    await PruneOldOrStuckJobs(stoppingToken);
 
                     //await CleanupOrphanedBackupRecords(stoppingToken);
                 }
@@ -65,7 +67,7 @@ namespace BareProx.Services.Background
         {
             using var scope = _services.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var netapp = scope.ServiceProvider.GetRequiredService<INetappService>();
+            var netapp = scope.ServiceProvider.GetRequiredService<INetappFlexCloneService>();
             var netappSnapshotService = scope.ServiceProvider.GetRequiredService<INetappSnapshotService>();
             var now = DateTime.UtcNow;
 
@@ -168,7 +170,7 @@ namespace BareProx.Services.Background
         {
             using var scope = _services.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var netapp = scope.ServiceProvider.GetRequiredService<INetappService>();
+            var netapp = scope.ServiceProvider.GetRequiredService<INetappFlexCloneService>();
             var netappSnapshotService = scope.ServiceProvider.GetRequiredService<INetappSnapshotService>();
             var now = DateTime.UtcNow;
 
@@ -298,6 +300,74 @@ namespace BareProx.Services.Background
                 {
                     if (i == 2) throw;
                     await Task.Delay(500, ct);
+                }
+            }
+        }
+
+        private async Task PruneOldOrStuckJobs(CancellationToken ct)
+        {
+            using var scope = _services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var now = DateTime.UtcNow;
+            var cutoff = now.AddDays(-30);
+
+            // Age pivot for a job is CompletedAt if present, otherwise StartedAt
+            var toDeleteIds = await db.Jobs
+                .AsNoTracking()
+                .Where(j =>
+                    (j.CompletedAt ?? j.StartedAt) < cutoff &&
+                    (
+                        // 1) Any job with Status != "Completed"
+                        (j.Status != null && !EF.Functions.Like(j.Status, "Completed"))
+                        ||
+                        // 2) Any Restore job (any status)
+                        (j.Type != null && EF.Functions.Like(j.Type, "Restore"))
+                    )
+                )
+                .Select(j => j.Id)
+                .ToListAsync(ct);
+
+            if (toDeleteIds.Count == 0)
+            {
+                _logger.LogDebug("PruneJobs: nothing to delete.");
+                return;
+            }
+
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                using var tx = await db.Database.BeginTransactionAsync(ct);
+                try
+                {
+                    // Remove dependents first (adjust if you have cascades)
+                    db.NetappSnapshots.RemoveRange(
+                        db.NetappSnapshots.Where(s => toDeleteIds.Contains(s.JobId)));
+
+                    db.BackupRecords.RemoveRange(
+                        db.BackupRecords.Where(r => toDeleteIds.Contains(r.JobId)));
+
+                    // Finally remove the jobs
+                    db.Jobs.RemoveRange(
+                        db.Jobs.Where(j => toDeleteIds.Contains(j.Id)));
+
+                    var affected = await db.SaveChangesAsync(ct);
+                    await tx.CommitAsync(ct);
+
+                    _logger.LogInformation(
+                        "Pruned {JobCount} old jobs (>30d): non-completed and all Restore. Rows affected: {Rows}.",
+                        toDeleteIds.Count, affected);
+                    break;
+                }
+                catch (DbUpdateException ey) when (ey.InnerException is Microsoft.Data.Sqlite.SqliteException se && se.SqliteErrorCode == 5)
+                {
+                    await tx.RollbackAsync(ct);
+                    if (attempt == 2) throw;
+                    await Task.Delay(500, ct);
+                }
+                catch (Exception ex)
+                {
+                    await tx.RollbackAsync(ct);
+                    _logger.LogError(ex, "Failed pruning jobs.");
+                    throw;
                 }
             }
         }

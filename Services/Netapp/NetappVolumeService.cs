@@ -23,6 +23,7 @@ using BareProx.Models;
 using Microsoft.EntityFrameworkCore;
 using System.Text;
 using System.Text.Json;
+using BareProx.Services.Netapp;
 
 namespace BareProx.Services
 {
@@ -318,6 +319,69 @@ namespace BareProx.Services
             var deleteUrl = $"{baseUrl}storage/volumes/{uuid}";
             var deleteResp = await httpClient.DeleteAsync(deleteUrl, ct);
             return deleteResp.IsSuccessStatusCode;
+        }
+
+        public async Task UpdateAllSelectedVolumesAsync(CancellationToken ct = default)
+        {
+            var selectedVolumes = await _context.SelectedNetappVolumes
+                .Select(v => new { v.NetappControllerId, v.Uuid })
+                .ToListAsync(ct);
+
+            foreach (var v in selectedVolumes)
+            {
+                try
+                {
+                    await SyncSelectedVolumesAsync(v.NetappControllerId, v.Uuid, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to sync volume {Uuid} for controller {Controller}", v.Uuid, v.NetappControllerId);
+                }
+            }
+        }
+
+        public async Task SyncSelectedVolumesAsync(int controllerId, string volumeUuid, CancellationToken ct = default)
+        {
+            var controller = await _context.NetappControllers.FirstOrDefaultAsync(c => c.Id == controllerId, ct);
+            if (controller == null)
+                throw new Exception($"Controller {controllerId} not found.");
+
+            var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+            var url = $"{baseUrl}storage/volumes/{volumeUuid}?fields=space,nas.export_policy.name,snapshot_locking_enabled";
+
+            var resp = await httpClient.GetAsync(url, ct);
+            resp.EnsureSuccessStatusCode();
+
+            var json = await resp.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            var selected = await _context.SelectedNetappVolumes
+                .FirstOrDefaultAsync(v => v.Uuid == volumeUuid && v.NetappControllerId == controllerId, ct);
+            if (selected == null)
+                throw new Exception($"SelectedNetappVolume {volumeUuid} not found for controller {controllerId}");
+
+            // --- Map fields (safe navigation)
+            if (root.TryGetProperty("space", out var spaceProp))
+            {
+                selected.SpaceSize = spaceProp.TryGetProperty("size", out var sizeProp) ? sizeProp.GetInt64() : (long?)null;
+                selected.SpaceAvailable = spaceProp.TryGetProperty("available", out var availProp) ? availProp.GetInt64() : (long?)null;
+                selected.SpaceUsed = spaceProp.TryGetProperty("used", out var usedProp) ? usedProp.GetInt64() : (long?)null;
+            }
+
+            selected.ExportPolicyName =
+                root.TryGetProperty("nas", out var nasProp)
+                && nasProp.TryGetProperty("export_policy", out var expPolProp)
+                && expPolProp.TryGetProperty("name", out var expNameProp)
+                    ? expNameProp.GetString()
+                    : null;
+
+            selected.SnapshotLockingEnabled =
+                root.TryGetProperty("snapshot_locking_enabled", out var snapLockProp)
+                    ? snapLockProp.GetBoolean()
+                    : (bool?)null;
+
+            await _context.SaveChangesAsync(ct);
         }
 
     }

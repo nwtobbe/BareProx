@@ -21,6 +21,8 @@
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services;
+using BareProx.Services.Backup;
+using BareProx.Services.Restore;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.EntityFrameworkCore;
@@ -31,7 +33,6 @@ namespace BareProx.Controllers
     {
         private readonly ApplicationDbContext _context;
         private readonly IBackupService _backupService;
-        private readonly INetappService _netappService;
         private readonly ProxmoxService _proxmoxService;
         private readonly IRestoreService _restoreService;
         private readonly IAppTimeZoneService _tz;
@@ -39,14 +40,12 @@ namespace BareProx.Controllers
         public RestoreController(
             ApplicationDbContext context,
             IBackupService backupService,
-            INetappService netappService,
             ProxmoxService proxmoxService,
             IRestoreService restoreService,
             IAppTimeZoneService tz)
         {
             _context = context;
             _backupService = backupService;
-            _netappService = netappService;
             _proxmoxService = proxmoxService;
             _restoreService = restoreService;
             _tz = tz;
@@ -161,7 +160,9 @@ namespace BareProx.Controllers
                 CloneVolumeName = $"clone_{record.VMID}_{_tz.ConvertUtcToApp(DateTime.UtcNow):yyyy-MM-dd-HH-mm}",
                 StartDisconnected = false,
                 OriginalHostAddress = originalHost?.HostAddress,
-                OriginalHostName = originalHost?.Hostname
+                OriginalHostName = originalHost?.Hostname,
+                UsedProxmoxSnapshot = record.UseProxmoxSnapshot,
+                VmState = record.WithMemory
             };
             vm.HostOptions = cluster.Hosts
                                     .Select(h => new SelectListItem

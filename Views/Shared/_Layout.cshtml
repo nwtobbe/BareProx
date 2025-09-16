@@ -1,5 +1,8 @@
 ﻿@using Microsoft.AspNetCore.Identity
 @inject SignInManager<IdentityUser> SignInManager
+@inject BareProx.Services.Features.IFeatureService Features
+
+
 @if (TempData["ErrorMessage"] is string errMsg)
 {
     <div class="alert alert-danger">
@@ -11,9 +14,12 @@
     // In RELEASE builds, show the menu only when the user IS signed in.
 #if DEBUG
     bool showMenus = !SignInManager.IsSignedIn(User);
+
 #else
     bool showMenus = SignInManager.IsSignedIn(User);
+    
 #endif
+    var showMigration = await Features.IsEnabledAsync("ExperimentalExtra");
 }
 <!DOCTYPE html>
 <html lang="en">
@@ -122,17 +128,50 @@
                                     <li>
                                         <a class="dropdown-item"
                                         asp-controller="Settings"
-                                        asp-action="Index">
-                                            Netapp Controllers
+                                        asp-action="NetappHub">
+                                            Netapp
                                         </a>
                                     </li>
                                     <li>
                                         <a class="dropdown-item"
                                         asp-controller="Settings"
-                                        asp-action="Proxmox">
+                                        asp-action="ProxmoxHub">
                                             Proxmox
                                         </a>
                                     </li>
+                                        @if (showMigration)
+                                        {
+                                            <li><hr class="dropdown-divider" /></li>
+                                            <li class="dropend">
+                                            <a class="dropdown-item dropdown-toggle text-dark" href="#" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                                                    Migration
+                                                </a>
+                                                <ul class="dropdown-menu">
+                                                    <li>
+                                                        <a class="dropdown-item"
+                                                           asp-controller="Migration"
+                                                           asp-action="Migrate"
+                                                           title="Migrate your VMs to the next level - It's time to move on, Bro.">
+                                                            Leave Me B
+                                                        </a>
+                                                    </li>
+                                                    <li>
+                                                        <a class="dropdown-item"
+                                                           asp-controller="Migration"
+                                                           asp-action="Settings">
+                                                            Settings
+                                                        </a>
+                                                    </li>
+                                                    <li>
+                                                        <a class="dropdown-item"
+                                                           asp-controller="Migration"
+                                                           asp-action="Help">
+                                                            Help
+                                                        </a>
+                                                    </li>
+                                                </ul>
+                                            </li>
+                                        }
                                     <li>
                                         <a class="dropdown-item"
                                            asp-controller="Cleanup"
@@ -175,6 +214,22 @@
     <script src="~/lib/jquery/dist/jquery.min.js"></script>
     <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
     <script src="~/js/site.js" asp-append-version="true"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+          document.querySelectorAll('#navbarNav .dropdown-menu .dropend').forEach(function (el) {
+            el.addEventListener('mouseenter', function () {
+              const toggle = el.querySelector('[data-bs-toggle="dropdown"]');
+              const dd = bootstrap.Dropdown.getOrCreateInstance(toggle);
+              dd.show();
+            });
+            el.addEventListener('mouseleave', function () {
+              const toggle = el.querySelector('[data-bs-toggle="dropdown"]');
+              const dd = bootstrap.Dropdown.getOrCreateInstance(toggle);
+              dd.hide();
+            });
+          });
+        });
+    </script>
     @await RenderSectionAsync("Scripts", required: false)
 </body>
 </html>

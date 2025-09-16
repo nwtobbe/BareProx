@@ -21,11 +21,13 @@
 using BareProx.Models;
 using System.Net.Http.Headers;
 
-namespace BareProx.Services
+namespace BareProx.Services.Netapp
 {
     public interface INetappAuthService
     {
         AuthenticationHeaderValue GetEncryptedAuthHeader(string username, string encryptedPassword);
         HttpClient CreateAuthenticatedClient(NetappController controller, out string baseUrl);
+        Task<bool> TryAuthenticateAsync(string hostOrIp,string username,string plainPassword,CancellationToken ct = default);
     }
 }
+

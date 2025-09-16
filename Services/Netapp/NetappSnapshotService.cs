@@ -26,6 +26,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Net;
 using Polly;
 using Newtonsoft.Json;
+using BareProx.Services.Netapp;
 
 namespace BareProx.Services
 {
@@ -36,7 +37,6 @@ namespace BareProx.Services
         private readonly INetappAuthService _authService;
         private readonly ILogger<NetappSnapshotService> _logger;
         private readonly IAppTimeZoneService _tz;
-        private readonly INetappService _NetappService;
         private readonly INetappVolumeService _netappVolumeService;
 
         public NetappSnapshotService(
@@ -44,14 +44,12 @@ namespace BareProx.Services
             IAppTimeZoneService tz,
             INetappAuthService authService,
             ILogger<NetappSnapshotService> logger,
-            INetappService netappService,
             INetappVolumeService netappVolumeService)
         {
             _context = context;
             _tz = tz;
             _authService = authService;
             _logger = logger;
-            _NetappService = netappService;
             _netappVolumeService = netappVolumeService;
         }
         public async Task<SnapshotResult> CreateSnapshotAsync(
@@ -194,6 +192,57 @@ namespace BareProx.Services
             return snapshotNames;
         }
 
+        public async Task<List<VolumeSnapshotTreeDto>> GetSnapshotsForVolumesAsync(HashSet<string> volumeNames, CancellationToken ct = default)
+        {
+            var controller = await _context.NetappControllers.FirstOrDefaultAsync(ct);
+            if (controller == null)
+                throw new Exception("No NetApp controller found.");
+
+            // 🔐 Use encrypted credentials and base URL helper
+            var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+
+            var volumesUrl = $"{baseUrl}storage/volumes?fields=name,uuid,svm.name";
+            var volumesResp = await client.GetAsync(volumesUrl, ct);
+            volumesResp.EnsureSuccessStatusCode();
+
+            using var volumesDoc = JsonDocument.Parse(await volumesResp.Content.ReadAsStringAsync(ct));
+            var volumeRecords = volumesDoc.RootElement.GetProperty("records");
+
+            var result = new List<VolumeSnapshotTreeDto>();
+
+            foreach (var vol in volumeRecords.EnumerateArray())
+            {
+                var name = vol.GetProperty("name").GetString() ?? "";
+                var uuid = vol.GetProperty("uuid").GetString() ?? "";
+                var svm = vol.GetProperty("svm").GetProperty("name").GetString() ?? "";
+
+                if (!volumeNames.Contains(name))
+                    continue;
+
+                var snapUrl = $"{baseUrl}storage/volumes/{uuid}/snapshots?fields=name";
+                var snapResp = await client.GetAsync(snapUrl, ct);
+                if (!snapResp.IsSuccessStatusCode)
+                    continue;
+
+                using var snapDoc = JsonDocument.Parse(await snapResp.Content.ReadAsStringAsync(ct));
+                var snapshots = snapDoc.RootElement
+                    .GetProperty("records")
+                    .EnumerateArray()
+                    .Select(e => e.GetProperty("name").GetString() ?? "")
+                    .Where(n => !string.IsNullOrWhiteSpace(n))
+                    .ToList();
+
+                result.Add(new VolumeSnapshotTreeDto
+                {
+                    Vserver = svm,
+                    VolumeName = name,
+                    Snapshots = snapshots
+                });
+            }
+
+            return result;
+        }
+
         public async Task<DeleteSnapshotResult> DeleteSnapshotAsync(int controllerId, string volumeName, string snapshotName, CancellationToken ct = default)
         {
             var result = new DeleteSnapshotResult();
@@ -258,10 +307,10 @@ namespace BareProx.Services
         }
 
         private async Task SendSnapshotRequestAsync(
-string volumeName,
-SnapshotCreateBody body,
-CancellationToken ct = default
-)
+            string volumeName,
+            SnapshotCreateBody body,
+            CancellationToken ct = default
+            )
         {
             // 1) Find a NetApp controller in the DB (unchanged)
             var controller = await _context.NetappControllers.FirstOrDefaultAsync(ct);

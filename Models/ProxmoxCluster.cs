@@ -66,4 +66,22 @@ namespace BareProx.Models
         public int Online { get; set; }  // 1 = mounted/online, 0 = not
     }
 
+    public sealed class PveNetworkIf { public string? Type { get; set; } public string? Iface { get; set; } public int? BridgeVlanAware { get; set; } }
+    public sealed class PveSdnVnet { public string? Vnet { get; set; } public string? Zone { get; set; } public int? Tag { get; set; } public string? Type { get; set; } public string? Description { get; set; } }
+    public sealed class PveStorageContentItem 
+    { 
+        public string? VolId { get; set; } 
+        public string? Volid { get; set; } 
+        public string? Volume { get; set; } 
+        public string? Name { get; set; } 
+        public string? Content { get; set; }
+        public long? Ctime { get; set; }
+    }
+    public class PveStorageListItem
+    {
+        public string? Storage { get; set; }
+        public string? Content { get; set; }  // e.g. "images,iso,backup,..."
+        public string? Type { get; set; }     // e.g. "dir","nfs","iscs","rbd",...
+    }
+
 }

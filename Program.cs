@@ -18,31 +18,40 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
-using Microsoft.AspNetCore.Server.Kestrel.Https;
-using System;
-using System.IO;
-using System.Security.Cryptography;
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Repositories;
 using BareProx.Services;
 using BareProx.Services.Background;
+using BareProx.Services.Backup;
 using BareProx.Services.Interceptors;
+using BareProx.Services.Migration;
+using BareProx.Services.Proxmox.Authentication;
+using BareProx.Services.Proxmox.Helpers;
+using BareProx.Services.Proxmox.Ops;
+using BareProx.Services.Proxmox.Snapshots;
+using BareProx.Services.Restore;
+using BareProx.Services.Netapp;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Server.Kestrel.Https;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
-using Microsoft.Data.SqlClient;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Serilog;
 using Serilog.Events;
-using BareProx.Services.Proxmox.Helpers;
-using BareProx.Services.Proxmox.Authentication;
-
+using Serilog.Sinks.File.Archive;
+using System;
+using System.IO;
+using System.IO.Compression;
+using System.Security.Cryptography;
 // Alias for clarity
 using DbConfigModel = BareProx.Models.DatabaseConfigModels;
-using Microsoft.AspNetCore.Authorization;
+using BareProx.Services.Proxmox.Ops;
+using BareProx.Services.Proxmox.Snapshots;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -58,17 +67,63 @@ Directory.CreateDirectory(dataPath);
 Directory.CreateDirectory(logFolder);
 
 // ─── 1) Configure Serilog ───────────────────────────────────────────────────────
+
+static void CompressStaleLogs(string folder)
+{
+    var today = DateTime.UtcNow.Date;
+    foreach (var path in Directory.EnumerateFiles(folder, "log-*.txt", SearchOption.TopDirectoryOnly))
+    {
+        var name = Path.GetFileName(path);
+        // Skip today's file and any file that already has a .gz alongside it
+        if (name.EndsWith(".gz", StringComparison.OrdinalIgnoreCase)) continue;
+
+        // Parse date from name: log-YYYYMMDD.txt  OR  log-YYYY-MM-DD.txt
+        var stem = Path.GetFileNameWithoutExtension(name); // e.g. "log-20251015"
+        var datePart = stem.Replace("log-", "");
+        if (!(DateTime.TryParse(datePart, out var parsed) || DateTime.TryParseExact(datePart, "yyyyMMdd", null, System.Globalization.DateTimeStyles.None, out parsed)))
+            continue;
+
+        if (parsed.Date >= today) continue; // don't touch today's active file
+
+        var gzPath = Path.Combine(folder, name + ".gz");
+        if (File.Exists(gzPath)) { File.Delete(path); continue; } // already compressed earlier
+
+        try
+        {
+            using var src = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var dst = File.Create(gzPath);
+            using var gz = new GZipStream(dst, CompressionLevel.Optimal, leaveOpen: true);
+            src.CopyTo(gz);
+        }
+        catch
+        {
+            // file locked or transient issue → skip; Serilog/next startup can try again
+            continue;
+        }
+
+        try { File.Delete(path); } catch { /* ignore */ }
+    }
+}
+
+// Compress any leftover plain .txt from previous days
+CompressStaleLogs(logFolder);
+
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Override("Microsoft", LogEventLevel.Information)
     .MinimumLevel.Override("Default", LogEventLevel.Debug)
     .Enrich.FromLogContext()
     .WriteTo.Console()
     .WriteTo.File(
-        path: Path.Combine(logFolder, "log-.txt"),
-        rollingInterval: RollingInterval.Day,
-        retainedFileCountLimit: 30,
-        shared: true,
-        outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} {Level:u3}] {Message:lj}{NewLine}{Exception}"
+    path: Path.Combine(logFolder, "log-.txt"),
+    rollingInterval: RollingInterval.Day,
+    // Optional: also roll if a file gets big
+    fileSizeLimitBytes: 50 * 1024 * 1024, // 50 MB
+    rollOnFileSizeLimit: true,
+    retainedFileCountLimit: 60,            // keep last 30 rolled files (compressed)
+    retainedFileTimeLimit: TimeSpan.FromDays(30), // or time-based retention
+    shared: false,
+    hooks: new ArchiveHooks(CompressionLevel.Optimal, logFolder),      // <- auto-compress on roll
+    outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} {Level:u3}] {SourceContext} {Message:lj}{NewLine}{Exception}"
     )
     .CreateLogger();
 
@@ -248,18 +303,24 @@ if (isConfigured)
         .AddEntityFrameworkStores<ApplicationDbContext>();
 
     // --- Repositories & Domain Services ----------------------------------------
+    builder.Services.AddScoped<BareProx.Services.Features.IFeatureService, BareProx.Services.Features.FeatureService>();
     builder.Services.AddScoped<IBackupRepository, BackupRepository>();
     builder.Services.AddScoped<IBackupService, BackupService>();
     builder.Services.AddScoped<INetappAuthService, NetappAuthService>();
-    builder.Services.AddScoped<INetappService, NetappService>();
+    builder.Services.AddScoped<INetappFlexCloneService, NetappFlexCloneService>();
+    builder.Services.AddScoped<INetappExportNFSService, NetappExportNFSService>();
     builder.Services.AddScoped<INetappVolumeService, NetappVolumeService>();
     builder.Services.AddScoped<INetappSnapmirrorService, NetappSnapmirrorService>();
     builder.Services.AddScoped<INetappSnapshotService, NetappSnapshotService>();
     builder.Services.AddScoped<ProxmoxService>();
     builder.Services.AddScoped<IProxmoxAuthenticator, ProxmoxAuthenticator>();
-    builder.Services.AddScoped<IProxmoxHelpers, ProxmoxHelpers>();
+    builder.Services.AddScoped<IProxmoxHelpersService, ProxmoxHelpersService>();
     builder.Services.AddScoped<IRestoreService, RestoreService>();
-
+    builder.Services.AddScoped<IProxmoxFileScanner, ProxmoxFileScanner>();
+    builder.Services.AddSingleton<IMigrationQueueRunner, MigrationQueueRunner>();
+    builder.Services.AddScoped<IMigrationExecutor, ProxmoxMigrationExecutor>();
+    builder.Services.AddScoped<IProxmoxOpsService, ProxmoxOpsService>();
+    builder.Services.AddScoped<IProxmoxSnapshotsService, ProxmoxSnapshotsService>();
 
     // --- Remote API Client -----------------------------------------------------
     builder.Services.AddSingleton<IRemoteApiClient, RemoteApiClient>();
@@ -285,6 +346,8 @@ if (isConfigured)
     builder.Services.AddHostedService<ScheduledBackupService>();
     builder.Services.AddHostedService<JanitorService>();
     builder.Services.AddHostedService<CollectionService>();
+    builder.Services.AddMemoryCache();
+    builder.Services.AddSingleton<IProxmoxInventoryCache, ProxmoxInventoryCache>();
 
 }
 
@@ -324,18 +387,17 @@ builder.WebHost.ConfigureKestrel(options =>
 
     options.ListenAnyIP(443, listenOpts =>
     {
-        var certService = builder.Services.BuildServiceProvider()
-                                 .GetRequiredService<SelfSignedCertificateService>();
-
-        var cert = certService.CurrentCertificate;
-        if (cert == null)
+        listenOpts.UseHttps(httpsOpts =>
         {
-            throw new InvalidOperationException("Failed to load or generate the self‐signed certificate.");
-        }
-
-        listenOpts.UseHttps(cert);
+            var sp = options.ApplicationServices; // <-- the real app provider
+            var certService = sp.GetRequiredService<SelfSignedCertificateService>();
+            var cert = certService.CurrentCertificate
+                      ?? throw new InvalidOperationException("Failed to load or generate the self-signed certificate.");
+            httpsOpts.ServerCertificate = cert;
+        });
     });
 });
+
 
 
 var app = builder.Build();

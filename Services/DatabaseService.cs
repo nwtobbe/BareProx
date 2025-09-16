@@ -18,6 +18,8 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
+// Prepared for future database configuration management
+
 namespace BareProx.Services
 {
     public class DatabaseService

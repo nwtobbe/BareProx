@@ -115,4 +115,30 @@ namespace BareProx.Models
         /// </summary>
         public IEnumerable<SelectListItem> TimeZones { get; set; }
     }
+
+    public sealed class ProxmoxHubViewModel
+    {
+        // Tab 1: list of clusters
+        public IEnumerable<ProxmoxCluster> Clusters { get; set; } = new List<ProxmoxCluster>();
+
+        // The selected cluster to manage in tabs 2 & 3
+        public ProxmoxCluster? SelectedCluster { get; set; }
+
+        // Tab 3: storage selection data (same as your SelectStorageViewModel)
+        public SelectStorageViewModel? StorageView { get; set; }
+
+        // Optional message bubble
+        public string? Message { get; set; }
+
+        // For pre-selecting a cluster via querystring ?selectedId=...
+        public int? SelectedId { get; set; }
+    }
+
+    public class NetappHubViewModel
+    {
+        public IEnumerable<NetappController> Controllers { get; set; } = new List<NetappController>();
+        public NetappController? Selected { get; set; }
+        public int? SelectedId { get; set; }
+        public string? Message { get; set; }
+    }
 }
