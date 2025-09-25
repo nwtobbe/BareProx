@@ -256,14 +256,36 @@ namespace BareProx.Services
 
         public async Task SyncSnapMirrorRelationsAsync(CancellationToken ct = default)
         {
-            // 1) Get all secondary controllers that have selected volumes
-            var secondaryControllers = await _context.NetappControllers
-                .Where(c => !c.IsPrimary)
+            // 1) Load all controllers in memory
+            var controllers = await _context.NetappControllers
+                .AsNoTracking()
                 .ToListAsync(ct);
+
+            var controllerIds = controllers.Select(c => c.Id).ToHashSet();
+
+            // 2) Find SnapMirrorRelations with missing controllers
+            var invalidRelations = await _context.SnapMirrorRelations
+                .Where(r =>
+                    !controllerIds.Contains(r.SourceControllerId) ||
+                    !controllerIds.Contains(r.DestinationControllerId))
+                .ToListAsync(ct);
+
+            if (invalidRelations.Any())
+            {
+                _logger.LogWarning(
+                    "Removing {Count} SnapMirrorRelations with invalid controller references.",
+                    invalidRelations.Count);
+
+                _context.SnapMirrorRelations.RemoveRange(invalidRelations);
+                await _context.SaveChangesAsync(ct);
+            }
+
+            // 3) Proceed with regular sync for secondary controllers
+            var secondaryControllers = controllers.Where(c => !c.IsPrimary).ToList();
 
             foreach (var secondary in secondaryControllers)
             {
-                // 1a) Find all currently selected destination‐volumes for this controller
+                // 3a) Find selected destination volumes for this controller
                 var selectedDestVolumes = await _context.SelectedNetappVolumes
                     .Where(v => v.NetappControllerId == secondary.Id)
                     .Select(v => v.VolumeName)
@@ -271,57 +293,57 @@ namespace BareProx.Services
 
                 if (!selectedDestVolumes.Any())
                 {
-                    // If no volumes are selected for this controller, remove all existing relations for it:
+                    // If no volumes are selected, remove all relations for this controller
                     var toRemoveAll = await _context.SnapMirrorRelations
                         .Where(r => r.DestinationControllerId == secondary.Id)
                         .ToListAsync(ct);
+
                     if (toRemoveAll.Count > 0)
                     {
+                        _logger.LogInformation(
+                            "Removing {Count} SnapMirrorRelations because no selected volumes remain for controller {ControllerId}.",
+                            toRemoveAll.Count, secondary.Id);
+
                         _context.SnapMirrorRelations.RemoveRange(toRemoveAll);
                         await _context.SaveChangesAsync(ct);
                     }
                     continue;
                 }
 
-                // 2) Pull all SnapMirror relationships from the secondary side
+                // 3b) Pull live SnapMirror relationships
                 var liveRelations = await GetSnapMirrorRelationsAsync(secondary, ct);
 
-                // 3) Filter only those whose destination volume is still selected
+                // 3c) Filter by selected destination volumes
                 var filtered = liveRelations
                     .Where(r => selectedDestVolumes
                         .Contains(r.DestinationVolume, StringComparer.OrdinalIgnoreCase))
                     .ToList();
 
-                // 4) Load all existing DB relations for this controller
+                // 3d) Load current DB relations for this controller
                 var existingDbRelations = await _context.SnapMirrorRelations
                     .Where(r => r.DestinationControllerId == secondary.Id)
                     .ToListAsync(ct);
 
-                // 5) Build a lookup for existing DB relations keyed by (DestinationVolume, SourceVolume)
                 var dbLookup = existingDbRelations
                     .ToDictionary(
                         r => (r.DestinationVolume.ToLowerInvariant(), r.SourceVolume.ToLowerInvariant())
                     );
 
-                // 6) Go through each live (filtered) relation, and either update or insert
-                var allSelectedVolumeEntries = await _context.SelectedNetappVolumes
-                    .ToListAsync(ct);
+                var allSelectedVolumeEntries = await _context.SelectedNetappVolumes.ToListAsync(ct);
 
+                // 3e) Update or insert
                 foreach (var relation in filtered)
                 {
-                    // Find matching DB row by (SourceVolume, DestinationVolume, DestinationControllerId)
                     var key = (relation.DestinationVolume.ToLowerInvariant(), relation.SourceVolume.ToLowerInvariant());
 
                     if (dbLookup.TryGetValue(key, out var existing))
                     {
-                        // Update fields on the existing DB row
+                        // Update existing record
                         existing.Uuid = relation.Uuid;
                         existing.SourceControllerId = allSelectedVolumeEntries
                             .FirstOrDefault(c => c.VolumeName.Equals(relation.SourceVolume, StringComparison.OrdinalIgnoreCase))
                             ?.NetappControllerId ?? 0;
-                        existing.SourceVolume = relation.SourceVolume;
                         existing.DestinationControllerId = relation.DestinationControllerId;
-                        existing.DestinationVolume = relation.DestinationVolume;
                         existing.RelationshipType = relation.RelationshipType;
                         existing.SnapMirrorPolicy = relation.SnapMirrorPolicy;
                         existing.state = relation.state;
@@ -343,7 +365,6 @@ namespace BareProx.Services
                         existing.LastTransferCompressionRatio = relation.LastTransferCompressionRatio;
                         existing.BackoffLevel = relation.BackoffLevel;
 
-                        // Remove from dbLookup to mark it as handled
                         dbLookup.Remove(key);
                     }
                     else
@@ -356,18 +377,21 @@ namespace BareProx.Services
                     }
                 }
 
-                // 7) Anything still left in dbLookup means those DB entries have no live counterpart
-                //    or their destination volume is no longer selected → remove them
+                // 3f) Remove stale relations
                 var toRemove = dbLookup.Values.ToList();
                 if (toRemove.Any())
                 {
+                    _logger.LogInformation(
+                        "Removing {Count} stale SnapMirrorRelations for controller {ControllerId}.",
+                        toRemove.Count, secondary.Id);
+
                     _context.SnapMirrorRelations.RemoveRange(toRemove);
                 }
 
-                // 8) Persist all changes for this controller in one SaveChanges call
                 await _context.SaveChangesAsync(ct);
             }
         }
+
 
         public async Task<SnapMirrorPolicy?> SnapMirrorPolicyGet(int controllerId, string policyUuid, CancellationToken ct = default)
         {

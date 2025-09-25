@@ -41,3 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Restore of EFI boot disks.
 - Minor menu issue
+
+## [1.0.2509.2513] – 2025-09-25
+
+### Fixed
+
+- Changed the way how Snapmirror relationships are updated. 

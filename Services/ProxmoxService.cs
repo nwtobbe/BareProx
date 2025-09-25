@@ -640,9 +640,15 @@ namespace BareProx.Services
                     if (!diskRegex.IsMatch(prop.Name))
                         continue;
 
-                    var val = prop.Value.GetString()!;
-                    // e.g. "restore_123_202505…:vm-…-disk-0.qcow2,…"
-                    if (val.StartsWith($"{storageNameFilter}:", StringComparison.OrdinalIgnoreCase))
+                    var val = prop.Value.GetString();
+                    if (string.IsNullOrWhiteSpace(val))
+                        continue;
+
+                    var cleanVal = val.Trim();
+                    var parts = cleanVal.Split(':', 2);
+
+                    if (parts.Length > 1 &&
+                        parts[0].Equals(storageNameFilter, StringComparison.OrdinalIgnoreCase))
                     {
                         result.Add(new ProxmoxVM
                         {
@@ -651,7 +657,7 @@ namespace BareProx.Services
                             HostName = nodeName,
                             HostAddress = hostAddress
                         });
-                        break; // once one disk matches, no need to check more disks
+                        break; // no need to check more disks
                     }
                 }
             }
@@ -1276,7 +1282,7 @@ namespace BareProx.Services
             }
 
             // 3) Delete VM
-            var deleteUrl = baseApiUrl;
+            var deleteUrl = $"{baseApiUrl}?purge=1";
             await SendWithRefreshAsync(cluster, HttpMethod.Delete, deleteUrl, null, ct);
         }
 

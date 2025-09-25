@@ -9,4 +9,5 @@ If you can help, comment on—or better, open a pull request for—the linked issue.
 | #2  | TPM-devices								| None									| **Will not work**		|
 | #3  | Cloud-Init Drives						| Recreate them according to Proxmox	| **No fix available**	|
 | #4  | EFI-drives								| Move them offline						| **Fixed**				|
+| #5  | Snapmirror relationships not updating   | none                                  | **Fixed**             |
 | #   |     |     | **** |

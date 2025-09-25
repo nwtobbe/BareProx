@@ -68,9 +68,9 @@ services:
   
   ```bash
   cd /path/to/BareProx
-  ```
-  
+    
   docker compose up -d
+  ```
   
 
 Volumes map as follows:
