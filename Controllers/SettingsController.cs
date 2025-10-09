@@ -664,12 +664,38 @@ namespace BareProx.Controllers
         [ValidateAntiForgeryToken]
         public async Task<IActionResult> DeleteConfirmed(int id, CancellationToken ct)
         {
-            var controller = await _context.NetappControllers.FindAsync(id, ct);
-            if (controller != null)
+            // 1. Load the controller
+            var controller = await _context.NetappControllers.FindAsync(new object[] { id }, ct);
+            if (controller == null) return NotFound();
+
+            // 2. Remove SnapMirrorRelations referencing this controller
+            var snapMirrorRelations = await _context.SnapMirrorRelations
+                .Where(r => r.SourceControllerId == id || r.DestinationControllerId == id)
+                .ToListAsync(ct);
+
+            if (snapMirrorRelations.Any())
             {
-                _context.NetappControllers.Remove(controller);
-                await _context.SaveChangesAsync(ct);
+                _context.SnapMirrorRelations.RemoveRange(snapMirrorRelations);
             }
+
+            // 3. Remove SelectedNetappVolumes referencing this controller
+            var selectedVolumes = await _context.SelectedNetappVolumes
+                .Where(v => v.NetappControllerId == id)
+                .ToListAsync(ct);
+
+            if (selectedVolumes.Any())
+            {
+                _context.SelectedNetappVolumes.RemoveRange(selectedVolumes);
+            }
+
+            // 4. Finally, remove the controller
+            _context.NetappControllers.Remove(controller);
+
+            // 5. Save all changes in one transaction
+            await _context.SaveChangesAsync(ct);
+
+            TempData["Message"] = $"Controller '{controller.Hostname}' and related data were deleted successfully.";
+
             return RedirectToAction(nameof(Index));
         }
 

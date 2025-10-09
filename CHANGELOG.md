@@ -47,3 +47,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Changed the way how Snapmirror relationships are updated. 
+
+## [1.0.2509.2513] – 2025-09-25
+
+### Fixed
+
+- Fixed cleanup when removing netapp-cluster
+- Update of variuos modules.
+
+## [1.0.2510.0914] – 2025-10-09
+
+### Fixed
+
+- paused VM not resumed by BareProx, Fixed by lchanouha (Sorry for the late merge)
