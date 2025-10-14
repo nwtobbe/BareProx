@@ -3,6 +3,7 @@ using System;
 using BareProx.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace BareProx.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251013192315_AddMigrattionQueuitem")]
+    partial class AddMigrattionQueuitem
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.6");
@@ -166,24 +169,6 @@ namespace BareProx.Migrations
                     b.ToTable("BackupSchedules");
                 });
 
-            modelBuilder.Entity("BareProx.Models.FeatureToggle", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
-
-                    b.Property<bool>("Enabled")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("Key")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("FeatureToggles");
-                });
-
             modelBuilder.Entity("BareProx.Models.Job", b =>
                 {
                     b.Property<int>("Id")
@@ -218,13 +203,34 @@ namespace BareProx.Migrations
                     b.ToTable("Jobs");
                 });
 
-            modelBuilder.Entity("BareProx.Models.MigrationQueueItem", b =>
+            modelBuilder.Entity("BareProx.Models.MigrationSelection", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
-                    b.Property<int?>("Cores")
+                    b.Property<int>("ClusterId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ProxmoxHostId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("StorageIdentifier")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("MigrationSelections");
+                });
+
+            modelBuilder.Entity("BareProx.Models.MigratonQueueItem", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("CpuType")
@@ -237,9 +243,6 @@ namespace BareProx.Migrations
                     b.Property<string>("DisksJson")
                         .IsRequired()
                         .HasColumnType("TEXT");
-
-                    b.Property<int?>("MemoryMiB")
-                        .HasColumnType("INTEGER");
 
                     b.Property<bool>("MountVirtioIso")
                         .HasColumnType("INTEGER");
@@ -262,9 +265,6 @@ namespace BareProx.Migrations
                     b.Property<string>("ScsiController")
                         .HasMaxLength(100)
                         .HasColumnType("TEXT");
-
-                    b.Property<int?>("Sockets")
-                        .HasColumnType("INTEGER");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -291,66 +291,7 @@ namespace BareProx.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("MigrationQueueItems");
-                });
-
-            modelBuilder.Entity("BareProx.Models.MigrationQueueLog", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("DataJson")
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("ItemId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("Level")
-                        .IsRequired()
-                        .HasMaxLength(16)
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("Message")
-                        .IsRequired()
-                        .HasMaxLength(2000)
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("Step")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateTime>("Utc")
-                        .HasColumnType("TEXT");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("MigrationQueueLogs");
-                });
-
-            modelBuilder.Entity("BareProx.Models.MigrationSelection", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("ClusterId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("ProxmoxHostId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("StorageIdentifier")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("TEXT");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("MigrationSelections");
+                    b.ToTable("MigratonQueueItem");
                 });
 
             modelBuilder.Entity("BareProx.Models.NetappController", b =>

@@ -1,0 +1,54 @@
+﻿@model BareProx.Models.MigrationSettingsViewModel
+@{
+    ViewData["Title"] = "Migration – Settings";
+}
+
+<h2 class="mb-3">Migration Settings</h2>
+
+@if (TempData["ErrorMessage"] is string err)
+{
+    <div class="alert alert-danger"><strong>Error:</strong> @err</div>
+}
+@if (TempData["SuccessMessage"] is string ok)
+{
+    <div class="alert alert-success">@ok</div>
+}
+
+<!-- Pick cluster then reload options -->
+<form asp-action="Settings" method="get" class="mb-3">
+    <div class="row g-2 align-items-end">
+        <div class="col-md-6">
+            <label asp-for="SelectedClusterId" class="form-label">Proxmox Cluster</label>
+            <select asp-for="SelectedClusterId" asp-items="Model.ClusterOptions" class="form-select"></select>
+        </div>
+        <div class="col-md-3">
+            <button type="submit" class="btn btn-outline-primary w-100">Load Cluster</button>
+        </div>
+    </div>
+</form>
+
+<form asp-action="Settings" method="post">
+    @Html.AntiForgeryToken()
+    <input type="hidden" asp-for="SelectedClusterId" />
+    <div asp-validation-summary="ModelOnly" class="text-danger mb-3"></div>
+
+    <div class="row g-3">
+        <div class="col-md-6">
+            <label class="form-label" asp-for="SelectedHostId">Proxmox Host</label>
+            <select class="form-select" asp-for="SelectedHostId" asp-items="Model.HostOptions"></select>
+            <span class="text-danger small" asp-validation-for="SelectedHostId"></span>
+        </div>
+
+        <div class="col-md-6">
+            <label class="form-label" asp-for="SelectedStorageIdentifier">Migration Datastore</label>
+            <select class="form-select" asp-for="SelectedStorageIdentifier" asp-items="Model.StorageOptions"></select>
+            <span class="text-danger small" asp-validation-for="SelectedStorageIdentifier"></span>
+        </div>
+    </div>
+
+    <div class="mt-4 d-flex gap-2">
+        <button type="submit" class="btn btn-primary">Save</button>
+        <a asp-action="Migrate" class="btn btn-outline-secondary">Back to Migrate</a>
+        <a asp-action="Help" class="btn btn-outline-info">Help</a>
+    </div>
+</form>

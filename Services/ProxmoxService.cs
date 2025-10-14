@@ -23,6 +23,7 @@ using BareProx.Models;
 using Microsoft.EntityFrameworkCore;
 using System.Diagnostics;
 using System.Net;
+using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -62,7 +63,6 @@ namespace BareProx.Services
             _proxmoxHelpers = proxmoxHelpers;
             _proxmoxAuthenticator = proxmoxAuthenticator;
         }
-
 
         /// <summary>
         /// Sends a request and retries once if a 401 is returned, refreshing the API token.
@@ -1539,7 +1539,415 @@ namespace BareProx.Services
             return (false, 0, 0, new Dictionary<string, bool>(), $"Cluster unreachable: {errMsg}");
         }
 
-    }
+        // Helper: find a cluster + host that matches the given node (by Hostname or HostAddress)
+        private async Task<(ProxmoxCluster Cluster, ProxmoxHost Host)?> ResolveClusterAndHostAsync(
+            string node,
+            CancellationToken ct = default)
+        {
+            var clusters = await _context.ProxmoxClusters
+                .Include(c => c.Hosts)
+                .ToListAsync(ct);
 
+            if (clusters.Count == 0) return null;
+
+            // Try to find a host whose Hostname or HostAddress matches the node string
+            foreach (var c in clusters)
+            {
+                var h = c.Hosts.FirstOrDefault(x =>
+                    x.Hostname.Equals(node, StringComparison.OrdinalIgnoreCase) ||
+                    x.HostAddress.Equals(node, StringComparison.OrdinalIgnoreCase));
+
+                if (h != null) return (c, h);
+            }
+
+            // Fallback: just use the first cluster/host
+            var fallbackCluster = clusters.First();
+            var fallbackHost = fallbackCluster.Hosts.FirstOrDefault();
+            if (fallbackHost == null) return null;
+
+            return (fallbackCluster, fallbackHost);
+        }
+
+        // GET /api2/json/nodes/{node}/network
+        public async Task<IReadOnlyList<PveNetworkIf>> GetNodeNetworksAsync(
+            string node,
+            CancellationToken ct = default)
+        {
+            var resolved = await ResolveClusterAndHostAsync(node, ct);
+            if (resolved == null) return Array.Empty<PveNetworkIf>();
+
+            var (cluster, host) = resolved.Value;
+            var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/network";
+
+            try
+            {
+                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+                var json = await resp.Content.ReadAsStringAsync(ct);
+                using var doc = JsonDocument.Parse(json);
+
+                if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+                    return Array.Empty<PveNetworkIf>();
+
+                var list = new List<PveNetworkIf>();
+                foreach (var n in data.EnumerateArray())
+                {
+                    var type = n.TryGetProperty("type", out var t) ? t.GetString() : null;
+                    var iface = n.TryGetProperty("iface", out var i) ? i.GetString() : null;
+
+                    list.Add(new PveNetworkIf
+                    {
+                        Type = type,
+                        Iface = iface
+                    });
+                }
+                return list;
+            }
+            catch
+            {
+                return Array.Empty<PveNetworkIf>();
+            }
+        }
+
+        // GET /api2/json/cluster/sdn/vnets
+        public async Task<IReadOnlyList<PveSdnVnet>> GetSdnVnetsAsync(CancellationToken ct = default)
+        {
+            // Use any available cluster/host to hit the cluster endpoint
+            var cluster = await _context.ProxmoxClusters
+                .Include(c => c.Hosts)
+                .FirstOrDefaultAsync(ct);
+
+            if (cluster == null || cluster.Hosts.Count == 0)
+                return Array.Empty<PveSdnVnet>();
+
+            var host = cluster.Hosts.First();
+            var url = $"https://{host.HostAddress}:8006/api2/json/cluster/sdn/vnets";
+
+            try
+            {
+                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+                var json = await resp.Content.ReadAsStringAsync(ct);
+                using var doc = JsonDocument.Parse(json);
+
+                if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+                    return Array.Empty<PveSdnVnet>();
+
+                var list = new List<PveSdnVnet>();
+                foreach (var v in data.EnumerateArray())
+                {
+                    var vnet = v.TryGetProperty("vnet", out var vn) ? vn.GetString() : null;
+
+                    int? tag = null;
+                    if (v.TryGetProperty("tag", out var tg))
+                    {
+                        if (tg.ValueKind == JsonValueKind.Number) tag = tg.GetInt32();
+                        else if (tg.ValueKind == JsonValueKind.String && int.TryParse(tg.GetString(), out var ti)) tag = ti;
+                    }
+
+                    list.Add(new PveSdnVnet
+                    {
+                        Vnet = vnet,
+                        Tag = tag
+                    });
+                }
+                return list;
+            }
+            catch
+            {
+                return Array.Empty<PveSdnVnet>();
+            }
+        }
+
+        // GET /api2/json/nodes/{node}/storage/{storage}/content?content=iso
+        public async Task<IReadOnlyList<PveStorageContentItem>> GetStorageContentAsync(
+            string node,
+            string storage,
+            string content,
+            CancellationToken ct = default)
+        {
+            var resolved = await ResolveClusterAndHostAsync(node, ct);
+            if (resolved == null) return Array.Empty<PveStorageContentItem>();
+
+            var (cluster, host) = resolved.Value;
+            var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/storage/{Uri.EscapeDataString(storage)}/content?content={Uri.EscapeDataString(content)}";
+
+            try
+            {
+                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+                var json = await resp.Content.ReadAsStringAsync(ct);
+                using var doc = JsonDocument.Parse(json);
+
+                if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+                    return Array.Empty<PveStorageContentItem>();
+
+                var list = new List<PveStorageContentItem>();
+                foreach (var i in data.EnumerateArray())
+                {
+
+                    long? ctime = null;
+                    if (i.TryGetProperty("ctime", out var ctProp))
+                    {
+                        if (ctProp.ValueKind == JsonValueKind.Number) ctime = ctProp.GetInt64();
+                        else if (ctProp.ValueKind == JsonValueKind.String && long.TryParse(ctProp.GetString(), out var l)) ctime = l;
+                    }
+                    // Proxmox can return volid/volId/volume; read all safely
+                    string? name = i.TryGetProperty("name", out var n) ? n.GetString() : null;
+                    string? volid = i.TryGetProperty("volid", out var vi) ? vi.GetString() : null;
+                    string? volId = i.TryGetProperty("volId", out var vI) ? vI.GetString() : null;
+                    string? volume = i.TryGetProperty("volume", out var vo) ? vo.GetString() : null;
+                    string? cnt = i.TryGetProperty("content", out var c) ? c.GetString() : null;
+
+                    list.Add(new PveStorageContentItem
+                    {
+                        Name = name,
+                        Volid = volid,
+                        VolId = volId,
+                        Volume = volume,
+                        Content = cnt,
+                        Ctime = ctime
+                    });
+                }
+                return list;
+            }
+            catch
+            {
+                return Array.Empty<PveStorageContentItem>();
+            }
+        }
+        public async Task<IReadOnlyList<PveStorageListItem>> GetNodeStoragesAsync(
+            string node,
+            CancellationToken ct = default)
+        {
+            var resolved = await ResolveClusterAndHostAsync(node, ct);
+            if (resolved == null) return Array.Empty<PveStorageListItem>();
+
+            var (cluster, host) = resolved.Value;
+            var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/storage";
+
+            try
+            {
+                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+                var json = await resp.Content.ReadAsStringAsync(ct);
+                using var doc = JsonDocument.Parse(json);
+
+                if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+                    return Array.Empty<PveStorageListItem>();
+
+                var list = new List<PveStorageListItem>();
+                foreach (var s in data.EnumerateArray())
+                {
+                    var storage = s.TryGetProperty("storage", out var st) ? st.GetString() : null;
+                    if (string.IsNullOrWhiteSpace(storage)) continue;
+
+                    var content = s.TryGetProperty("content", out var c) ? c.GetString() : null;
+                    var type = s.TryGetProperty("type", out var t) ? t.GetString() : null;
+
+                    list.Add(new PveStorageListItem
+                    {
+                        Storage = storage,
+                        Content = content,
+                        Type = type
+                    });
+                }
+                return list;
+            }
+            catch
+            {
+                return Array.Empty<PveStorageListItem>();
+            }
+        }
+
+        private async Task<(ProxmoxCluster Cluster, ProxmoxHost Host, string SshUser, string SshPass)> GetSshTargetAsync(CancellationToken ct)
+        {
+            var cluster = await _context.ProxmoxClusters
+                .Include(c => c.Hosts)
+                .FirstOrDefaultAsync(ct) ?? throw new InvalidOperationException("No Proxmox cluster configured.");
+
+            var host = _proxmoxHelpers.GetQueryableHosts(cluster).FirstOrDefault()
+                ?? cluster.Hosts.FirstOrDefault()
+                ?? throw new InvalidOperationException("No Proxmox host configured.");
+
+            var sshUser = cluster.Username.Split('@')[0];
+            var sshPass = _encryptionService.Decrypt(cluster.PasswordHash);
+            return (cluster, host, sshUser, sshPass);
+        }
+
+        public async Task<bool> IsVmidAvailableAsync(int vmid, CancellationToken ct = default)
+        {
+            var (cluster, host, _, _) = await GetSshTargetAsync(ct);
+            var url = $"https://{host.HostAddress}:8006/api2/json/cluster/resources?type=vm";
+            var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+            var json = await resp.Content.ReadAsStringAsync(ct);
+
+            using var doc = JsonDocument.Parse(json);
+            var arr = doc.RootElement.GetProperty("data").EnumerateArray();
+            foreach (var e in arr)
+            {
+                if (e.TryGetProperty("vmid", out var v) && v.ValueKind == JsonValueKind.Number && v.GetInt32() == vmid)
+                    return false; // taken
+            }
+            // also consider existing conf file:
+            return !await FileExistsAsync($"/etc/pve/qemu-server/{vmid}.conf", ct);
+        }
+        public async Task EnsureDirectoryAsync(string absPath, CancellationToken ct = default)
+        {
+            var (_, host, sshUser, sshPass) = await GetSshTargetAsync(ct);
+            using var ssh = new Renci.SshNet.SshClient(host.HostAddress, sshUser, sshPass);
+            ssh.Connect();
+            var cmd = ssh.CreateCommand($"mkdir -p -- {ProxmoxHelpers.EscapeBash(absPath)}");
+            var _ = cmd.Execute();
+            if (cmd.ExitStatus != 0) throw new ProxmoxSshException(cmd.CommandText, cmd.ExitStatus, cmd.Error);
+            ssh.Disconnect();
+        }
+
+        public async Task<bool> FileExistsAsync(string absPath, CancellationToken ct = default)
+        {
+            var (_, host, sshUser, sshPass) = await GetSshTargetAsync(ct);
+            using var ssh = new Renci.SshNet.SshClient(host.HostAddress, sshUser, sshPass);
+            ssh.Connect();
+            using var cmd = ssh.CreateCommand($"test -e {ProxmoxHelpers.EscapeBash(absPath)} && echo OK || echo NO");
+            var result = cmd.Execute();
+            ssh.Disconnect();
+            return result.Trim().Equals("OK", StringComparison.OrdinalIgnoreCase);
+        }
+        public async Task<string> ReadTextFileAsync(string absPath, CancellationToken ct = default)
+        {
+            var (_, host, sshUser, sshPass) = await GetSshTargetAsync(ct);
+            using var ssh = new Renci.SshNet.SshClient(host.HostAddress, sshUser, sshPass);
+            ssh.Connect();
+            using var cmd = ssh.CreateCommand($"cat -- {ProxmoxHelpers.EscapeBash(absPath)}");
+            var text = cmd.Execute();
+            ssh.Disconnect();
+            return text ?? string.Empty;
+        }
+        public async Task WriteTextFileAsync(string absPath, string content, CancellationToken ct = default)
+        {
+            var (_, host, sshUser, sshPass) = await GetSshTargetAsync(ct);
+
+            absPath = ProxmoxHelpers.ToPosix(absPath);
+            var dir = ProxmoxHelpers.GetDirPosix(absPath);
+
+            var conn = new PasswordConnectionInfo(host.HostAddress, sshUser, sshPass)
+            {
+                Timeout = TimeSpan.FromSeconds(30) // connect timeout
+            };
+
+            using var ssh = new SshClient(conn)
+            {
+                KeepAliveInterval = TimeSpan.FromSeconds(15)
+            };
+
+            ssh.Connect();
+
+            // ensure target dir & truncate file
+            ExecOrThrow(ssh, $"mkdir -p -- {ProxmoxHelpers.EscapeBash(dir)} && : > {ProxmoxHelpers.EscapeBash(absPath)}");
+
+            // stream as base64 in small chunks to avoid channel aborts
+            var b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(content ?? string.Empty));
+            const int chunkSize = 4096;
+            for (int i = 0; i < b64.Length; i += chunkSize)
+            {
+                ct.ThrowIfCancellationRequested();
+                var chunk = b64.Substring(i, Math.Min(chunkSize, b64.Length - i));
+                ExecOrThrow(ssh, $"printf %s {ProxmoxHelpers.EscapeBash(chunk)} | base64 -d >> {ProxmoxHelpers.EscapeBash(absPath)}");
+            }
+
+            // best-effort flush
+            ExecOrThrow(ssh, "sync || true");
+
+            ssh.Disconnect();
+        }
+
+        private static void ExecOrThrow(SshClient ssh, string command)
+        {
+            using var cmd = ssh.CreateCommand(command);
+            cmd.CommandTimeout = TimeSpan.FromMinutes(2); // per-exec timeout
+            var _ = cmd.Execute();
+            if (cmd.ExitStatus != 0)
+                throw new ProxmoxSshException(cmd.CommandText, cmd.ExitStatus, cmd.Error);
+        }
+
+        public async Task SetCdromAsync(int vmid, string volidOrName, CancellationToken ct = default)
+        {
+            // Accept either "storage:iso/file.iso" or just "file.iso" (then assume 'local:iso/...')
+            var volid = volidOrName.Contains(':') ? volidOrName : $"local:iso/{volidOrName}";
+            var (cluster, host, _, _) = await GetSshTargetAsync(ct);
+
+            // Use API: change CDROM (ide2) – qm set --cdrom
+            var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/qemu/{vmid}/config";
+            var form = new FormUrlEncodedContent(new Dictionary<string, string> { ["cdrom"] = volid });
+            await SendWithRefreshAsync(cluster, HttpMethod.Post, url, form, ct);
+        }
+        public class ProxmoxSshException : Exception
+        {
+            public int? ExitStatus { get; }
+            public string Command { get; }
+            public string? Stderr { get; }
+
+            public ProxmoxSshException(string command, int? exitStatus, string? stderr)
+                : base($"SSH command failed ({exitStatus?.ToString() ?? "null"}): {command}\n{stderr}")
+            {
+                Command = command;
+                ExitStatus = exitStatus;
+                Stderr = stderr;
+            }
+        }
+
+        public async Task AddDummyDiskAsync(int vmid, string storage, int slot, int sizeGiB, CancellationToken ct = default)
+        {
+            // qm set {vmid} --virtio{slot} {storage}:{sizeGiB}
+            // Example: qm set 119 --virtio5 vm_migration:1
+            var (_, host, sshUser, sshPass) = await GetSshTargetAsync(ct);
+            var cmdText = $"qm set {vmid} --virtio{slot} {ProxmoxHelpers.EscapeBash($"{storage}:{sizeGiB}")}";
+
+            using var ssh = new Renci.SshNet.SshClient(host.HostAddress, sshUser, sshPass);
+            ssh.Connect();
+            using var cmd = ssh.CreateCommand(cmdText);
+            var _ = cmd.Execute();
+            var rc = cmd.ExitStatus;
+            var err = cmd.Error;
+            ssh.Disconnect();
+
+            if (rc != 0)
+                throw new ProxmoxSshException(cmdText, rc, err);
+        }
+        public async Task<int?> FirstFreeVirtioSlotAsync(int vmid, CancellationToken ct = default)
+        {
+            // Read current conf and find used virtioN entries
+            var confPath = $"/etc/pve/qemu-server/{vmid}.conf";
+            var text = await ReadTextFileAsync(confPath, ct);
+
+            var used = new HashSet<int>();
+            foreach (Match m in Regex.Matches(text ?? string.Empty, @"^\s*virtio(?<n>\d+):", RegexOptions.Multiline))
+            {
+                if (int.TryParse(m.Groups["n"]?.Value, out var n))
+                    used.Add(n);
+            }
+
+            // Proxmox conventionally supports 0..15 for each bus type
+            for (int i = 0; i <= 15; i++)
+                if (!used.Contains(i)) return i;
+
+            return null; // all taken
+        }
+        public async Task AddEfiDiskAsync(int vmid, string storage, CancellationToken ct = default)
+        {
+            // qm set {vmid} --efidisk0 {storage}:0
+            // Example: qm set 118 --efidisk0 vm_migration:0
+            var (_, host, sshUser, sshPass) = await GetSshTargetAsync(ct);
+            var target = $"{storage}:0";
+            var cmdText = $"qm set {vmid} --efidisk0 {ProxmoxHelpers.EscapeBash(target)}";
+
+            using var ssh = new Renci.SshNet.SshClient(host.HostAddress, sshUser, sshPass);
+            ssh.Connect();
+            using var cmd = ssh.CreateCommand(cmdText);
+            var _ = cmd.Execute();
+            var rc = cmd.ExitStatus;
+            var err = cmd.Error;
+            ssh.Disconnect();
+
+            if (rc != 0)
+                throw new ProxmoxSshException(cmdText, rc, err);
+        }
+    }
 
 }

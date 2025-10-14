@@ -39,6 +39,7 @@ using Serilog;
 using Serilog.Events;
 using BareProx.Services.Proxmox.Helpers;
 using BareProx.Services.Proxmox.Authentication;
+using BareProx.Services.Migration;
 
 // Alias for clarity
 using DbConfigModel = BareProx.Models.DatabaseConfigModels;
@@ -248,6 +249,7 @@ if (isConfigured)
         .AddEntityFrameworkStores<ApplicationDbContext>();
 
     // --- Repositories & Domain Services ----------------------------------------
+    builder.Services.AddScoped<BareProx.Services.Features.IFeatureService, BareProx.Services.Features.FeatureService>();
     builder.Services.AddScoped<IBackupRepository, BackupRepository>();
     builder.Services.AddScoped<IBackupService, BackupService>();
     builder.Services.AddScoped<INetappAuthService, NetappAuthService>();
@@ -259,6 +261,10 @@ if (isConfigured)
     builder.Services.AddScoped<IProxmoxAuthenticator, ProxmoxAuthenticator>();
     builder.Services.AddScoped<IProxmoxHelpers, ProxmoxHelpers>();
     builder.Services.AddScoped<IRestoreService, RestoreService>();
+    builder.Services.AddScoped<IProxmoxFileScanner, ProxmoxFileScanner>();
+    builder.Services.AddSingleton<IMigrationQueueRunner, MigrationQueueRunner>();
+    builder.Services.AddScoped<IMigrationExecutor, ProxmoxMigrationExecutor>();
+    builder.Services.AddScoped<IStorageSnapshotCoordinator, StorageSnapshotCoordinator>();
 
 
     // --- Remote API Client -----------------------------------------------------

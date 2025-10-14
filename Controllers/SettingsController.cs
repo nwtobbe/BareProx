@@ -18,26 +18,28 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
-using BareProx.Services;
 using BareProx.Data;
-using System.IO;
+using BareProx.Models;
+using BareProx.Services;
+using BareProx.Services.Features;
+using BareProx.Services.Proxmox.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
-using Newtonsoft.Json.Linq;
-using BareProx.Models;
-using Microsoft.EntityFrameworkCore;
-using TimeZoneConverter;
-
-using DbConfigModel = BareProx.Models.DatabaseConfigModels;
 using Microsoft.AspNetCore.Mvc.Rendering;
+using Microsoft.EntityFrameworkCore;
+using Newtonsoft.Json.Linq;
+using System.IO;
 using System.Runtime.InteropServices;
-using BareProx.Services.Proxmox.Authentication;
+using TimeZoneConverter;
+using DbConfigModel = BareProx.Models.DatabaseConfigModels;
 
 
 namespace BareProx.Controllers
 {
     public class SettingsController : Controller
     {
+        private const string FF_Experimental = "ExperimentalExtra";
+        private readonly IFeatureService _features;
         private readonly ApplicationDbContext _context;
         private readonly ProxmoxService _proxmoxService;
         private readonly INetappService _netappService;
@@ -52,6 +54,7 @@ namespace BareProx.Controllers
 
         public SettingsController(
             ApplicationDbContext context,
+            IFeatureService features,
             ProxmoxService proxmoxService,
             INetappService netappService,
             IEncryptionService encryptionService,
@@ -62,6 +65,7 @@ namespace BareProx.Controllers
             IProxmoxAuthenticator proxmoxAuthenticator)
         {
             _context = context;
+            _features = features;
             _proxmoxService = proxmoxService;
             _netappService = netappService;
             _encryptionService = encryptionService;
@@ -88,7 +92,7 @@ namespace BareProx.Controllers
         // Builds and returns the composite SettingsPageViewModel.
         // ========================================================
         [HttpGet]
-        public IActionResult Config()
+        public async Task<IActionResult> Config()
         {
             // 1) Load or create the JSON config file
             JObject cfg;
@@ -158,7 +162,21 @@ namespace BareProx.Controllers
             // 6) Build the Time Zone dropdown
             vm.TimeZones = BuildTimeZoneSelectList(selectedWindowsId);
 
+            // 7) Get the experimental feature flag state
+            ViewBag.ExperimentalExtra = await _features.IsEnabledAsync("ExperimentalExtra");
+
             return View("Config", vm);
+        }
+
+        // POST from the checkbox form
+        [HttpPost]
+        [ValidateAntiForgeryToken]
+        public async Task<IActionResult> ToggleExperimental()
+        {
+            var enabled = Request.Form.ContainsKey("ExperimentalExtra");
+            await _features.SetAsync(FF_Experimental, enabled);
+            TempData["Success"] = "Experimental features setting updated.";
+            return RedirectToAction(nameof(Config));
         }
 
         // ========================================================

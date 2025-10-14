@@ -18,11 +18,19 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
+using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Text.Json.Serialization;
 
 namespace BareProx.Models
 {
+
+    public class FeatureToggle // Enable Experimental Features
+    {
+        public int Id { get; set; }
+        public string Key { get; set; } = string.Empty;
+        public bool Enabled { get; set; }
+    }
     public class ProxmoxCluster
     {
         public int Id { get; set; }
@@ -244,6 +252,67 @@ namespace BareProx.Models
         public bool Preserve { get; set; }
         public int Warn { get; set; }
         public string? Period { get; set; }
+    }
+    public class MigrationSelection
+    {
+        public int Id { get; set; }
+
+        // Which cluster the selection applies to
+        public int ClusterId { get; set; }
+
+        // The chosen host within that cluster
+        public int ProxmoxHostId { get; set; }
+
+        // The chosen datastore identifier (matches ProxSelectedStorage.StorageIdentifier)
+        public string StorageIdentifier { get; set; } = string.Empty;
+
+        public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+    }
+
+    public class MigrationQueueItem
+    {
+        [Key] public int Id { get; set; }
+
+        public int? VmId { get; set; }
+        [MaxLength(200)] public string? Name { get; set; }
+        [MaxLength(100)] public string? CpuType { get; set; }
+        // Prefer storing memory in MiB so we can write it straight to Proxmox.
+        public int? MemoryMiB { get; set; }
+        public int? Sockets { get; set; }
+        public int? Cores { get; set; }
+
+        [MaxLength(100)] public string? OsType { get; set; }
+
+        public bool PrepareVirtio { get; set; }
+        public bool MountVirtioIso { get; set; }
+        [MaxLength(500)] public string? VirtioIsoName { get; set; }
+
+        [MaxLength(100)] public string? ScsiController { get; set; }
+        [MaxLength(1024)] public string? VmxPath { get; set; }
+
+        [MaxLength(100)] public string? Uuid { get; set; }
+        public bool Uefi { get; set; }
+
+        // JSON blobs for arrays
+        public string DisksJson { get; set; } = "[]";
+        public string NicsJson { get; set; } = "[]";
+
+        [MaxLength(40)] public string Status { get; set; } = "Queued"; // Queued / Processing / Done / Failed
+        public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+
+    }
+
+    public class MigrationQueueLog
+    {
+        public int Id { get; set; }
+
+        public int ItemId { get; set; }                 // FK to MigrationQueueItem
+        public DateTime Utc { get; set; } = DateTime.UtcNow;
+
+        [MaxLength(16)] public string Level { get; set; } = "Info";  // Info | Warning | Error
+        [MaxLength(64)] public string Step { get; set; } = "";      // e.g. CheckVmid, Symlink[0]
+        [MaxLength(2000)] public string Message { get; set; } = "";
+        public string? DataJson { get; set; }                         // optional payload/context
     }
 
 }

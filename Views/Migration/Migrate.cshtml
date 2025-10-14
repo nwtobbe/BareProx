@@ -1,0 +1,1014 @@
+﻿@model BareProx.Models.MigratePageViewModel
+@{
+    ViewData["Title"] = "Migration – Run";
+}
+
+<h2 class="mb-3">Leave Broadcom (Migration)</h2>
+
+<div class="d-flex flex-wrap gap-2 mb-3">
+    <button id="btn-scan" class="btn btn-outline-primary">Scan datastore</button>
+    <a asp-action="Settings" class="btn btn-outline-secondary">Settings</a>
+    <button id="btn-run-queue" class="btn btn-success">Run Queue</button>
+    <a asp-action="Help" class="btn btn-outline-info">Help</a>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body py-2">
+        <div class="row g-2">
+            <div class="col-auto">
+                <span class="badge bg-light text-dark">Cluster: <strong>@(Model.ClusterName ?? "—")</strong></span>
+            </div>
+            <div class="col-auto">
+                <span class="badge bg-light text-dark">Host: <strong>@(Model.HostName ?? "—")</strong></span>
+            </div>
+            <div class="col-auto">
+                <span class="badge bg-light text-dark">Datastore: <strong>@(Model.StorageName ?? "—")</strong></span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="table-responsive">
+    <table class="table table-sm align-middle" id="vmx-table">
+        <thead class="table-light">
+            <tr>
+                <th style="min-width:180px">Name</th>
+                <th>VMX Path</th>
+                <th>OS</th>
+                <th class="text-end">vCPU</th>
+                <th class="text-end">RAM (MiB)</th>
+                <th class="text-end">Disk (GiB)</th>
+                <th>NIC</th>
+            </tr>
+        </thead>
+        <tbody><!-- rows injected by JS --></tbody>
+    </table>
+</div>
+
+<!-- ============ Queued imports ============ -->
+<div class="card mt-4">
+    <div class="card-header py-2">
+        <strong>Queued imports</strong>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0" id="queued-table">
+                <thead class="table-light">
+                    <tr>
+                        <th class="text-nowrap">VM ID</th>
+                        <th>Name</th>
+                        <th class="text-nowrap">UEFI</th>
+                        <th class="text-end text-nowrap">Disks</th>
+                        <th class="text-end text-nowrap">NICs</th>
+                        <th class="text-nowrap">Status</th>
+                        <th style="width:220px">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="queued-body"><!-- queued rows --></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Run Queue Confirm -->
+<div class="modal fade" id="runQueueConfirmModal" tabindex="-1" aria-labelledby="runQueueConfirmLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="runQueueConfirmLabel">Are you absolutely sure?</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2">Please make sure you have a backup of each vm and that they are shut down.</p>
+                <p class="mb-0">This will take a storage snapshot of the datastore.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" id="btn-run-away" class="btn btn-danger">Run away</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Details Modal -->
+<div class="modal fade" id="queueDetailsModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Queued item</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="queueDetailsBody">
+                <!-- filled by JS with readable content -->
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Logs Modal -->
+<div class="modal fade" id="queueLogsModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    Logs for item <span id="logsItemId" class="text-muted"></span>
+                </h5>
+                <div class="ms-auto d-flex gap-2">
+                    <button type="button" id="btn-refresh-logs" class="btn btn-outline-secondary btn-sm">Refresh</button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+            </div>
+            <div class="modal-body p-0">
+                <div id="queueLogsBody" class="p-3 small text-muted">No logs yet.</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Wizard Modal -->
+<div class="modal fade" id="wizardModal" tabindex="-1" aria-labelledby="wizardLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="wizardLabel">Import Guest</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+
+            <div class="modal-body">
+                <ul class="nav nav-tabs mb-3" role="tablist">
+                    <li class="nav-item">
+                        <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-general" type="button" role="tab">General</button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-disks" type="button" role="tab">Disks</button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-network" type="button" role="tab">Network</button>
+                    </li>
+                </ul>
+
+                <form id="wizardForm">
+                    <div class="tab-content">
+
+                        <!-- General -->
+                        <div class="tab-pane fade show active" id="tab-general" role="tabpanel">
+                            <div class="row g-3">
+                                <div class="col-md-3">
+                                    <label class="form-label">VM ID</label>
+                                    <input class="form-control" name="VmId" type="number" value="118" />
+                                </div>
+                                <div class="col-md-9">
+                                    <label class="form-label">Name</label>
+                                    <input class="form-control" name="Name" />
+                                </div>
+
+                                <div class="col-md-6">
+                                    <label class="form-label">CPU Type</label>
+                                    <select class="form-select" name="CpuType" id="cpuTypeSelect"><!-- filled by JS --></select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">OS Type</label>
+                                    <select class="form-select" name="OsType" id="osTypeSelect"><!-- filled by JS --></select>
+                                </div>
+
+                                <!-- Memory (MiB) -->
+                                <div class="col-md-4">
+                                    <label class="form-label">Memory</label>
+                                    <div class="input-group">
+                                        <input class="form-control" name="MemoryMiB" type="number" min="4" step="1" placeholder="MiB">
+                                        <span class="input-group-text">MiB</span>
+                                    </div>
+                                    <div class="form-text">Leave blank to use Proxmox default.</div>
+                                </div>
+
+                                <!-- CPU topology -->
+                                <div class="col-md-4">
+                                    <label class="form-label">CPU Sockets</label>
+                                    <input class="form-control" name="Sockets" type="number" min="1" step="1" placeholder="e.g., 1">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">Cores / Socket</label>
+                                    <input class="form-control" name="Cores" type="number" min="1" step="1" placeholder="e.g., 2">
+                                    <div class="form-text">Total vCPU: <span id="vcpuDisplay">—</span></div>
+                                </div>
+
+                                <!-- Prepare for VirtIO (off by default) -->
+                                <div class="col-12">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" id="prepVirtio" name="PrepareVirtio">
+                                        <label class="form-check-label" for="prepVirtio">
+                                            Prepare for VirtIO (lock SCSI controller to VirtIO SCSI single, set disks to SATA, NICs to VirtIO)
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <!-- Mount VirtIO ISO (off by default) -->
+                                <div class="col-md-6">
+                                    <div class="form-check mb-2">
+                                        <input class="form-check-input" type="checkbox" id="mountIso" name="MountVirtioIso">
+                                        <label class="form-check-label" for="mountIso">Mount VirtIO drivers ISO</label>
+                                    </div>
+                                    <select class="form-select" name="VirtioIsoName" id="virtioIsoSelect"><!-- filled by JS --></select>
+                                </div>
+
+                                <!-- SCSI Controller (locked when PrepareVirtio is checked) -->
+                                <div class="col-md-6">
+                                    <label class="form-label">SCSI Controller</label>
+                                    <select class="form-select" name="ScsiController" id="scsiController"><!-- filled by JS --></select>
+                                </div>
+                            </div>
+
+                            <!-- Hidden fields for extra metadata -->
+                            <input type="hidden" name="VmxPath" />
+                            <input type="hidden" name="Uuid" />
+                            <input type="hidden" name="Uefi" />
+                        </div>
+
+                        <!-- Disks -->
+                        <div class="tab-pane fade" id="tab-disks" role="tabpanel">
+                            <div class="table-responsive">
+                                <table class="table table-sm align-middle" id="disks-table">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>Source VMDK</th>
+                                            <th class="text-end">Size (GiB)</th>
+                                            <th>Target Storage</th>
+                                            <th>Bus</th>
+                                            <th>Index</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody><!-- disk rows --></tbody>
+                                </table>
+                            </div>
+                            <small class="text-muted">Disks are discovered from the VMX. Source, size, and target are fixed here; adjust bus/index only.</small>
+                        </div>
+
+                        <!-- Network -->
+                        <div class="tab-pane fade" id="tab-network" role="tabpanel">
+                            <div class="table-responsive">
+                                <table class="table table-sm align-middle" id="nics-table">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>Model</th>
+                                            <th>MAC (optional)</th>
+                                            <th>Bridge</th>
+                                            <th class="text-end">VLAN</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody><!-- nic rows --></tbody>
+                                </table>
+                            </div>
+                            <small class="text-muted">NICs are discovered from the VMX. Choose bridge/SDN and VLAN where applicable.</small>
+                        </div>
+
+                    </div>
+                </form>
+            </div>
+
+            <div class="modal-footer">
+                <div class="text-muted me-auto small">
+                    These settings will be applied when you queue the import.
+                </div>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button id="btn-add" type="button" class="btn btn-primary">Add</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+@section Scripts {
+    <script>
+        window.addEventListener('DOMContentLoaded', () => {
+          // ---- URLs ----
+          const URLS = {
+            scan: '@Url.Action("Scan", "Migration")',
+            caps: '@Url.Action("Capabilities", "Migration")',
+            queue:'@Url.Action("Queue", "Migration")',
+            run:  '@Url.Action("RunQueue", "Migration")',
+            logs: '@Url.Action("QueueLogs", "Migration")' // NEW
+          };
+
+          // ---- Tiny helpers ----
+          const $  = s => document.querySelector(s);
+          const $$ = s => Array.from(document.querySelectorAll(s));
+          const on = (el, ev, fn) => { if (el) el.addEventListener(ev, fn); };
+          function readVal(o){ return (o && (o.value ?? o.Value ?? o.val ?? o.Val ?? o.id ?? o.Id)) || ""; }
+          function readLabel(o){ return (o && (o.label ?? o.Label ?? o.text ?? o.Text ?? o.name ?? o.Name)) || readVal(o); }
+          function first(obj){ for (let i=1;i<arguments.length;i++){ const k=arguments[i]; const v=obj && obj[k]; if (v!==undefined && v!==null) return v; } return undefined; }
+          function pick(){ for (let i=0;i<arguments.length;i++){ const v=arguments[i]; if (v!==undefined && v!==null) return v; } return undefined; }
+          function escapeHtml(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+          // ---- State ----
+          let CAPS = { cpus:[], nics:[], scsi:[], osTypes:[], bridges:[], vlans:[], virtioIsos:[] };
+          let currentList = [];
+          let currentVm   = null;
+
+          // Logs state
+          let currentLogsItemId = null;
+          let logsPollTimer = null;
+
+          // ---- DOM ----
+          const tableBody       = $('#vmx-table tbody');
+          const btnScan         = $('#btn-scan');
+          const btnRunQueue     = $('#btn-run-queue');
+          const queuedBody      = $('#queued-body');
+
+          const wizardModalEl   = $('#wizardModal');
+          const wizardForm      = $('#wizardForm');
+          const disksTbody      = $('#disks-table tbody');
+          const nicsTbody       = $('#nics-table tbody');
+          const cpuTypeSelect   = $('#cpuTypeSelect');
+          const osTypeSelect    = $('#osTypeSelect');
+          const scsiController  = $('#scsiController');
+          const prepVirtio      = $('#prepVirtio');
+          const mountIso        = $('#mountIso');
+          const virtioIsoSelect = $('#virtioIsoSelect');
+
+          const queueDetailsBody= $('#queueDetailsBody');
+
+          // Logs modal elements
+          const logsModalEl     = document.getElementById('queueLogsModal');
+          const btnRefreshLogs  = document.getElementById('btn-refresh-logs');
+          const logsBodyEl      = document.getElementById('queueLogsBody');
+          const logsItemIdEl    = document.getElementById('logsItemId');
+
+          // quick getters for new inputs
+          const socketsInput = () => wizardForm?.elements['Sockets'];
+          const coresInput   = () => wizardForm?.elements['Cores'];
+          const memInput     = () => wizardForm?.elements['MemoryMiB'];
+
+          // ---- ISO helpers ----
+          function populateIsoSelect(){
+            if (!virtioIsoSelect) return;
+            const list = CAPS.virtioIsos || [];
+            virtioIsoSelect.innerHTML = list.length
+              ? list.map(i => {
+                  const v = (i?.value ?? i?.Value ?? i)?.toString() || '';
+                  const l = (i?.label ?? i?.Label ?? v)?.toString() || v;
+                  return `<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`;
+                }).join('')
+              : '<option value="">— No virtio ISOs found —</option>';
+          }
+          function refreshIsoEnabled(){
+            if (!virtioIsoSelect || !mountIso) return;
+            virtioIsoSelect.disabled = !mountIso.checked;
+            if (!virtioIsoSelect.options.length) {
+              virtioIsoSelect.innerHTML = '<option value="">— No virtio ISOs found —</option>';
+            }
+            if (mountIso.checked && !virtioIsoSelect.value && virtioIsoSelect.options.length > 0) {
+              virtioIsoSelect.selectedIndex = 0;
+            }
+          }
+          on(mountIso, 'change', refreshIsoEnabled);
+
+          // ---- Queue polling (status) ----
+          let queuePollTimer = null;
+          function isActiveStatus(s){
+            const t = String(s || '').toLowerCase();
+            return t === 'queued' || t === 'processing' || t === 'running';
+          }
+          function anyActive(items){
+            return (items || []).some(it => isActiveStatus(it.status || it.Status));
+          }
+          async function pollQueueOnce(){
+            const items = await loadQueueSafe();
+            if (!anyActive(items)) { if (queuePollTimer) { clearInterval(queuePollTimer); queuePollTimer = null; } }
+          }
+          function startQueuePolling(){
+            if (queuePollTimer) return;
+            queuePollTimer = setInterval(pollQueueOnce, 3000);
+          }
+          function maybeStartPolling(items){ if (anyActive(items)) startQueuePolling(); }
+
+          // ---- OS / UEFI helpers ----
+          function pickOsValueFromGuestString(guestOs) {
+            const s = String(guestOs || '').toLowerCase();
+            if (s.includes('windows11') || s.includes('win11') || s.includes('server-2022')) return 'win11';
+            if (s.includes('win10') || s.includes('windows 10') || s.includes('2016') || s.includes('2019')) return 'win10';
+            if (s.includes('win7') || s.includes('windows 7') || s.includes('2008')) return 'win7';
+            if (/(linux|ubuntu|centos|debian|rhel|suse)/.test(s)) return 'l26';
+            return 'other';
+          }
+          const deriveUuid = vm =>
+            (vm && (vm.uuid || vm.Uuid || vm.vmUuid || vm.hwUuid || vm.hardwareUuid || vm.biosUuid || vm.vmxUuid || vm.uuidBios)) || '';
+          function deriveUefi(vm) {
+            const f = String((vm && (vm.firmware || vm.bootFirmware || vm.bios)) || '').toLowerCase();
+            return f.includes('efi') || !!(vm && (vm.uefiEnabled || vm.nvram || vm.efi || vm.efidisk));
+          }
+
+          // ---- Scan table row html ----
+          function rowHtml(vm) {
+            const name        = first(vm,'name','Name') ?? '';
+            const vmxPath     = first(vm,'vmxPath','VmxPath','path','Path') ?? '';
+            const guestOs     = first(vm,'guestOs','GuestOs','os','Os') ?? '';
+            const cpuCores    = first(vm,'cpuCores','CpuCores','vcpu','vCpu','Vcpu','VCPU') ?? '';
+            const memoryMiB   = first(vm,'memoryMiB','MemoryMiB','memMiB','MemMiB','ramMiB','RamMiB','memory','Memory') ?? '';
+            const diskSizeGiB = first(vm,'diskSizeGiB','DiskSizeGiB','diskGiB','DiskGiB','disk','Disk') ?? '';
+            const nicsArr     = first(vm,'nics','Nics') || [];
+            const nic0Model   = (nicsArr[0] && (nicsArr[0].model ?? nicsArr[0].Model)) || '';
+            const nic0Mac     = (nicsArr[0] && (nicsArr[0].mac   ?? nicsArr[0].Mac))   || '';
+            const nic0MacTxt  = nic0Mac ? `(${nic0Mac})` : '';
+
+            return `
+              <tr data-vmx="${escapeHtml(String(vmxPath))}">
+                <td class="text-primary fw-semibold vm-link" style="cursor:pointer">${escapeHtml(String(name))}</td>
+                <td class="small text-nowrap">${escapeHtml(String(vmxPath))}</td>
+                <td>${escapeHtml(String(guestOs))}</td>
+                <td class="text-end">${String(cpuCores)}</td>
+                <td class="text-end">${String(memoryMiB)}</td>
+                <td class="text-end">${String(diskSizeGiB)}</td>
+                <td>${escapeHtml(String(nic0Model))} ${escapeHtml(String(nic0MacTxt))}</td>
+              </tr>`;
+          }
+          function renderTable(list){ if (tableBody) tableBody.innerHTML = (list || []).map(rowHtml).join(''); }
+
+          // ---- Wizard rows (disks/nics) ----
+          function diskRow(d) {
+            const src   = d?.source ?? d?.Source ?? '';
+            const size  = d?.sizeGiB ?? d?.SizeGiB ?? d?.size ?? d?.Size ?? '';
+            const store = d?.storage ?? d?.Storage ?? '';
+            const bus   = d?.bus ?? d?.Bus ?? '';
+            const idx   = (d && d.index!=='' && d.index!=null) ? d.index : (d?.Index ?? '');
+            return `
+              <tr>
+                <td><input class="form-control form-control-sm" value="${escapeHtml(String(src))}" readonly></td>
+                <td class="text-end" style="width:110px">
+                  <input class="form-control form-control-sm text-end" type="number" value="${String(size)}" readonly>
+                </td>
+                <td style="width:200px"><input class="form-control form-control-sm" value="${escapeHtml(String(store))}" readonly></td>
+                <td style="width:120px">
+                  <select class="form-select form-select-sm disk-bus">
+                    <option ${String(bus)==='scsi'?'selected':''}>scsi</option>
+                    <option ${String(bus)==='sata'?'selected':''}>sata</option>
+                    <option ${String(bus)==='virtio'?'selected':''}>virtio</option>
+                    <option ${String(bus)==='ide'?'selected':''}>ide</option>
+                  </select>
+                </td>
+                <td style="width:90px"><input class="form-control form-control-sm disk-index" placeholder="0,1,2…" value="${String(idx)}"></td>
+              </tr>`;
+          }
+          function nicRow(n) {
+            const nicModelOptions = (CAPS.nics||[]).map(p=>{
+              const v = readVal(p), l=readLabel(p);
+              const sel = String(v)===String(n?.model ?? n?.Model) ? 'selected':'';
+              return `<option value="${escapeHtml(v)}" ${sel}>${escapeHtml(l)}</option>`;
+            }).join('');
+            const firstBridge = (CAPS.bridges && CAPS.bridges.length)
+              ? ((CAPS.bridges[0] && (CAPS.bridges[0].name || CAPS.bridges[0].Name)) || CAPS.bridges[0]) : '';
+            const bridgeVal = (n && n.bridge!=null && n.bridge!=='') ? n.bridge : (n?.Bridge ?? firstBridge);
+            const vlanVal   = (n && n.vlan  !=null && n.vlan  !=='') ? String(n.vlan) : (n?.Vlan ?? '');
+            const macVal    = (n && n.mac   !=null) ? String(n.mac) : (n?.Mac ?? '');
+
+            const bridgesHtml = (CAPS.bridges && CAPS.bridges.length)
+              ? `<select class="form-select form-select-sm nic-bridge">${(CAPS.bridges||[]).map(b=>{
+                    const v=(b?.name??b?.Name??b)||''; const sel=(String(v)===String(bridgeVal))?'selected':'';
+                    return `<option value="${escapeHtml(v)}" ${sel}>${escapeHtml(v||'—')}</option>`;
+                  }).join('')}
+                 </select>`
+              : `<input class="form-control form-control-sm nic-bridge" value="${escapeHtml(bridgeVal||'')}" placeholder="bridge (e.g., vmbr0)">`;
+
+            return `
+              <tr>
+                <td style="width:200px"><select class="form-select form-select-sm nic-model">${nicModelOptions}</select></td>
+                <td><input class="form-control form-control-sm nic-mac" value="${escapeHtml(macVal)}"></td>
+                <td style="width:220px">${bridgesHtml}</td>
+                <td class="text-end" style="width:180px">
+                  <input class="form-control form-control-sm nic-vlan text-end" type="number" min="1" max="4094" step="1" value="${escapeHtml(vlanVal)}" placeholder="VLAN (1–4094)">
+                </td>
+              </tr>`;
+          }
+
+          // ---- vCPU display helper ----
+          function toIntOrNull(x){ const n=Number(x); return Number.isFinite(n) && n>0 ? Math.trunc(n) : null; }
+          function scanTotalVcpu(vm){
+            const v = first(vm,'vCpu','Vcpu','VCPU','cpuCores','CpuCores','cores','Cores');
+            const n = Number(v);
+            return Number.isFinite(n) && n>0 ? Math.trunc(n) : null;
+          }
+          function updateVcpuDisplay(){
+            const s = toIntOrNull(wizardForm?.elements['Sockets']?.value);
+            const c = toIntOrNull(wizardForm?.elements['Cores']?.value);
+            const el = document.getElementById('vcpuDisplay');
+            const total = (s&&c) ? (s*c) : scanTotalVcpu(currentVm);
+            if (el) el.textContent = total ? String(total) : '—';
+          }
+
+          // ---- Wizard helpers ----
+          function setVal(name, val){ if (wizardForm?.elements[name]) wizardForm.elements[name].value = (val == null ? '' : val); }
+          function getVal(name){ const el = wizardForm?.elements[name]; return el ? el.value : ''; }
+          function setSelectToValueOrAppend(selectEl, value, labelIfNew) {
+            if (!selectEl || value == null || value === '') return;
+            const v = String(value);
+            const hit = Array.from(selectEl.options).find(o => o.value === v);
+            if (hit) { selectEl.value = v; return; }
+            const o = document.createElement('option'); o.value = v; o.text = labelIfNew || v; selectEl.add(o); selectEl.value = v;
+          }
+
+          function fillWizardFromVM(vm) {
+            if (!wizardForm) return;
+            currentVm = vm;
+
+            const vmxPath  = first(vm,'vmxPath','VmxPath','path','Path') || '';
+            const name     = first(vm,'name','Name') || '';
+            const vmId     = Number(first(vm,'vmId','VmId')) || 118;
+            const vmxOs    = first(vm,'vmxGuestId','VmxGuestId','vmxOsType','VmxOsType','guestOs','GuestOs','os','Os');
+            const scsiCtrl = first(vm,'scsiController','ScsiController','SCSIController');
+
+            setVal('VmxPath', vmxPath);
+            setVal('VmId', vmId);
+            setVal('Name', name);
+
+            const memScan = first(vm,'memoryMiB','MemoryMiB','memMiB','MemMiB','ramMiB','RamMiB','memory','Memory');
+            setVal('MemoryMiB', memScan || '');
+
+            const total = scanTotalVcpu(vm);
+            setVal('Sockets', total ? 1 : '');
+            setVal('Cores',   total || '');
+
+            const capCpuAes1 = (CAPS.cpus||[]).find(c=>readVal(c)==='x86-64-v2-AES');
+            const capCpuAes2 = (CAPS.cpus||[]).find(c=>/aes/i.test(readLabel(c)||''));
+            const capCpu0    = (CAPS.cpus||[])[0];
+            const defaultAes = readVal(capCpuAes1) || readVal(capCpuAes2) || readVal(capCpu0) || '';
+            const cpuValue   = first(vm,'cpuType','CpuType') || defaultAes;
+            if (cpuTypeSelect) setSelectToValueOrAppend(cpuTypeSelect, cpuValue, cpuValue);
+
+            const guess = pickOsValueFromGuestString(vmxOs);
+            if (osTypeSelect) {
+              const osHit = (CAPS.osTypes || []).find(o=>{
+                const rv = readVal(o), rl = String(readLabel(o)||'').toLowerCase();
+                const vmo= String(vmxOs||'').toLowerCase();
+                return rv===vmxOs || rv===guess || rl===vmo;
+              });
+              if (osHit) setSelectToValueOrAppend(osTypeSelect, readVal(osHit), readLabel(osHit));
+              else if (vmxOs) setSelectToValueOrAppend(osTypeSelect, vmxOs, vmxOs);
+            }
+
+            if (scsiController && scsiCtrl) {
+              const hit = (CAPS.scsi || []).find(s=>readVal(s)===scsiCtrl || readLabel(s)===scsiCtrl);
+              setSelectToValueOrAppend(scsiController, (readVal(hit)||scsiCtrl), scsiCtrl);
+            }
+
+            if (prepVirtio) prepVirtio.checked = false;
+            if (scsiController) scsiController.disabled = false;
+            if (mountIso) mountIso.checked = !!first(vm,'mountVirtioIso','MountVirtioIso');
+            populateIsoSelect(); refreshIsoEnabled();
+            if (virtioIsoSelect) {
+              const isoName = first(vm,'virtioIsoName','VirtioIsoName') || '';
+              if (isoName) setSelectToValueOrAppend(virtioIsoSelect, isoName, isoName);
+            }
+
+            setVal('Uuid', deriveUuid(vm));
+            setVal('Uefi', deriveUefi(vm) ? 'true' : 'false');
+
+            if (disksTbody) {
+              const disks = first(vm,'disks','Disks') || [];
+              disksTbody.innerHTML = '';
+              disks.forEach(d => {
+                const wrap = document.createElement('tbody'); wrap.innerHTML = diskRow(d);
+                disksTbody.appendChild(wrap.firstElementChild);
+              });
+            }
+
+            if (nicsTbody) {
+              const nics = first(vm,'nics','Nics') || [];
+              nicsTbody.innerHTML = '';
+              nics.forEach(n => {
+                const wrap = document.createElement('tbody'); wrap.innerHTML = nicRow(n);
+                const tr = wrap.firstElementChild;
+                nicsTbody.appendChild(tr);
+              });
+            }
+
+            updateVcpuDisplay();
+          }
+
+          // VirtIO preset
+          on(prepVirtio, 'change', function(){
+            if (!prepVirtio) return;
+            if (prepVirtio.checked) {
+              const scsiA = (CAPS.scsi||[]).find(s=>readVal(s)==='virtio-scsi-single');
+              const scsiB = (CAPS.scsi||[])[0];
+              const virtScsi = readVal(scsiA) || readVal(scsiB) || '';
+              if (scsiController && virtScsi) scsiController.value = virtScsi;
+              if (scsiController) scsiController.disabled = true;
+              if (disksTbody) $$('#disks-table .disk-bus').forEach(sel => sel.value='sata');
+              const virtNic = readVal((CAPS.nics||[]).find(n=>readVal(n)==='virtio')) || 'virtio';
+              if (nicsTbody) $$('#nics-table .nic-model').forEach(sel => sel.value = virtNic);
+            } else {
+              if (scsiController) scsiController.disabled = false;
+            }
+          });
+
+          // Recompute vCPU on topology edits
+          on(wizardForm?.elements['Sockets'], 'input', updateVcpuDisplay);
+          on(wizardForm?.elements['Cores'],   'input', updateVcpuDisplay);
+
+          // Click VM → wizard
+          on(tableBody, 'click', function(e){
+            const link = e.target.closest?.('.vm-link');
+            if (!link || !wizardModalEl) return;
+            const tr  = link.closest('tr');
+            const vmx = tr?.getAttribute('data-vmx') || '';
+            const vm = (currentList || []).find(x => String(first(x,'vmxPath','VmxPath','path','Path')||'') === String(vmx));
+            if (!vm) return;
+            fillWizardFromVM(vm);
+            new bootstrap.Modal(wizardModalEl).show();
+          });
+
+          // ---- Scan datastore ----
+          async function realScan() {
+            if (!btnScan) return;
+            btnScan.disabled = true;
+            const original = btnScan.textContent;
+            btnScan.textContent = 'Scanning…';
+            try {
+              const res = await fetch(URLS.scan);
+              if (!res.ok) throw new Error('Scan HTTP ' + res.status);
+              currentList = await res.json();
+              renderTable(currentList);
+              if (!currentList?.length) alert('No .vmx files found on the selected datastore (or selection is missing).');
+            } catch (e) {
+              console.error(e); alert('Scan failed. Check logs.');
+            } finally {
+              btnScan.disabled = false; btnScan.textContent = original;
+            }
+          }
+          on(btnScan, 'click', realScan);
+
+          // ===== Build payload from wizard =====
+          function collectDisks() {
+            if (!disksTbody) return [];
+            const out = [];
+            $$('#disks-table tbody tr').forEach(tr=>{
+              const inputs = tr.querySelectorAll('input.form-control-sm');
+              const srcEl = inputs[0], sizeEl = inputs[1], storageEl = inputs[2];
+              const busEl = tr.querySelector('.disk-bus');
+              const idxEl = tr.querySelector('.disk-index');
+              out.push({
+                source: srcEl ? srcEl.value : '',
+                sizeGiB: (sizeEl && sizeEl.value) ? Number(sizeEl.value) : null,
+                storage: storageEl ? storageEl.value : '',
+                bus: busEl ? busEl.value : '',
+                index: (idxEl && idxEl.value !== '') ? Number(idxEl.value) : null
+              });
+            });
+            return out;
+          }
+          function collectNics() {
+            if (!nicsTbody) return [];
+            const out = [];
+            $$('#nics-table tbody tr').forEach(tr=>{
+              const modelEl = tr.querySelector('.nic-model');
+              const macEl   = tr.querySelector('.nic-mac');
+              const brEl    = tr.querySelector('.nic-bridge');
+              const vlanEl  = tr.querySelector('.nic-vlan');
+              const vlanVal = vlanEl && vlanEl.value ? vlanEl.value.trim() : '';
+              out.push({
+                model: modelEl ? modelEl.value : '',
+                mac: macEl ? macEl.value : '',
+                bridge: brEl ? brEl.value : '',
+                vlan: vlanVal ? Number(vlanVal) : null
+              });
+            });
+            return out;
+          }
+          function buildPayloadFromWizard() {
+            const s = toIntOrNull(getVal('Sockets'));
+            const c = toIntOrNull(getVal('Cores'));
+            const derivedVcpu = (s && c) ? (s*c) : scanTotalVcpu(currentVm);
+            return {
+              vmId: Number(getVal('VmId')) || null,
+              name: getVal('Name'),
+              cpuType: cpuTypeSelect?.value || '',
+              osType:  osTypeSelect?.value  || '',
+              memoryMiB: (function(){
+                const raw = Number(getVal('MemoryMiB'));
+                if (!Number.isNaN(raw) && raw > 0) return raw;
+                const fromScan = first(currentVm,'memoryMiB','MemoryMiB','memMiB','MemMiB','ramMiB','RamMiB','memory','Memory');
+                return fromScan ? Number(fromScan) : null;
+              })(),
+              sockets: s ?? null,
+              cores:   c ?? null,
+              vcpu:    derivedVcpu ?? null,
+              prepareVirtio: !!(prepVirtio && prepVirtio.checked),
+              mountVirtioIso: !!(mountIso && mountIso.checked),
+              virtioIsoName: (mountIso && mountIso.checked) ? (virtioIsoSelect?.value || '') : '',
+              scsiController: scsiController?.value || '',
+              vmxPath: getVal('VmxPath'),
+              uuid: getVal('Uuid') || deriveUuid(currentVm||{}),
+              uefi: (getVal('Uefi') === 'true') || deriveUefi(currentVm||{}),
+              disks: collectDisks(),
+              nics:  collectNics()
+            };
+          }
+
+          // ===== Queue API & rendering =====
+          async function queueList(){
+            const res = await fetch(URLS.queue);
+            if (!res.ok) throw new Error('Queue list failed: HTTP '+res.status);
+            return await res.json();
+          }
+          async function queueAdd(payload){
+            const res = await fetch(URLS.queue, { method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify(payload) });
+            const json = await res.json().catch(()=>({}));
+            if (!res.ok || json.ok === false) throw new Error(json.error || ('Queue add failed: HTTP '+res.status));
+            return json;
+          }
+          async function queueRemove(id){
+            const res = await fetch(URLS.queue + '/' + encodeURIComponent(id), { method:'DELETE' });
+            const json = await res.json().catch(()=>({}));
+            if (!res.ok || json.ok === false) throw new Error(json.error || 'Remove failed');
+            return true;
+          }
+          function parseArrayMaybe(x){
+            if (Array.isArray(x)) return x;
+            if (!x) return [];
+            try { return JSON.parse(x); } catch { return []; }
+          }
+
+          function renderQueue(items){
+            if (!queuedBody) return;
+            const rows = (items || []).map(it=>{
+              const id    = first(it,'id','Id');
+              const vmId  = first(it,'vmId','VmId');
+              const name  = first(it,'name','Name') ?? '—';
+              const uefi  = !!first(it,'uefi','Uefi');
+              const disks = parseArrayMaybe(first(it,'disks','Disks') || first(it,'disksJson','DisksJson'));
+              const nics  = parseArrayMaybe(first(it,'nics','Nics')   || first(it,'nicsJson','NicsJson'));
+              const status= first(it,'status','Status','state','State','queueStatus','QueueStatus') || 'Queued';
+              const uefiBadge = uefi ? '<span class="badge bg-success">UEFI</span>' : '<span class="badge bg-secondary">BIOS</span>';
+              const full = { id, vmId, name, uefi, status, disks, nics, raw: it };
+              const encoded = encodeURIComponent(JSON.stringify(full));
+              return `
+                <tr data-id="${String(id)}">
+                  <td class="text-nowrap">${escapeHtml(vmId==null?'—':String(vmId))}</td>
+                  <td>${escapeHtml(String(name))}</td>
+                  <td class="text-nowrap">${uefiBadge}</td>
+                  <td class="text-end">${String(disks.length)}</td>
+                  <td class="text-end">${String(nics.length)}</td>
+                  <td class="text-nowrap">${escapeHtml(String(status))}</td>
+                  <td class="text-end">
+                    <div class="btn-group btn-group-sm">
+                      <button class="btn btn-outline-secondary btn-q-details" data-json="${encoded}">Details</button>
+                      <button class="btn btn-outline-primary btn-q-logs">Logs</button> <!-- NEW -->
+                      <button class="btn btn-outline-danger btn-q-remove">Remove</button>
+                    </div>
+                  </td>
+                </tr>`;
+            });
+            queuedBody.innerHTML = rows.join('') || '<tr><td colspan="7" class="text-center text-muted py-3">No items queued.</td></tr>';
+          }
+
+          async function loadQueueSafe(){
+            try {
+              const items = await queueList();
+              renderQueue(items);
+              return items;
+            } catch(e){
+              console.warn(e);
+              if (queuedBody) queuedBody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-3">Failed to load queue.</td></tr>';
+              return [];
+            }
+          }
+
+          // ---- Details (readable) ----
+          function renderReadableDetails(json) {
+            if (!queueDetailsBody) return;
+            let data; try { data = JSON.parse(decodeURIComponent(json)); } catch { data = null; }
+            if (!data) { queueDetailsBody.innerHTML = '<div class="text-muted">Unable to parse details.</div>'; return; }
+
+            const raw    = data.raw || {};
+            const osType = raw.osType || raw.OsType || '';
+            const cpuType= raw.cpuType || raw.CpuType || '';
+            const vmxPath= raw.vmxPath || raw.VmxPath || '';
+            const virtio = (raw.mountVirtioIso || raw.MountVirtioIso) ? (raw.virtioIsoName || raw.VirtioIsoName || '(mounted)') : null;
+            const memMiB = raw.memoryMiB ?? raw.MemoryMiB ?? '';
+
+            const sockets = raw.sockets ?? raw.Sockets ?? null;
+            const cores   = raw.cores   ?? raw.Cores   ?? null;
+            const vcpu    = raw.vcpu    ?? raw.Vcpu    ?? raw.VCPU ?? null;
+            const topoTxt = (sockets && cores) ? `${sockets} × ${cores} = ${Number(sockets)*Number(cores)}`
+                                               : (vcpu ? `${vcpu} vCPU` : '');
+
+            const disks = Array.isArray(data.disks) ? data.disks : [];
+            const nics  = Array.isArray(data.nics)  ? data.nics  : [];
+
+            queueDetailsBody.innerHTML = `
+              <div class="mb-2">
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                  <h5 class="mb-0">${escapeHtml(data.name || '—')} ${data.vmId ? '('+escapeHtml(String(data.vmId))+')' : ''}</h5>
+                  ${data.uefi ? '<span class="badge bg-success">UEFI</span>' : '<span class="badge bg-secondary">BIOS</span>'}
+                  ${data.status ? '<span class="badge bg-info text-dark">'+escapeHtml(String(data.status))+'</span>' : ''}
+                </div>
+              </div>
+
+              <div class="mb-3">
+                <div class="row g-2">
+                  ${osType ? `<div class="col-auto"><span class="badge bg-light text-dark">OS: <strong>${escapeHtml(osType)}</strong></span></div>`:''}
+                  ${cpuType ? `<div class="col-auto"><span class="badge bg-light text-dark">CPU: <strong>${escapeHtml(cpuType)}</strong></span></div>`:''}
+                  ${topoTxt ? `<div class="col-auto"><span class="badge bg-light text-dark">Topology: <strong>${escapeHtml(topoTxt)}</strong></span></div>`:''}
+                  ${memMiB ? `<div class="col-auto"><span class="badge bg-light text-dark">RAM: <strong>${escapeHtml(String(memMiB))} MiB</strong></span></div>`:''}
+                  ${vmxPath ? `<div class="col-12 small text-muted">VMX: ${escapeHtml(vmxPath)}</div>`:''}
+                  ${virtio ? `<div class="col-12 small">VirtIO ISO: <code>${escapeHtml(virtio)}</code></div>`:''}
+                </div>
+              </div>
+
+              <h6>Disks (${disks.length})</h6>
+              <div class="table-responsive mb-3">
+                <table class="table table-sm">
+                  <thead class="table-light"><tr><th>Source</th><th class="text-end">Size (GiB)</th><th>Storage</th><th>Bus</th><th>Index</th></tr></thead>
+                  <tbody>
+                    ${disks.map(d => `
+                      <tr>
+                        <td class="small">${escapeHtml(d?.source ?? d?.Source ?? '')}</td>
+                        <td class="text-end">${escapeHtml(d?.sizeGiB ?? d?.SizeGiB ?? d?.size ?? d?.Size ?? '')}</td>
+                        <td>${escapeHtml(d?.storage ?? d?.Storage ?? '')}</td>
+                        <td>${escapeHtml(d?.bus ?? d?.Bus ?? '')}</td>
+                        <td>${escapeHtml(d?.index ?? d?.Index ?? '')}</td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </div>
+
+              <h6>Network (${nics.length})</h6>
+              <div class="table-responsive">
+                <table class="table table-sm">
+                  <thead class="table-light"><tr><th>Model</th><th>MAC</th><th>Bridge</th><th class="text-end">VLAN</th></tr></thead>
+                  <tbody>
+                    ${nics.map(n => `
+                      <tr>
+                        <td>${escapeHtml(n?.model ?? n?.Model ?? '')}</td>
+                        <td class="small">${escapeHtml(n?.mac ?? n?.Mac ?? '')}</td>
+                        <td>${escapeHtml(n?.bridge ?? n?.Bridge ?? '')}</td>
+                        <td class="text-end">${escapeHtml(n?.vlan ?? n?.Vlan ?? '')}</td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+              </div>
+            `;
+          }
+
+          // ---- Logs helpers ----
+          function levelBadge(level) {
+            const l = String(level || '').toLowerCase();
+            if (l === 'error')   return '<span class="badge bg-danger">Error</span>';
+            if (l === 'warning') return '<span class="badge bg-warning text-dark">Warning</span>';
+            return '<span class="badge bg-secondary">Info</span>';
+          }
+          function renderLogsTable(logs) {
+            if (!logs?.length) return '<div class="p-3 text-muted">No logs yet for this item.</div>';
+            const rows = logs.map(x => `
+              <tr>
+                <td class="text-nowrap">${(x.utc || '').toString()}</td>
+                <td class="text-nowrap">${levelBadge(x.level)}</td>
+                <td class="text-nowrap">${escapeHtml(x.step || '')}</td>
+                <td class="small">${escapeHtml(x.message || '')}</td>
+              </tr>`).join('');
+            return `
+              <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0">
+                  <thead class="table-light">
+                    <tr>
+                      <th class="text-nowrap">UTC</th>
+                      <th class="text-nowrap">Level</th>
+                      <th class="text-nowrap">Step</th>
+                      <th>Message</th>
+                    </tr>
+                  </thead>
+                  <tbody>${rows}</tbody>
+                </table>
+              </div>`;
+          }
+          async function loadLogsFor(itemId) {
+            if (logsItemIdEl) logsItemIdEl.textContent = `#${itemId}`;
+            if (logsBodyEl) logsBodyEl.innerHTML = '<div class="p-3">Loading…</div>';
+            try {
+              const res = await fetch(URLS.logs + '?id=' + encodeURIComponent(itemId));
+              if (!res.ok) throw new Error('HTTP ' + res.status);
+              const data = await res.json();
+              if (logsBodyEl) logsBodyEl.innerHTML = renderLogsTable(data);
+            } catch (e) {
+              if (logsBodyEl) logsBodyEl.innerHTML = `<div class="p-3 text-danger">Failed to load logs. ${e?.message || ''}</div>`;
+            }
+          }
+          function startLogsPolling(){
+            if (logsPollTimer) return;
+            logsPollTimer = setInterval(()=>{ if (currentLogsItemId) loadLogsFor(currentLogsItemId); }, 4000);
+          }
+          function stopLogsPolling(){ if (logsPollTimer) { clearInterval(logsPollTimer); logsPollTimer = null; } }
+
+          // Queue table click handler
+          on($('#queued-table'), 'click', async function(e){
+            const tr = e.target.closest?.('tr[data-id]');
+            if (!tr) return;
+
+            if (e.target.classList.contains('btn-q-details')) {
+              renderReadableDetails(e.target.getAttribute('data-json') || '');
+              new bootstrap.Modal(document.getElementById('queueDetailsModal')).show();
+              return;
+            }
+            if (e.target.classList.contains('btn-q-logs')) { // NEW
+              const id = tr.getAttribute('data-id');
+              currentLogsItemId = id;
+              await loadLogsFor(id);
+              new bootstrap.Modal(document.getElementById('queueLogsModal')).show();
+              return;
+            }
+            if (e.target.classList.contains('btn-q-remove')) {
+              const id = tr.getAttribute('data-id'); if (!id) return;
+              if (!confirm('Remove this queued item?')) return;
+              try { await queueRemove(id); await loadQueueSafe(); }
+              catch(err){ alert(err.message || 'Remove failed'); }
+            }
+          });
+
+          // Logs modal refresh & lifecycle
+          on(btnRefreshLogs, 'click', () => { if (currentLogsItemId) loadLogsFor(currentLogsItemId); });
+          logsModalEl?.addEventListener('shown.bs.modal', () => startLogsPolling());
+          logsModalEl?.addEventListener('hidden.bs.modal', () => { stopLogsPolling(); currentLogsItemId = null; });
+
+          // Add → POST queue
+          on(document.getElementById('btn-add'), 'click', async function(){
+            try {
+              const payload = buildPayloadFromWizard();
+              await queueAdd(payload);
+              startQueuePolling();
+              await loadQueueSafe();
+              if (wizardModalEl) {
+                const modal = bootstrap.Modal.getInstance(wizardModalEl);
+                if (modal) modal.hide();
+              }
+            } catch(err){
+              console.error(err); alert(err.message || 'Failed to queue import.');
+            }
+          });
+
+          // Run Queue (with confirmation)
+          on(btnRunQueue, 'click', function(){
+            const m = new bootstrap.Modal(document.getElementById('runQueueConfirmModal'));
+            m.show();
+          });
+          on(document.getElementById('btn-run-away'), 'click', async function(){
+            const btn = this;
+            btn.disabled = true;
+            btn.textContent = 'Starting…';
+            try {
+              const res = await fetch(URLS.run, { method: 'POST' });
+              if (!res.ok) throw new Error('Failed to trigger queue');
+              startQueuePolling?.();
+              await loadQueueSafe();
+            } catch (err) {
+              alert(err.message || 'Could not start queue.');
+            } finally {
+              btn.disabled = false;
+              btn.textContent = 'Run away';
+              bootstrap.Modal.getInstance(document.getElementById('runQueueConfirmModal'))?.hide();
+            }
+          });
+
+          // ---- Init ----
+          (async function init(){
+            try {
+              const res = await fetch(URLS.caps);
+              if (res.ok) {
+                const data = await res.json();
+                CAPS.cpus       = data.cpus || [];
+                CAPS.nics       = data.nics || [];
+                CAPS.scsi       = data.scsiControllers || [];
+                CAPS.osTypes    = data.osTypes || [];
+                CAPS.bridges    = data.bridges || [];
+                CAPS.vlans      = data.vlans || [];
+                CAPS.virtioIsos = data.virtioIsos || [];
+              }
+            } catch {/* ignore */}
+
+            if (cpuTypeSelect) {
+              const d1 = (CAPS.cpus||[]).find(c=>readVal(c)==='x86-64-v2-AES');
+              const d2 = (CAPS.cpus||[]).find(c=>/aes/i.test(readLabel(c)||''));
+              const d3 = (CAPS.cpus||[])[0];
+              const DEFAULT_CPU = readVal(d1) || readVal(d2) || readVal(d3) || '';
+              cpuTypeSelect.innerHTML  = (CAPS.cpus||[]).map(p=>{
+                const v=readVal(p), l=readLabel(p), sel=(String(v)===String(DEFAULT_CPU))?'selected':'';
+                return `<option value="${escapeHtml(v)}" ${sel}>${escapeHtml(l)}</option>`;
+              }).join('');
+            }
+            if (scsiController)  scsiController.innerHTML = (CAPS.scsi||[]).map(p=>{
+              const v=readVal(p), l=readLabel(p);
+              return `<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`;
+            }).join('');
+            if (osTypeSelect)    osTypeSelect.innerHTML   = (CAPS.osTypes||[]).map(p=>{
+              const v=readVal(p), l=readLabel(p);
+              return `<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`;
+            }).join('');
+            populateIsoSelect(); refreshIsoEnabled();
+
+            if (tableBody) tableBody.innerHTML = '';
+            const items = await loadQueueSafe();
+            maybeStartPolling(items);
+          })();
+        });
+    </script>
+}

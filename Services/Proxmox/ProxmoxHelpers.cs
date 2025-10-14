@@ -59,6 +59,17 @@ namespace BareProx.Services.Proxmox.Helpers
             }
             return payload;
         }
+        public static string ToPosix(string p) => (p ?? "").Replace('\\', '/');
+        public static string GetDirPosix(string p)
+        {
+            p = ToPosix(p);
+            var i = p.LastIndexOf('/');
+            if (i < 0) return "/";
+            return i == 0 ? "/" : p[..i];
+        }
+
+        // Small helper to quote bash paths
+        public static string EscapeBash(string path) => "'" + path.Replace("'", "'\"'\"'") + "'";
 
     }
 }

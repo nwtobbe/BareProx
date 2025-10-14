@@ -1,0 +1,268 @@
+﻿@{
+    ViewData["Title"] = "Migration – Help";
+}
+
+<h2 class="mb-3">Migration Help</h2>
+
+<!-- Legend -->
+<div class="card border-0 bg-light mb-3">
+    <div class="card-body py-2">
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <span class="badge rounded-pill bg-primary">Before</span>
+            <span class="badge rounded-pill bg-warning text-dark">During</span>
+            <span class="badge rounded-pill bg-success">After</span>
+            <span class="badge rounded-pill bg-info text-dark">Optional</span>
+            <span class="badge rounded-pill bg-secondary">UEFI only</span>
+        </div>
+        <div class="small text-muted mt-2">
+            <strong>Jump to:</strong>
+            <a href="#before" class="link-secondary me-2">Before</a> ·
+            <a href="#during" class="link-secondary me-2">During</a> ·
+            <a href="#after" class="link-secondary me-2">After</a> ·
+            <a href="#troubleshooting" class="link-secondary">Troubleshooting</a>
+        </div>
+    </div>
+</div>
+
+<div class="alert alert-info">
+    <strong>Heads-up:</strong> Experimental! And will probably always stay experimental.
+    <br /><br />
+    Does <u>not</u> support:
+    <ul class="mb-0">
+        <li>RAW devices</li>
+        <li>Encrypted VMs</li>
+        <li>TPM</li>
+        <li>VMs with snapshots</li>
+        <li>…and probably more</li>
+    </ul>
+</div>
+
+<p class="text-muted mb-4">
+    This guide explains what to prepare before migrating, what the app does during a run, and what to verify after.
+    Start with one or several <strong>test VMs</strong>, then move to a live run.
+</p>
+
+<!-- BEFORE -->
+<div class="card mb-3">
+    <div class="card-body">
+        <h5 id="before" class="card-title">
+            Before you start (prerequisites &amp; checklist)
+            <span class="badge bg-primary ms-2">Before</span>
+        </h5>
+
+        <ul class="mb-0">
+            <li>
+                <strong>Add a common datastore:</strong> One that both Proxmox and VMware can access.
+                <div class="small text-muted">Do not enable “expose .snapshot to clients”.</div>
+            </li>
+
+            <li>
+                <strong>Add the common datastore:</strong>
+                <ul>
+                    <li>To VMware (one or many ESXi hosts)</li>
+                    <li>To one or more Proxmox hosts</li>
+                    <li>In BareProx / Settings: select it both as a Proxmox storage and as a NetApp storage</li>
+                </ul>
+            </li>
+
+            <li>
+                <strong>Define Migration Settings:</strong> Select Proxmox Cluster, Proxmox host, and migration datastore
+                in <a asp-action="Settings">Migration Settings</a>.
+            </li>
+
+            <li>
+                <strong>Upload VirtIO ISO:</strong> Upload to your image repository. Prefer keeping the file name starting with “<code>virtio</code>”.
+            </li>
+
+            <li>
+                <strong>Source VM ready (Windows):</strong>
+                <ul>
+                    <li>Move the VM to the migration datastore.</li>
+                    <li>Ensure each <code>.vmdk</code> and its <code>-flat.vmdk</code> are reachable from the Proxmox host.</li>
+                    <li>No vm snapshots are allowed.</li>
+                    <li>If using static IPs, record IP/gateway per NIC (verify against MAC addresses).</li>
+                    <li class="small text-muted">There will be new interfaces on the Proxmox side. Track MTU if you use &ne; 1500.</li>
+                    <li>
+                        Uninstall VMware Tools (preferably before shutdown).
+                        <ul>
+                            <li>Can be hard to remove post-migration. There a link to scripts available at the bottom on this page.</li>
+                        </ul>
+                    </li>
+                    <li>Disable application services (for clean cutover), then shutdown the VM.</li>
+                    <li>Remove the VM from vCenter inventory.</li>
+                </ul>
+            </li>
+
+            <li>
+                <strong>Source VM ready (Linux):</strong>
+                <ul>
+                    <li>Likely similar to Windows; not extensively (at all) tested.</li>
+                </ul>
+            </li>
+        </ul>
+
+        <h5 class="mt-3">Change settings and queue VMs</h5>
+        <ul class="mb-0">
+            <li>
+                <strong>VMID (required):</strong> Choose a VMID that is not in use across the Proxmox cluster.
+                <ul>
+                    <li><code>cat /etc/pve/.vmlist</code></li>
+                    <li><code>pvesh get /cluster/resources --type vm</code></li>
+                    <li><code>pvesh get /cluster/nextid</code></li>
+                </ul>
+            </li>
+            <li><strong>Name:</strong> Optionally change the VM name.</li>
+            <li><strong>CPU Type:</strong> Similar to EVC; choose <em>host</em> for current host or something compatible cluster-wide.</li>
+            <li><strong>OS Type:</strong> Verify detected OS is correct.</li>
+            <li><strong>Memory / CPU Sockets / CPU Cores:</strong> Adjust as needed (avoid over-provisioning; consider host CPU layout and a ~3:1 vCPU planning guideline).</li>
+
+            <li>
+                <strong>Prepare for VirtIO:</strong> Will target VirtIO storage drivers and set disks to <em>SATA</em> for initial boot.
+                <ul>
+                    <li>Adds a dummy 1&nbsp;GiB disk so Windows can install VirtIO drivers from the ISO.</li>
+                </ul>
+            </li>
+
+            <li><strong>Mount VirtIO:</strong> Mount the VirtIO ISO to install storage/network drivers and the guest agent.</li>
+
+            <li>
+                <strong>SCSI Controller:</strong> If you want something other than <em>virtio-scsi-single</em> and you don’t click “Prepare for VirtIO”.
+                <ul>
+                    <li>After migration, temporarily add a dummy SCSI disk for Windows so it installs SCSI drivers on first boot.</li>
+                </ul>
+            </li>
+
+            <li>
+                <strong>Disks:</strong> Use <em>SATA</em> initially for maximum compatibility (Windows may not boot otherwise if drivers aren’t present).
+                <ul>
+                    <li>Keep or adjust the index; index <code>0</code> is the boot device.</li>
+                </ul>
+            </li>
+
+            <li>
+                <strong>Networking:</strong> Map NICs to the correct SDNs/bridges/VLANs.
+                <ul>
+                    <li>Change/keep MAC as desired.</li>
+                    <li>Consider switching to <em>VirtIO</em> NICs (device model changes either way).</li>
+                </ul>
+            </li>
+        </ul>
+
+        <p class="mt-3 mb-0">
+            <strong>Queue the VM(s)</strong> and <strong>Run queue</strong>.
+        </p>
+    </div>
+</div>
+
+<!-- DURING -->
+<div class="card mb-3">
+    <div class="card-body">
+        <h5 id="during" class="card-title">
+            What happens during migration (pipeline)
+            <span class="badge bg-warning text-dark ms-2">During</span>
+        </h5>
+        <ol class="mb-0">
+            <li><strong>Validate:</strong> Checks VMID/Name; warns if no disks.</li>
+            <li><strong>CheckVmid:</strong> Confirms VMID is free on PVE.</li>
+            <li><strong>PlaceDescriptor:</strong> Copy each VMDK descriptor to <code>/images/&lt;vmid&gt;</code>, force <code>monolithicFlat</code>, rewrite RW line to absolute <code>-flat.vmdk</code>, verify.</li>
+            <li><strong>WriteConf:</strong> Writes a minimal bootable <code>/etc/pve/qemu-server/&lt;vmid&gt;.conf</code> (q35, seabios/ovmf, cdrom stub, cpu/mem, scsi if needed, iothread for scsi/virtio).</li>
+            <li>
+                <strong>AddDummyDisk</strong> <span class="badge bg-info text-dark ms-1">Optional</span>:
+                Adds 1&nbsp;GiB VirtIO disk for driver staging if “Prepare for VirtIO” is selected.
+            </li>
+            <li>
+                <strong>MountISO</strong> <span class="badge bg-info text-dark ms-1">Optional</span>:
+                Mounts the VirtIO ISO on <code>ide2</code>.
+            </li>
+            <li>
+                <strong>AddEfiDisk</strong> <span class="badge bg-secondary ms-1">UEFI only</span>:
+                Ensures <code>efidisk0</code> exists (idempotent).
+            </li>
+        </ol>
+        <div class="mt-3 text-muted">
+            All steps are logged to <a asp-controller="Jobs" asp-action="Index">Jobs</a> and stored in the database.
+        </div>
+    </div>
+</div>
+
+<!-- AFTER -->
+<div class="card mb-3">
+    <div class="card-body">
+        <h5 id="after" class="card-title">
+            After migration (post-checks &amp; cutover)
+            <span class="badge bg-success ms-2">After</span>
+        </h5>
+        <ul class="mb-0">
+            <li><strong>First boot:</strong> Power on in Proxmox; watch the console.</li>
+            <li>
+                <strong>Install drivers &amp; tools:</strong>
+                <ul>
+                    <li>Windows: VirtIO drivers + QEMU Guest Agent.</li>
+                    <li>Linux: verify virtio modules + qemu-guest-agent.</li>
+                </ul>
+            </li>
+            <li><strong>Networking:</strong> Reapply static IPs if required; verify VLAN/bridge/DNS/routes.</li>
+            <li><strong>Storage:</strong> Confirm all disks, write access, TRIM/discard.</li>
+            <li><strong>Shutdown VM.</strong></li>
+            <li><strong>Cleanup:</strong> Remove temporary VirtIO ISO / dummy disk.</li>
+            <li>
+                <strong>If you used “Prepare for VirtIO”:</strong> Detach disks in Proxmox and attach again as <em>VirtIO Block</em> (edit “unused disk X”).
+                <ul>
+                    <li>Select correct index, enable <code>discard</code> and <code>iothreads</code>.</li>
+                </ul>
+            </li>
+            <li>
+                <strong>Go to VM → Options:</strong>
+                <ul>
+                    <li>Set correct boot order.</li>
+                </ul>
+            </li>
+            <li>
+                <strong>Boot VM:</strong>
+                <ul>
+                    <li>Verify disks.</li>
+                    <li>Re-set static IPs.</li>
+                    <li>Re-enable services.</li>
+                </ul>
+            </li>
+            <li>
+                <strong>Migrate the VM’s disks to the final datastore(s):</strong>
+                <ul>
+                    <li>Proxmox migrates one disk at a time.</li>
+                    <li>For BareProx backups, avoid splitting a single VM’s disks across different datastores.</li>
+                </ul>
+            </li>
+        </ul>
+    </div>
+</div>
+
+<!-- TROUBLESHOOTING -->
+<div class="card">
+    <div class="card-body">
+        <h5 id="troubleshooting" class="card-title">Troubleshooting</h5>
+        <ul class="mb-3">
+            <li><strong>VM won’t boot (UEFI):</strong> Ensure OVMF + <code>efidisk0</code>.</li>
+            <li><strong>“Could not open backing file”:</strong> Descriptor RW line path wrong or inaccessible.</li>
+            <li><strong>“VMID already in use”:</strong> Pick another VMID or remove the conflicting VM.</li>
+            <li><strong>Network mismatch:</strong> Verify bridge exists and VLAN is correct on hosts.</li>
+        </ul>
+
+        <h6>Resources</h6>
+        <p class="mb-0">
+            <a href="https://pve.proxmox.com/wiki/Windows_VirtIO_Drivers" target="_blank" rel="noopener">
+                VirtIO Drivers
+            </a>
+            <br />
+            Not tested but may be useful:
+            <br />
+            <a href="https://github.com/JailBreak-PT/Scripts-Provirtualzone/blob/main/hypervisor_migration_scripts/Windows%20Migrations%20Scripts" target="_blank" rel="noopener">
+                Windows Migration Scripts (GitHub)
+            </a>
+        </p>
+    </div>
+</div>
+
+<div class="mt-3">
+    <a asp-action="Migrate" class="btn btn-primary">Go to Migrate</a>
+    <a asp-action="Settings" class="btn btn-outline-secondary">Open Settings</a>
+</div>

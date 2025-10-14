@@ -30,6 +30,7 @@ namespace BareProx.Data
             : base(options)
         {
         }
+        public DbSet<BareProx.Models.FeatureToggle> FeatureToggles { get; set; } = null!;
         public DbSet<ProxmoxCluster> ProxmoxClusters { get; set; }
         public DbSet<ProxmoxHost> ProxmoxHosts { get; set; }
         public DbSet<NetappController> NetappControllers { get; set; }
@@ -43,6 +44,9 @@ namespace BareProx.Data
 
         public DbSet<SnapMirrorPolicy> SnapMirrorPolicies { get; set; }
         public DbSet<SnapMirrorPolicyRetention> SnapMirrorPolicyRetentions { get; set; }
+        public DbSet<MigrationSelection> MigrationSelections { get; set; }
+        public DbSet<MigrationQueueItem> MigrationQueueItems { get; set; } = null!;
+        public DbSet<MigrationQueueLog> MigrationQueueLogs => Set<MigrationQueueLog>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

@@ -13,6 +13,7 @@
 
 @{
     ViewBag.Title = "Application Configuration";
+    var experimentalEnabled = (bool)(ViewBag.ExperimentalExtra ?? false);
 }
 
 <h2>@ViewBag.Title</h2>
@@ -34,22 +35,44 @@
     <div class="form-group mb-3">
         @Html.LabelFor(m => m.Config.TimeZoneWindows)
         @Html.DropDownListFor(
-                m => m.Config.TimeZoneWindows,
-                Model.TimeZones,
-                "— select time zone —",
-                new { @class = "form-control" })
-        @Html.ValidationMessageFor(
-                m => m.Config.TimeZoneWindows,
-                "", new { @class = "text-danger" })
-    </div>
+        m => m.Config.TimeZoneWindows,
+        Model.TimeZones,
+        "— select time zone —",
+        new { @class = "form-control" })
+    @Html.ValidationMessageFor(
+        m => m.Config.TimeZoneWindows,
+        "", new { @class = "text-danger" })
+</div>
 
-    <button type="submit" class="btn btn-primary">Save Time Zone</button>
+<button type="submit" class="btn btn-primary">Save Time Zone</button>
+}
+
+<hr />
+
+<!-- ===========================================
+     Section B: Experimental Features Toggle
+     =========================================== -->
+@using (Html.BeginForm("ToggleExperimental", "Settings", FormMethod.Post, new { @class = "mb-3" }))
+{
+    @Html.AntiForgeryToken()
+    <div class="form-check form-switch">
+        <input class="form-check-input"
+               type="checkbox"
+               id="ExperimentalExtra"
+               name="ExperimentalExtra"
+               value="true"
+               @(experimentalEnabled ? "checked" : "") />
+        <label class="form-check-label" for="ExperimentalExtra">
+            Enable even more experimental features in this experimental application
+        </label>
+    </div>
+    <button type="submit" class="btn btn-outline-secondary btn-sm mt-2">Save</button>
 }
 
 <hr />
 
 <!-- ========================================
-     Section B: Display Current Certificate
+     Section C: Display Current Certificate
      ======================================== -->
 @if (!string.IsNullOrWhiteSpace(Model.Regenerate.CurrentSubject))
 {
@@ -78,7 +101,7 @@ else
 <hr />
 
 <!-- ===========================================
-     Section C: Regenerate Certificate Form
+     Section D: Regenerate Certificate Form
      =========================================== -->
 <h4>Regenerate Self-Signed Certificate</h4>
 @using (Html.BeginForm("RegenerateCert", "Settings", FormMethod.Post))
