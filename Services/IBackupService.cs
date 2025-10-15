@@ -131,6 +131,18 @@ namespace BareProx.Services
             List<ProxmoxVM>? vms = null;
             bool vmsWerePaused = false;
             var proxmoxSnapshotNames = new Dictionary<int, string>();
+            // 2b)
+            bool snapChainActive = false;
+
+            try
+            {
+                snapChainActive = await _proxmoxService.IsSnapshotChainActiveFromDefAsync(cluster, storageName, ct);
+                _logger.LogInformation("Snapshot-as-volume-chain on '{Storage}': {Active}", storageName, snapChainActive);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not determine snapshot-as-volume-chain state for storage '{Storage}'. Defaulting to false.", storageName);
+            }
 
             try
             {
@@ -142,6 +154,7 @@ namespace BareProx.Services
 
                 if (cluster.Hosts == null || !cluster.Hosts.Any())
                     return await FailJobAsync(job, "Cluster not properly configured.", ct);
+
 
                 // 3) Pause VMs if IO-freeze requested
                 if (isApplicationAware && enableIoFreeze)
@@ -156,7 +169,7 @@ namespace BareProx.Services
 
                 // 4) Proxmox snapshots (if requested)
                 var localTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _timeZoneInfo);
-                var ProxMoxsnapshotName = $"{label}_{localTime:yyyy-MM-dd-HH-mm-ss}";
+                var ProxMoxsnapshotName = $"BareProx-{label}_{localTime:yyyy-MM-dd-HH-mm-ss}";
                 var snapshotTasks = new Dictionary<int, string>();
 
                 if (isApplicationAware && useProxmoxSnapshot)
@@ -271,7 +284,8 @@ namespace BareProx.Services
                         UseProxmoxSnapshot = useProxmoxSnapshot,
                         WithMemory = withMemory,
                         ScheduleId = scheduleId,
-                        ReplicateToSecondary = replicateToSecondary
+                        ReplicateToSecondary = replicateToSecondary,
+                        SnapshotAsvolumeChain = snapChainActive
                     });
                 }
 

@@ -85,6 +85,11 @@ namespace BareProx.Services
                     var cloneName = $"restore_{jobId}_{DateTime.UtcNow:yyyyMMddHHmmss}";
                     model.CloneVolumeName = cloneName;
 
+                    // ✅ Derive snapshot-as-volume-chain from the backup run (JobId == BackupId)
+                    bool snapChainActive = await ctx.BackupRecords
+                        .Where(b => b.Id == model.BackupId)
+                        .AnyAsync(b => b.SnapshotAsvolumeChain, backgroundCt);
+
                     var cloneResult = await netapp.CloneVolumeFromSnapshotAsync(
                         model.VolumeName,
                         model.SnapshotName,
@@ -219,7 +224,8 @@ namespace BareProx.Services
                         targetHost.Hostname!,
                         cloneName,
                         cloneMount.MountIp,
-                        exportPath);
+                        exportPath, 
+                        snapChainActive);
 
                     if (!mountSuccess)
                     {
@@ -245,6 +251,7 @@ namespace BareProx.Services
                             int.Parse(model.VmId),
                             cloneName,
                             model.StartDisconnected,
+                            snapshotChainActive: snapChainActive,
                             backgroundCt);
                     }
                     else
@@ -257,6 +264,7 @@ namespace BareProx.Services
                             cloneName,
                             model.ControllerId,
                             model.StartDisconnected,
+                            snapshotChainActive: snapChainActive,
                             backgroundCt);
                     }
 

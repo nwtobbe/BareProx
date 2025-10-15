@@ -36,6 +36,7 @@ namespace BareProx.Models
         public string Name { get; set; } = "";
         public int Snaptime { get; set; } = 0; // ← important
         public int Vmstate { get; set; } = 0;  // ← optional: 1 = includes memory
+        public string? Description { get; set; }
     }
 
     public class ProxmoxSnapshot

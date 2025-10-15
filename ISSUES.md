@@ -11,4 +11,5 @@ If you can help, comment on—or better, open a pull request for—the linked issue.
 | #4  | EFI-drives								| Move them offline						| **Fixed**			      |
 | #5  | Snapmirror relationships not updating   | none                                  | **Fixed**               |
 | #6  | paused VM not resumed by BareProx       | manual resume                         | **Fixed by lchanouha**  |
+| #7  | vmid should not be added to vmid.conf   | remove entry							| **Fixed** |
 | #   |     |     | **** |

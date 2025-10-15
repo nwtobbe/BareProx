@@ -72,12 +72,12 @@ namespace BareProx.Services
         Task<List<string>> GetNfsEnabledIpsAsync(int controllerId, string vserver, CancellationToken ct = default);
 
         // --- VM file operations ---
-        Task<bool> MoveAndRenameAllVmFilesAsync(
-            string volumeName,
-            int controllerId,
-            string oldvmid,
-            string newvmid,
-            CancellationToken ct = default);
+        //Task<bool> MoveAndRenameAllVmFilesAsync(
+        //    string volumeName,
+        //    int controllerId,
+        //    string oldvmid,
+        //    string newvmid,
+        //    CancellationToken ct = default);
 
         // --- Volume deletion ---
         

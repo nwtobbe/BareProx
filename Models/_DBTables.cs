@@ -207,6 +207,7 @@ namespace BareProx.Models
         public bool IsApplicationAware { get; set; }
         public bool EnableIoFreeze { get; set; }
         public bool UseProxmoxSnapshot { get; set; }
+        public bool SnapshotAsvolumeChain { get; set; }
         public bool WithMemory { get; set; }
         public bool ReplicateToSecondary { get; set; }
     }
