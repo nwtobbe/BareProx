@@ -12,11 +12,15 @@
     <input type="hidden" asp-for="ClusterId" />
     <input type="hidden" asp-for="ControllerId" />
     <input type="hidden" asp-for="Target" />
-
-    @* the rest as before *@
     <input type="hidden" asp-for="OriginalConfig" />
     <input type="hidden" asp-for="OriginalHostAddress" />
     <input type="hidden" asp-for="OriginalHostName" />
+
+    @* expose whether Proxmox snapshot was used *@
+    <input type="hidden" asp-for="UsedProxmoxSnapshot" />
+
+    @* vmstate carried as bool (rendered as "true"/"false") *@
+    <input type="hidden" asp-for="VmState" id="vmstate" />
 
     <div class="mb-3">
         <label class="form-label">Original VM ID</label>
@@ -48,16 +52,50 @@
 
     <div class="mb-3">
         <label asp-for="RestoreType" class="form-label">Restore Type</label>
-        <select asp-for="RestoreType" class="form-select">
+        <select asp-for="RestoreType" class="form-select" id="restoreType">
             <option value="CreateNew">Create as New VM</option>
             <option value="ReplaceOriginal">Replace Existing VM</option>
         </select>
     </div>
 
+    @* Shown only for CreateNew *@
     <div class="mb-3" id="newVmNameGroup">
         <label asp-for="NewVmName" class="form-label">New VM Name</label>
         <input type="text" class="form-control" asp-for="NewVmName" />
         <span asp-validation-for="NewVmName" class="text-danger"></span>
+    </div>
+
+    @* Rollback Snapshot only if backup used a Proxmox snapshot *@
+    @if (Model.UsedProxmoxSnapshot)
+    {
+        <div class="form-check mb-2">
+            <input class="form-check-input" type="checkbox" asp-for="RollbackSnapshot" id="rollbackSnapshot" />
+            <label class="form-check-label" asp-for="RollbackSnapshot">
+                Rollback snapshot
+            </label>
+        </div>
+
+        @* Warning: shown if vmstate == true AND rollback is checked *@
+        <div id="vmstateWarning" class="alert alert-warning py-2 d-none">
+            <strong>Warning:</strong> This backup includes VM memory state. Rolling back can
+            restore RAM and device state to POWERED ON, which may reintroduce in-flight application data or time-sensitive state.
+        </div>
+    }
+
+    @* CreateNew-only extras *@
+    <div id="createNewExtras" style="display:none">
+        <div class="form-check mb-2">
+            <input class="form-check-input" type="checkbox" asp-for="GenerateNewMacAddresses" id="genMacs" checked/>
+            <label class="form-check-label" asp-for="GenerateNewMacAddresses">
+                Generate new MAC addresses
+            </label>
+        </div>
+        <div class="form-check mb-3">
+            <input class="form-check-input" type="checkbox" asp-for="GenerateNewUuid" id="genUuid" checked/>
+            <label class="form-check-label" asp-for="GenerateNewUuid">
+                Generate new UUID
+            </label>
+        </div>
     </div>
 
     <div class="form-check mb-3">
@@ -66,31 +104,49 @@
             Start Disconnected from Network
         </label>
     </div>
-    <button type="submit" name="submit" value="Start" class="btn btn-success">Start Restore</button>
-    <button type="button" class="btn btn-secondary" onclick="window.location='@Url.Action("Index","Restore")'">Cancel</button>
 
+    <button type="submit" name="submit" value="Start" class="btn btn-success">Start Restore</button>
+    <button type="button" class="btn btn-secondary" onclick="window.location='@Url.Action("Index", "Restore")'">Cancel</button>
 </form>
 
 @section Scripts {
     <script>
         document.addEventListener('DOMContentLoaded', function () {
-          var select = document.querySelector('select[name="RestoreType"]');
-          var vmNameGroup = document.getElementById('newVmNameGroup');
-          var newVmNameInput = document.querySelector('input[name="NewVmName"]');
-          var originalVmName = document.querySelector('input[name="VmName"]').value;
+            const restoreTypeSel  = document.getElementById('restoreType');
+            const vmNameGroup     = document.getElementById('newVmNameGroup');
+            const createNewExtras = document.getElementById('createNewExtras');
+            const newVmNameInput  = document.querySelector('input[name="NewVmName"]');
+            const originalVmName  = document.querySelector('input[name="VmName"]').value;
 
-          function toggleVmName() {
-            if (select.value === 'ReplaceOriginal') {
-              vmNameGroup.style.display = 'none';
-              newVmNameInput.value = originalVmName;
-            } else {
-              vmNameGroup.style.display = 'block';
-              newVmNameInput.value = '';
+            const rollbackChk     = document.getElementById('rollbackSnapshot');
+            const vmstateHidden   = document.getElementById('vmstate'); // "true"/"false" string
+            const vmstateWarning  = document.getElementById('vmstateWarning');
+
+            function toggleByType() {
+                const isReplace   = restoreTypeSel.value === 'ReplaceOriginal';
+                const isCreateNew = !isReplace;
+
+                // Show/hide "New VM Name"
+                vmNameGroup.style.display = isReplace ? 'none' : 'block';
+                newVmNameInput.value      = isReplace ? originalVmName : '';
+
+                // Show/hide CreateNew-only extras (MAC/UUID)
+                createNewExtras.style.display = isCreateNew ? 'block' : 'none';
             }
-          }
 
-          select.addEventListener('change', toggleVmName);
-          toggleVmName();
+            function toggleVmstateWarning() {
+                if (!rollbackChk || !vmstateHidden || !vmstateWarning) return;
+                const hasVmstate = (vmstateHidden.value || '').toLowerCase() === 'true';
+                const show = rollbackChk.checked && hasVmstate;
+                vmstateWarning.classList.toggle('d-none', !show);
+            }
+
+            restoreTypeSel.addEventListener('change', toggleByType);
+            if (rollbackChk) rollbackChk.addEventListener('change', toggleVmstateWarning);
+
+            // initial state
+            toggleByType();
+            toggleVmstateWarning();
         });
     </script>
 }

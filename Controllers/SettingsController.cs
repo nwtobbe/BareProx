@@ -31,7 +31,6 @@ using Newtonsoft.Json.Linq;
 using System.IO;
 using System.Runtime.InteropServices;
 using TimeZoneConverter;
-using DbConfigModel = BareProx.Models.DatabaseConfigModels;
 
 
 namespace BareProx.Controllers
@@ -44,7 +43,6 @@ namespace BareProx.Controllers
         private readonly ProxmoxService _proxmoxService;
         private readonly INetappService _netappService;
         private readonly IEncryptionService _encryptionService;
-        private readonly IWebHostEnvironment _env;
         private readonly string _configFile;
         private readonly SelfSignedCertificateService _certService;
         private readonly IHostApplicationLifetime _appLifetime;
@@ -58,7 +56,6 @@ namespace BareProx.Controllers
             ProxmoxService proxmoxService,
             INetappService netappService,
             IEncryptionService encryptionService,
-            IWebHostEnvironment env,
             SelfSignedCertificateService certService,
             IHostApplicationLifetime appLifetime,
             INetappVolumeService netappVolumeService,
@@ -69,23 +66,12 @@ namespace BareProx.Controllers
             _proxmoxService = proxmoxService;
             _netappService = netappService;
             _encryptionService = encryptionService;
-            _env = env;
             _configFile = Path.Combine("/config", "appsettings.json");
             _certService = certService;
             _appLifetime = appLifetime;
             _netappVolumeService = netappVolumeService;
             _proxmoxAuthenticator = proxmoxAuthenticator;
         }
-
-        // helper properties to resolve only when needed:
-        private ApplicationDbContext DbContext =>
-            HttpContext.RequestServices.GetRequiredService<ApplicationDbContext>();
-        private ProxmoxService ProxmoxService =>
-            HttpContext.RequestServices.GetRequiredService<ProxmoxService>();
-        private INetappService NetappService =>
-            HttpContext.RequestServices.GetRequiredService<INetappService>();
-
-
 
         // ========================================================
         // GET: /Settings/Config
@@ -426,23 +412,33 @@ namespace BareProx.Controllers
             return Content("Application is restarting...");
         }
 
-        // GET: Settings/Proxmox
-        public async Task<IActionResult> Proxmox()
-        {
-            var clusters = await _context.ProxmoxClusters
-                .Include(c => c.Hosts)
-                .ToListAsync();
-
-            return View(clusters);
-        }
-
         // POST: Settings/AuthenticateCluster
         [HttpPost]
         public async Task<IActionResult> AuthenticateCluster(int id, CancellationToken ct)
         {
             var success = await _proxmoxAuthenticator.AuthenticateAndStoreTokenCidAsync(id, ct);
             TempData["Message"] = success ? "Authentication successful." : "Authentication failed.";
-            return RedirectToAction("Proxmox");
+            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = id }); // CHANGED
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> NetappHub(int? selectedId = null, CancellationToken ct = default)
+        {
+            var list = await _context.NetappControllers.ToListAsync(ct);
+            NetappController? selected = null;
+
+            if (selectedId.HasValue)
+                selected = list.FirstOrDefault(x => x.Id == selectedId.Value);
+
+            var vm = new NetappHubViewModel
+            {
+                Controllers = list,
+                Selected = selected,
+                SelectedId = selectedId,
+                Message = TempData["Message"] as string
+            };
+
+            return View(vm); // Views/Settings/NetappHub.cshtml
         }
 
         [HttpPost]
@@ -457,91 +453,67 @@ namespace BareProx.Controllers
 
             _context.ProxmoxClusters.Add(cluster);
             await _context.SaveChangesAsync(ct);
-            return RedirectToAction("Proxmox");
+
+            TempData["Message"] = $"Cluster \"{cluster.Name}\" added.";
+            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = cluster.Id }); // CHANGED
         }
 
         [HttpPost]
         public async Task<IActionResult> DeleteCluster(int id, CancellationToken ct)
         {
-            var cluster = await _context.ProxmoxClusters.FindAsync(id, ct);
-            if (cluster != null)
-            {
-                _context.ProxmoxClusters.Remove(cluster);
-                await _context.SaveChangesAsync(ct);
-            }
+            using var tx = await _context.Database.BeginTransactionAsync(ct);
 
-            return RedirectToAction("Proxmox");
-        }
-        [HttpGet]
-        public async Task<IActionResult> ClusterStorage(int clusterId, CancellationToken ct)
-        {
             var cluster = await _context.ProxmoxClusters
-                .Include(c => c.Hosts)
-                .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
-
-            if (cluster == null)
-            {
-                ViewBag.Warning = "Proxmox cluster not found.";
-                return View(new SelectStorageViewModel { ClusterId = clusterId });
-            }
-
-            var allNfsStorage = await _proxmoxService.GetNfsStorageAsync(cluster, ct);
-
-            var selectedIds = await _context.Set<ProxSelectedStorage>()
-                .Where(s => s.ClusterId == clusterId)
-                .Select(s => s.StorageIdentifier)
-                .ToHashSetAsync(StringComparer.OrdinalIgnoreCase, ct);
-
-            var storageList = allNfsStorage
-                .Select(s => new ProxmoxStorageDto
-                {
-                    Id = s.Storage, // use storage name as ID
-                    Storage = s.Storage,
-                    Type = s.Type,
-                    Path = s.Path,
-                    Node = s.Node,
-                    IsSelected = selectedIds.Contains(s.Storage)
-                }).ToList();
-
-            var model = new SelectStorageViewModel
-            {
-                ClusterId = clusterId,
-                StorageList = storageList
-            };
-
-            return View(model);
-        }
-
-
-
-        [HttpGet]
-        public async Task<IActionResult> EditCluster(int id, CancellationToken ct)
-        {
-            var cluster = await _context.ProxmoxClusters
-                .Include(c => c.Hosts)
+                .AsNoTracking()
                 .FirstOrDefaultAsync(c => c.Id == id, ct);
 
-            if (cluster == null) return NotFound();
+            if (cluster == null)
+                return RedirectToAction(nameof(ProxmoxHub));
 
-            return View(cluster);
+            // 1) Delete hosts/nodes
+            var hosts = await _context.ProxmoxHosts
+                .Where(h => h.ClusterId == id)
+                .ToListAsync(ct);
+            _context.ProxmoxHosts.RemoveRange(hosts);
+
+            // 2) Delete selected storage rows
+            var selectedStorages = await _context.SelectedStorages
+                .Where(s => s.ClusterId == id)
+                .ToListAsync(ct);
+            _context.SelectedStorages.RemoveRange(selectedStorages);
+
+            // 4) Finally delete the cluster
+            var trackedCluster = _context.ProxmoxClusters.Attach(cluster).Entity;
+            _context.ProxmoxClusters.Remove(trackedCluster);
+
+            await _context.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+
+            TempData["Message"] = $"Cluster \"{cluster.Name}\" and related data were deleted.";
+            return RedirectToAction(nameof(ProxmoxHub));
         }
 
         [HttpPost]
         public async Task<IActionResult> EditCluster(ProxmoxCluster cluster, CancellationToken ct)
         {
-            if (ModelState.IsValid)
+            var existing = await _context.ProxmoxClusters.FindAsync(cluster.Id, ct);
+            if (existing == null) return NotFound();
+
+            // Re-fill fields so the form shows user input back
+            existing.Username = cluster.Username;
+            // do NOT set password here unless provided
+
+            if (!ModelState.IsValid)
             {
-                var existingCluster = await _context.ProxmoxClusters.FindAsync(cluster.Id, ct);
-                if (existingCluster == null) return NotFound();
-
-                existingCluster.Username = cluster.Username;
-                existingCluster.PasswordHash = _encryptionService.Encrypt(cluster.PasswordHash);
-
-                await _context.SaveChangesAsync(ct);
-
-                return RedirectToAction("Proxmox");
+                return View("EditCluster", existing); // render the edit view directly
             }
-            return View(cluster);
+
+            if (!string.IsNullOrWhiteSpace(cluster.PasswordHash))
+                existing.PasswordHash = _encryptionService.Encrypt(cluster.PasswordHash);
+
+            await _context.SaveChangesAsync(ct);
+            TempData["Message"] = $"Cluster \"{existing.Name}\" saved.";
+            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = existing.Id });
         }
 
         [HttpPost]
@@ -551,49 +523,32 @@ namespace BareProx.Controllers
                 .Include(c => c.Hosts)
                 .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
 
-            if (cluster == null)
-                return NotFound();
+            if (cluster == null) return NotFound();
 
-            var newHost = new ProxmoxHost
+            _context.ProxmoxHosts.Add(new ProxmoxHost
             {
                 HostAddress = hostAddress,
                 Hostname = hostname,
                 ClusterId = clusterId
-            };
-
-            _context.ProxmoxHosts.Add(newHost);
+            });
             await _context.SaveChangesAsync(ct);
 
-            return RedirectToAction("EditCluster", new { id = clusterId });
+            TempData["Message"] = $"Host \"{hostname}\" added.";
+            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = clusterId }); // CHANGED
         }
 
         [HttpPost]
         public async Task<IActionResult> DeleteHost(int id, CancellationToken ct)
         {
             var host = await _context.ProxmoxHosts.FindAsync(id, ct);
-            if (host == null)
-                return NotFound();
+            if (host == null) return NotFound();
 
             var clusterId = host.ClusterId;
-
             _context.ProxmoxHosts.Remove(host);
             await _context.SaveChangesAsync(ct);
 
-            return RedirectToAction("EditCluster", new { id = clusterId });
-        }
-
-
-        // GET: Settings/NetappControllers
-        public async Task<IActionResult> Index(CancellationToken ct)
-        {
-            var controllers = await _context.NetappControllers.ToListAsync(ct);
-            return View("~/Views/Settings/IndexNC.cshtml", controllers);
-        }
-
-        // GET: Settings/NetappControllers/Create
-        public IActionResult Create()
-        {
-            return View("~/Views/Settings/CreateNC.cshtml");
+            TempData["Message"] = "Host removed.";
+            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = clusterId }); // CHANGED
         }
 
         // POST: Settings/NetappControllers/Create
@@ -609,27 +564,15 @@ namespace BareProx.Controllers
                 Username = Username,
                 PasswordHash = _encryptionService.Encrypt(PasswordHash)
             };
-
             if (ModelState.IsValid)
             {
                 _context.Add(controller);
                 await _context.SaveChangesAsync(ct);
-                return RedirectToAction(nameof(Index));
+                TempData["Message"] = $"Controller \"{controller.Hostname}\" added.";
+                return RedirectToAction(nameof(NetappHub), new { selectedId = controller.Id }); // ← to hub
             }
-
-            return View("~/Views/Settings/CreateNC.cshtml", controller);
-        }
-
-        // GET: Settings/NetappControllers/Edit/5
-        public async Task<IActionResult> Edit(int? id, CancellationToken ct)
-        {
-            if (id == null) return NotFound();
-
-            var controller = await _context.NetappControllers.FindAsync(id, ct);
-            if (controller == null) return NotFound();
-
-            controller.PasswordHash = string.Empty; // clear for editing
-            return View("~/Views/Settings/EditNC.cshtml", controller);
+            TempData["Message"] = "Validation failed.";
+            return RedirectToAction(nameof(NetappHub));
         }
 
         // POST: Settings/NetappControllers/Edit/5
@@ -637,90 +580,59 @@ namespace BareProx.Controllers
         [ValidateAntiForgeryToken]
         public async Task<IActionResult> Edit(int id, string Hostname, string IpAddress, bool IsPrimary, string Username, string PasswordHash, CancellationToken ct)
         {
-            var existingController = await _context.NetappControllers.FindAsync(id, ct);
-            if (existingController == null) return NotFound();
+            var existing = await _context.NetappControllers.FindAsync(id, ct);
+            if (existing == null) return RedirectToAction(nameof(NetappHub));
 
             if (ModelState.IsValid)
             {
-                try
-                {
-                    existingController.Hostname = Hostname;
-                    existingController.IpAddress = IpAddress;
-                    existingController.IsPrimary = IsPrimary;
-                    existingController.Username = Username;
-                    if (!string.IsNullOrWhiteSpace(PasswordHash))
-                    {
-                        existingController.PasswordHash = _encryptionService.Encrypt(PasswordHash);
-                    }
+                existing.Hostname = Hostname;
+                existing.IpAddress = IpAddress;
+                existing.IsPrimary = IsPrimary;
+                existing.Username = Username;
+                if (!string.IsNullOrWhiteSpace(PasswordHash))
+                    existing.PasswordHash = _encryptionService.Encrypt(PasswordHash);
 
-                    await _context.SaveChangesAsync(ct);
-                    return RedirectToAction(nameof(Index));
-                }
-                catch (DbUpdateConcurrencyException)
-                {
-                    if (!NetappControllerExists(id)) return NotFound();
-                    else throw;
-                }
+                await _context.SaveChangesAsync(ct);
+                TempData["Message"] = $"Controller \"{existing.Hostname}\" saved.";
+                return RedirectToAction(nameof(NetappHub), new { selectedId = id }); // ← back to hub
             }
-
-            return View("~/Views/Settings/EditNC.cshtml", existingController);
+            TempData["Message"] = "Validation failed.";
+            return RedirectToAction(nameof(NetappHub), new { selectedId = id });
         }
 
         // GET: Settings/Delete/5
-        public async Task<IActionResult> Delete(int? id, CancellationToken ct)
-        {
-            if (id == null) return NotFound();
-
-            var controller = await _context.NetappControllers.FirstOrDefaultAsync(c => c.Id == id, ct);
-            if (controller == null) return NotFound();
-
-            return View("~/Views/Settings/DeleteNC.cshtml", controller);
-        }
-
-        // POST: Settings/Delete/5
-        [HttpPost, ActionName("Delete")]
-        [ValidateAntiForgeryToken]
+        [HttpPost, ValidateAntiForgeryToken, ActionName("Delete")]
         public async Task<IActionResult> DeleteConfirmed(int id, CancellationToken ct)
         {
-            // 1. Load the controller
-            var controller = await _context.NetappControllers.FindAsync(new object[] { id }, ct);
-            if (controller == null) return NotFound();
+            var controller = await _context.NetappControllers
+                .FirstOrDefaultAsync(c => c.Id == id, ct);
 
-            // 2. Remove SnapMirrorRelations referencing this controller
+            if (controller == null)
+                return NotFound();
+
+            // Remove relations referencing this controller (if your model has this DbSet)
             var snapMirrorRelations = await _context.SnapMirrorRelations
                 .Where(r => r.SourceControllerId == id || r.DestinationControllerId == id)
                 .ToListAsync(ct);
-
-            if (snapMirrorRelations.Any())
-            {
+            if (snapMirrorRelations.Count > 0)
                 _context.SnapMirrorRelations.RemoveRange(snapMirrorRelations);
-            }
 
-            // 3. Remove SelectedNetappVolumes referencing this controller
+            // Remove selected volumes tied to this controller
             var selectedVolumes = await _context.SelectedNetappVolumes
                 .Where(v => v.NetappControllerId == id)
                 .ToListAsync(ct);
-
-            if (selectedVolumes.Any())
-            {
+            if (selectedVolumes.Count > 0)
                 _context.SelectedNetappVolumes.RemoveRange(selectedVolumes);
-            }
 
-            // 4. Finally, remove the controller
+            // Finally remove the controller itself
             _context.NetappControllers.Remove(controller);
 
-            // 5. Save all changes in one transaction
             await _context.SaveChangesAsync(ct);
 
-            TempData["Message"] = $"Controller '{controller.Hostname}' and related data were deleted successfully.";
-
-            return RedirectToAction(nameof(Index));
+            TempData["Message"] = $"Controller \"{controller.Hostname}\" deleted.";
+            return Ok(); // let JS redirect the page
         }
 
-        private bool NetappControllerExists(int id)
-        {
-            return _context.NetappControllers.Any(e => e.Id == id);
-        }
         [HttpGet]
         public async Task<IActionResult> GetVolumesTree(int storageId, CancellationToken ct)
         {
@@ -768,48 +680,40 @@ namespace BareProx.Controllers
         [HttpPost]
         public async Task<IActionResult> SaveSelectedStorage(SelectStorageViewModel model, CancellationToken ct)
         {
+            // Reuse your existing persistence logic as-is...
             var existing = await _context.SelectedStorages
                 .Where(s => s.ClusterId == model.ClusterId)
                 .ToListAsync(ct);
 
             var selectedSet = new HashSet<string>(model.SelectedStorageIds ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
 
-            // 1. Delete deselected
-            var toRemove = existing
-                .Where(e => !selectedSet.Contains(e.StorageIdentifier))
-                .ToList();
-
+            var toRemove = existing.Where(e => !selectedSet.Contains(e.StorageIdentifier)).ToList();
             _context.SelectedStorages.RemoveRange(toRemove);
 
-            // 2. Add new ones not in DB
             var existingSet = existing.Select(e => e.StorageIdentifier).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var toAdd = selectedSet
                 .Where(id => !existingSet.Contains(id))
-                .Select(id => new ProxSelectedStorage
-                {
-                    ClusterId = model.ClusterId,
-                    StorageIdentifier = id
-                });
+                .Select(id => new ProxSelectedStorage { ClusterId = model.ClusterId, StorageIdentifier = id });
 
             _context.SelectedStorages.AddRange(toAdd);
 
             await _context.SaveChangesAsync(ct);
             TempData["Message"] = "Selected storage updated.";
-            return RedirectToAction("ClusterStorage", new { clusterId = model.ClusterId });
+
+            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = model.ClusterId }); // CHANGED
         }
 
         [HttpPost]
         public async Task<IActionResult> SaveNetappSelectedVolumes([FromBody] List<NetappVolumeExportDto> volumes, CancellationToken ct)
         {
+            // your existing save logic…
             var controllerId = volumes.FirstOrDefault()?.ClusterId ?? 0;
 
-            // Clear previous selections for this controller
             var old = await _context.SelectedNetappVolumes
                 .Where(v => v.NetappControllerId == controllerId)
                 .ToListAsync(ct);
             _context.SelectedNetappVolumes.RemoveRange(old);
 
-            // Add new ones
             var entities = volumes.Select(v => new SelectedNetappVolume
             {
                 Vserver = v.Vserver,
@@ -823,11 +727,77 @@ namespace BareProx.Controllers
             _context.SelectedNetappVolumes.AddRange(entities);
             await _context.SaveChangesAsync(ct);
 
-            // --- Update extra info after saving
-            await _netappService.UpdateAllSelectedVolumesAsync(ct); // <-- add this line
+            await _netappService.UpdateAllSelectedVolumesAsync(ct);
 
             return Ok();
         }
+        private async Task<SelectStorageViewModel> BuildStorageViewAsync(int clusterId, CancellationToken ct)
+        {
+            // Reuse logic from ClusterStorage(...)
+            var cluster = await _context.ProxmoxClusters
+                .Include(c => c.Hosts)
+                .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
+
+            if (cluster == null)
+            {
+                return new SelectStorageViewModel { ClusterId = clusterId, StorageList = new List<ProxmoxStorageDto>() };
+            }
+
+            var allNfsStorage = await _proxmoxService.GetNfsStorageAsync(cluster, ct);
+
+            var selectedIds = await _context.Set<ProxSelectedStorage>()
+                .Where(s => s.ClusterId == clusterId)
+                .Select(s => s.StorageIdentifier)
+                .ToHashSetAsync(StringComparer.OrdinalIgnoreCase, ct);
+
+            var storageList = allNfsStorage
+                .Select(s => new ProxmoxStorageDto
+                {
+                    Id = s.Storage,              // keep your existing mapping
+                    Storage = s.Storage,
+                    Type = s.Type,
+                    Path = s.Path,
+                    Node = s.Node,
+                    IsSelected = selectedIds.Contains(s.Storage)
+                }).ToList();
+
+            return new SelectStorageViewModel
+            {
+                ClusterId = clusterId,
+                StorageList = storageList
+            };
+        }
+        [HttpGet]
+        public async Task<IActionResult> ProxmoxHub(int? selectedId = null, CancellationToken ct = default)
+        {
+            var clusters = await _context.ProxmoxClusters
+                .Include(c => c.Hosts)
+                .ToListAsync(ct);
+
+            ProxmoxCluster? selected = null;
+            SelectStorageViewModel? storageView = null;
+
+            if (selectedId.HasValue)
+            {
+                selected = clusters.FirstOrDefault(c => c.Id == selectedId.Value);
+                if (selected != null)
+                {
+                    storageView = await BuildStorageViewAsync(selected.Id, ct); // <-- reuse
+                }
+            }
+
+            var vm = new ProxmoxHubViewModel
+            {
+                Clusters = clusters,
+                SelectedCluster = selected,
+                StorageView = storageView,
+                SelectedId = selectedId,
+                Message = TempData["Message"] as string
+            };
+
+            return View(vm); // Views/Settings/ProxmoxHub.cshtml
+        }
+
 
     }
 }

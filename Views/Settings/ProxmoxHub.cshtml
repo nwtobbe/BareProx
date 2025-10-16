@@ -1,0 +1,405 @@
+﻿@using BareProx.Models
+@model ProxmoxHubViewModel
+
+@{
+    ViewData["Title"] = "Proxmox – Clusters";
+    var hasSelection = Model.SelectedCluster != null;
+}
+
+<style>
+    /* Make rows feel clickable */
+    #clusterTable tbody tr.cluster-row {
+        cursor: pointer;
+    }
+
+        #clusterTable tbody tr.cluster-row:hover {
+            background-color: rgba(0,0,0,.03);
+        }
+</style>
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <h2 class="mb-0">Proxmox – Clusters</h2>
+    <span class="text-muted">@((Model.Clusters?.Count() ?? 0)) total</span>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(Model.Message))
+{
+    <div class="alert alert-info alert-dismissible fade show" role="alert">
+        @Model.Message
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    </div>
+}
+
+<ul class="nav nav-tabs" id="hubTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <a class="nav-link active" id="tab-clusters"
+           href="@Url.Action("ProxmoxHub", "Settings")" role="tab">
+            Clusters
+        </a>
+    </li>
+
+    <li class="nav-item @(Model.SelectedCluster != null ? "" : "d-none")" role="presentation" id="nav-edit-hosts">
+        <button class="nav-link" id="tab-edit" data-bs-toggle="tab" data-bs-target="#pane-edit" type="button" role="tab">
+            Edit & Hosts
+        </button>
+    </li>
+    <li class="nav-item @(Model.SelectedCluster != null ? "" : "d-none")" role="presentation" id="nav-storage">
+        <button class="nav-link" id="tab-storage" data-bs-toggle="tab" data-bs-target="#pane-storage" type="button" role="tab">
+            Storage
+        </button>
+    </li>
+</ul>
+
+<div class="tab-content pt-3">
+    <!-- TAB 1: Clusters (list + add) -->
+    <div class="tab-pane fade show active" id="pane-clusters" role="tabpanel" aria-labelledby="tab-clusters">
+
+        <div class="table-responsive">
+            <table class="table table-hover align-middle" id="clusterTable">
+                <thead class="table-light">
+                    <tr>
+                        <th>Name</th>
+                        <th>Status</th>
+                        <th>Last Checked</th>
+                        <th class="text-end">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var c in Model.Clusters ?? Enumerable.Empty<ProxmoxCluster>())
+                    {
+                        var status = string.IsNullOrWhiteSpace(c.LastStatus) ? "Unknown" : c.LastStatus;
+                        var badge = status.Equals("working", StringComparison.OrdinalIgnoreCase) ? "success"
+                        : status.Equals("configured", StringComparison.OrdinalIgnoreCase) ? "info"
+                        : "secondary";
+                        var editUrl = Url.Action("ProxmoxHub", "Settings", new { selectedId = c.Id, tab = "edit" }) + "#pane-edit";
+                        var storageUrl = Url.Action("ProxmoxHub", "Settings", new { selectedId = c.Id, tab = "storage" }) + "#pane-storage";
+                        <tr class="cluster-row"
+                            data-selected-id="@c.Id"
+                            data-edit-url="@editUrl"
+                            data-storage-url="@storageUrl">
+                            <td>
+                                <div class="fw-semibold">@c.Name</div>
+                                <div class="small text-muted">ID: @c.Id</div>
+                                <div class="small">
+                                    <a href="@storageUrl" class="link-secondary row-storage-link">Storage</a>
+                                </div>
+                            </td>
+                            <td><span class="badge bg-@badge text-uppercase">@status</span></td>
+                            <td>
+                                @if (c.LastChecked.HasValue)
+                                {
+                                    @c.LastChecked.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+                                }
+                                else
+                                {
+                                    <span class="text-muted">—</span>
+                                }
+                            </td>
+                            <td class="text-end">
+                                <div class="btn-group">
+                                    <form asp-controller="Settings" asp-action="AuthenticateCluster" method="post" class="d-inline">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="id" value="@c.Id" />
+                                        <button type="submit" class="btn btn-outline-primary btn-sm">Authenticate</button>
+                                    </form>
+
+                                    <form asp-controller="Settings" asp-action="DeleteCluster" method="post" class="d-inline"
+                                          onsubmit="return confirm('Delete cluster “@c.Name”?');">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="id" value="@c.Id" />
+                                        <button type="submit" class="btn btn-outline-danger btn-sm">Delete</button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <hr class="my-4" />
+        <h4 class="mb-3">Add New Cluster</h4>
+        <form asp-controller="Settings" asp-action="AddCluster" method="post" class="row g-3">
+            @Html.AntiForgeryToken()
+            <div class="col-md-4">
+                <label for="Name" class="form-label">Cluster Name</label>
+                <input type="text" name="Name" id="Name" class="form-control" required maxlength="64" />
+            </div>
+            <div class="col-md-4">
+                <label for="Username" class="form-label">API Username</label>
+                <input type="text" name="Username" id="Username" class="form-control" placeholder="root@pam" required />
+            </div>
+            <div class="col-md-4">
+                <label for="Password" class="form-label">API Password</label>
+                <input type="password" name="Password" id="Password" class="form-control" autocomplete="new-password" required />
+            </div>
+            <div class="col-12">
+                <button type="submit" class="btn btn-success">Add Cluster</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- TAB 2: Edit & Hosts -->
+    <div class="tab-pane fade" id="pane-edit" role="tabpanel" aria-labelledby="tab-edit">
+        @if (!hasSelection)
+        {
+            <div class="alert alert-secondary">Select a cluster (click a row) to manage it.</div>
+        }
+        else
+        {
+            var m = Model.SelectedCluster!;
+            <div class="row g-4">
+                <div class="col-lg-6">
+                    <div class="card">
+                        <div class="card-header">Cluster Settings — @m.Name</div>
+                        <div class="card-body">
+                            <form asp-action="EditCluster" asp-controller="Settings" method="post">
+                                @Html.AntiForgeryToken()
+                                <input type="hidden" asp-for="@m.Id" name="Id" value="@m.Id" />
+
+                                <div class="mb-3">
+                                    <label class="form-label">Cluster Name</label>
+                                    <input name="Name" class="form-control" value="@m.Name" maxlength="64" />
+                                </div>
+
+                                <div class="mb-3">
+                                    <label class="form-label">API Username</label>
+                                    <input name="Username" class="form-control" value="@m.Username" placeholder="root@pam" />
+                                </div>
+
+                                <div class="mb-3">
+                                    <label class="form-label">API Password</label>
+                                    <input name="PasswordHash" type="password" class="form-control" autocomplete="new-password" placeholder="••••••••" />
+                                    <div class="form-text">Leave blank to keep the current password.</div>
+                                </div>
+
+                                <div class="d-flex gap-2">
+                                    <button type="submit" class="btn btn-primary">Save</button>
+                                    <a asp-action="ProxmoxHub" asp-controller="Settings" class="btn btn-secondary">Cancel</a>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-lg-6">
+                    <div class="card">
+                        <div class="card-header">Hosts in “@m.Name” <span class="text-muted">(@(m.Hosts?.Count() ?? 0))</span></div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-sm align-middle">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>Management IP / FQDN</th>
+                                            <th>Proxmox Hostname</th>
+                                            <th class="text-end">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var h in m.Hosts ?? Enumerable.Empty<ProxmoxHost>())
+                                        {
+                                            <tr>
+                                                <td>@h.HostAddress</td>
+                                                <td>@h.Hostname</td>
+                                                <td class="text-end">
+                                                    <form asp-action="DeleteHost" asp-controller="Settings" method="post" class="d-inline"
+                                                          onsubmit="return confirm('Remove host @h.Hostname?');">
+                                                        @Html.AntiForgeryToken()
+                                                        <input type="hidden" name="id" value="@h.Id" />
+                                                        <button type="submit" class="btn btn-outline-danger btn-sm">Delete</button>
+                                                    </form>
+                                                </td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                            <hr />
+                            <form asp-action="AddHost" asp-controller="Settings" method="post" class="row g-3">
+                                @Html.AntiForgeryToken()
+                                <input type="hidden" name="clusterId" value="@m.Id" />
+                                <div class="col-md-6">
+                                    <label class="form-label">Management IP / FQDN</label>
+                                    <input type="text" name="hostAddress" class="form-control" required />
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">Hostname in Proxmox</label>
+                                    <input type="text" name="hostname" class="form-control" required />
+                                </div>
+                                <div class="col-12">
+                                    <button type="submit" class="btn btn-success">Add Host</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+
+    <!-- TAB 3: Storage -->
+    <div class="tab-pane fade" id="pane-storage" role="tabpanel" aria-labelledby="tab-storage">
+        @if (!hasSelection || Model.StorageView == null)
+        {
+            <div class="alert alert-secondary">Select a cluster (click a row) to load storage.</div>
+        }
+        else
+        {
+            var sv = Model.StorageView;
+            <form asp-controller="Settings" asp-action="SaveSelectedStorage" method="post">
+                @Html.HiddenFor(_ => sv!.ClusterId)
+
+                <div class="card mb-3">
+                    <div class="card-body">
+                        <div class="row g-2 align-items-end">
+                            <div class="col-md-6">
+                                <label class="form-label">Search</label>
+                                <input id="storageSearch" type="text" class="form-control" placeholder="Filter by storage/path/node...">
+                            </div>
+                            <div class="col-md-6 text-end">
+                                <button class="btn btn-outline-secondary btn-sm" type="button" id="clearSearch">Clear</button>
+                            </div>
+                        </div>
+                        <div class="mt-2 small text-muted">
+                            <span id="selectedCount">0</span> selected
+                        </div>
+                    </div>
+                </div>
+
+                <div class="d-flex gap-2 mb-2">
+                    <button class="btn btn-sm btn-outline-primary" type="button" id="selectAllVisible">Select all (visible)</button>
+                    <button class="btn btn-sm btn-outline-secondary" type="button" id="clearAll">Clear all</button>
+                </div>
+
+                <div class="table-responsive">
+                    <table class="table table-striped align-middle" id="storageTable">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width:6%">Select</th>
+                                <th style="width:24%">Storage</th>
+                                <th style="width:10%">Type</th>
+                                <th>Path</th>
+                                <th style="width:16%">Node</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @for (int i = 0; i < sv!.StorageList.Count; i++)
+                            {
+                                var s = sv.StorageList[i];
+                                var isNfs = string.Equals(s.Type, "nfs", StringComparison.OrdinalIgnoreCase);
+                                <tr data-storage="@s.Storage.ToLowerInvariant()"
+                                    data-type="@s.Type.ToLowerInvariant()"
+                                    data-path="@s.Path.ToLowerInvariant()"
+                                    data-node="@s.Node.ToLowerInvariant()">
+                                    <td>
+                                        <input type="checkbox"
+                                               name="SelectedStorageIds"
+                                               value="@s.Id"
+                                               class="selBox"
+                                               @(s.IsSelected ? "checked" : "") />
+                                    </td>
+                                    <td class="fw-semibold">@s.Storage</td>
+                                    <td><span class="badge bg-@(isNfs ? "info" : "secondary") text-uppercase">@s.Type</span></td>
+                                    <td><code>@s.Path</code></td>
+                                    <td>@s.Node</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="d-flex justify-content-end mt-3">
+                    <button type="submit" class="btn btn-success">Save Selected</button>
+                </div>
+            </form>
+        }
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        // If a cluster is selected, ensure the extra tabs are visible and the requested tab is active.
+        document.addEventListener('DOMContentLoaded', function () {
+          const params = new URLSearchParams(window.location.search);
+          const tab = params.get('tab');
+          const showTab = (btnSel) => {
+            const btn = document.querySelector(btnSel);
+            if (btn && typeof bootstrap !== 'undefined') new bootstrap.Tab(btn).show();
+          };
+
+          // Reveal hidden tabs if the server says we have a selection
+          const hasSelection = @((Model.SelectedCluster != null).ToString().ToLower());
+          if (hasSelection) {
+            document.getElementById('nav-edit-hosts')?.classList.remove('d-none');
+            document.getElementById('nav-storage')?.classList.remove('d-none');
+            if (tab === 'edit') showTab('#tab-edit');
+            if (tab === 'storage') showTab('#tab-storage');
+            if (location.hash === '#pane-edit') showTab('#tab-edit');
+            if (location.hash === '#pane-storage') showTab('#tab-storage');
+          }
+
+          // Make cluster rows clickable → select cluster and open Edit tab
+          document.querySelectorAll('#clusterTable tbody tr.cluster-row').forEach(tr => {
+            tr.addEventListener('click', function (e) {
+              // Ignore clicks on action buttons/links inside the row (Authenticate/Delete/Storage)
+              const target = e.target;
+              if (target.closest('form') || target.closest('.btn') || target.closest('a.row-storage-link')) return;
+              const url = this.getAttribute('data-edit-url');
+              if (url) window.location = url;
+            });
+          });
+
+        });
+
+        // Storage search + select helpers
+        (function(){
+          const tb = document.getElementById('storageTable');
+          if (!tb) return; // storage tab not rendered yet
+
+          const q  = document.getElementById('storageSearch');
+          const btnClear = document.getElementById('clearSearch');
+          const btnAll = document.getElementById('selectAllVisible');
+          const btnNone= document.getElementById('clearAll');
+          const selectedCount = document.getElementById('selectedCount');
+
+          function updateSelectedCount(){
+            selectedCount.textContent = tb.querySelectorAll('tbody input.selBox:checked').length;
+          }
+
+          function applyFilters(){
+            const qq = (q.value || '').toLowerCase();
+            tb.querySelectorAll('tbody tr').forEach(tr => {
+              const storage = tr.getAttribute('data-storage') || '';
+              const path = tr.getAttribute('data-path') || '';
+              const node = tr.getAttribute('data-node') || '';
+              const matchesText = [storage, path, node].some(x => x.indexOf(qq) !== -1);
+              tr.style.display = matchesText ? '' : 'none';
+            });
+          }
+
+          function selectAllVisible(){
+            tb.querySelectorAll('tbody tr').forEach(tr => {
+              if (tr.style.display !== 'none') {
+                const cb = tr.querySelector('input.selBox');
+                if (cb) cb.checked = true;
+              }
+            });
+            updateSelectedCount();
+          }
+
+          function clearAll(){
+            tb.querySelectorAll('tbody input.selBox').forEach(cb => cb.checked = false);
+            updateSelectedCount();
+          }
+
+          q?.addEventListener('input', applyFilters);
+          btnClear?.addEventListener('click', function(){ if (!q) return; q.value=''; applyFilters(); });
+          btnAll?.addEventListener('click', selectAllVisible);
+          btnNone?.addEventListener('click', clearAll);
+          tb.addEventListener('change', function(e){ if (e.target && e.target.classList.contains('selBox')) updateSelectedCount(); });
+
+          applyFilters();
+          updateSelectedCount();
+        })();
+    </script>
+}

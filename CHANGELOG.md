@@ -60,3 +60,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - paused VM not resumed by BareProx, Fixed by lchanouha (Sorry for the late merge)
+
+## [1.0.2510.0914] – 2025-10-09
+
+### New
+- Added support for Snapshots as volume chains
+- Added a bonus feature
+- Added compression of old logfiles (keeps ~30 days)
+- Restore:
+	Added Generate new uuid + vmgenid
+	Added Generate new mac addresses for nics
+	Added Rollback snapshot
+	Added VmState Warning for Rollback
+- Probably new bugs.
+- Changed Settings / Proxmox
+- Changed Settings / Netapp
+
+### Fixed
+
+- Failed, cancelled, error-jobs, stuck running etc.. now gets pruned from the db after 30 days.
+- Fixed an issue where vmid was added to {vmid}.conf when creating a new vm.
+- Security fixes

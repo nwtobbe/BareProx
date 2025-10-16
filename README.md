@@ -179,7 +179,7 @@ Edit the created Proxmox cluster and add hosts in the cluster.
 There is no API currently to do this automatically.  
 
 When done, click **Authenticate**.  
-And don’t forget to select datastores.
+And don’t forget to select datastores to use.
 
 ---
 
@@ -194,8 +194,8 @@ And don’t forget to select datastores.
 ## Things Not Working / Known Issues
 
 - **TPM devices:** Proxmox does not allow snapshots of VMs with TPM devices.  
-- **Cloud-Init drives:** Delete and recreate them after restore. They are temporary devices.  
-- **EFI drives:** Move them offline after restore.  
+- **Cloud-Init drives:** Delete and recreate them after restore. They are temporary devices.
+- **Exclude from backup** You can exclude vm:s from backup but.. there is no code currently that does the actual exclusion.
 
 ---
 

@@ -161,7 +161,9 @@ namespace BareProx.Controllers
                 CloneVolumeName = $"clone_{record.VMID}_{_tz.ConvertUtcToApp(DateTime.UtcNow):yyyy-MM-dd-HH-mm}",
                 StartDisconnected = false,
                 OriginalHostAddress = originalHost?.HostAddress,
-                OriginalHostName = originalHost?.Hostname
+                OriginalHostName = originalHost?.Hostname,
+                UsedProxmoxSnapshot = record.UseProxmoxSnapshot,
+                VmState = record.WithMemory
             };
             vm.HostOptions = cluster.Hosts
                                     .Select(h => new SelectListItem

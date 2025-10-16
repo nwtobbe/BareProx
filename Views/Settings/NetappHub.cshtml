@@ -1,0 +1,492 @@
+﻿@using BareProx.Models
+@model NetappHubViewModel
+
+@{
+    ViewData["Title"] = "NetApp – Clusters";
+    var hasSelection = Model.Selected != null;
+}
+
+<style>
+    #controllersTable tbody tr.row-link {
+        cursor: pointer;
+    }
+
+        #controllersTable tbody tr.row-link:hover {
+            background-color: rgba(0,0,0,.03);
+        }
+</style>
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <h2 class="mb-0">NetApp – Clusters</h2>
+    <span class="text-muted">@((Model.Controllers?.Count() ?? 0)) total</span>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(Model.Message))
+{
+    <div class="alert alert-info alert-dismissible fade show" role="alert">
+        @Model.Message
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    </div>
+}
+
+<ul class="nav nav-tabs" id="naTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <!-- link clears selection -->
+        <a class="nav-link active" id="tab-list" href="@Url.Action("NetappHub", "Settings")" role="tab">Clusters</a>
+    </li>
+    <li class="nav-item @(hasSelection ? "" : "d-none")" role="presentation" id="nav-edit">
+        <button class="nav-link" id="tab-edit" data-bs-toggle="tab" data-bs-target="#pane-edit" type="button" role="tab">Edit</button>
+    </li>
+    <li class="nav-item @(hasSelection ? "" : "d-none")" role="presentation" id="nav-vols">
+        <button class="nav-link" id="tab-vols" data-bs-toggle="tab" data-bs-target="#pane-vols" type="button" role="tab">Volumes</button>
+    </li>
+</ul>
+
+<div class="tab-content pt-3">
+    <!-- TAB: Controllers -->
+    <div class="tab-pane fade show active" id="pane-list" role="tabpanel" aria-labelledby="tab-list">
+
+        <div class="small text-muted mb-2">
+            Tip: click a row to edit. Use “Volumes” to jump straight to volume selection.
+        </div>
+
+        <div class="table-responsive">
+            <table class="table table-hover align-middle" id="controllersTable">
+                <thead class="table-light">
+                    <tr>
+                        <th>Display Name</th>
+                        <th>IP / FQDN</th>
+                        <th>Role</th>
+                        <th class="text-end">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var c in Model.Controllers ?? Enumerable.Empty<NetappController>())
+                    {
+                        var isPrimary = c.IsPrimary;
+                        var roleBadge = isPrimary ? "primary" : "secondary";
+                        var roleText = isPrimary ? "Primary" : "Secondary";
+                        var editUrl = Url.Action("NetappHub", "Settings", new { selectedId = c.Id }) + "#pane-edit";
+                        var volsUrl = Url.Action("NetappHub", "Settings", new { selectedId = c.Id, tab = "vols" }) + "#pane-vols";
+                        <tr class="row-link" data-url="@editUrl">
+                            <td>
+                                <div class="fw-semibold">@c.Hostname</div>
+                                <div class="small text-muted">ID: @c.Id</div>
+                                <div class="small">
+                                    <a href="@volsUrl" class="link-secondary row-vols-link">Volumes</a>
+                                </div>
+                            </td>
+                            <td>@c.IpAddress</td>
+                            <td><span class="badge bg-@roleBadge">@roleText</span></td>
+                            <td class="text-end">
+                                <button type="button"
+                                        class="btn btn-sm btn-outline-danger delete-ctrl-btn"
+                                        data-id="@c.Id"
+                                        data-name="@c.Hostname">
+                                    Delete
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <hr class="my-4" />
+
+        <!-- Add button (left-aligned), opens modal wizard -->
+        <div class="mb-2">
+            <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#addControllerModal">
+                Add
+            </button>
+        </div>
+    </div> <!-- /pane-list -->
+    <!-- TAB: Edit -->
+    <div class="tab-pane fade" id="pane-edit" role="tabpanel" aria-labelledby="tab-edit">
+        @if (!hasSelection)
+        {
+            <div class="alert alert-secondary">Select a controller (click a row) to edit.</div>
+        }
+        else
+        {
+            var m = Model.Selected!;
+            <div class="card">
+                <div class="card-header">Edit — @m.Hostname</div>
+                <div class="card-body">
+                    <form asp-action="Edit" asp-controller="Settings" method="post" class="row g-3 needs-validation" novalidate>
+                        @Html.AntiForgeryToken()
+                        <input type="hidden" name="Id" value="@m.Id" />
+
+                        <!-- Row 1: keep as-is (side-by-side) -->
+                        <div class="col-md-6">
+                            <label class="form-label">Display name</label>
+                            <input name="Hostname" class="form-control" value="@m.Hostname" required maxlength="128" />
+                            <div class="invalid-feedback">Required.</div>
+                        </div>
+
+                        <div class="col-md-6">
+                            <label class="form-label">IP / FQDN – Cluster Management</label>
+                            <input name="IpAddress" class="form-control" value="@m.IpAddress" required />
+                            <div class="invalid-feedback">Required.</div>
+                        </div>
+
+                        <!-- Row 2+: left column stack: Primary → Username → Password -->
+                        <div class="col-md-6">
+                            <div class="form-check mb-3 mt-1">
+                                <input class="form-check-input" type="checkbox" name="IsPrimary" id="IsPrimaryEdit" @(m.IsPrimary ? "checked" : "") />
+                                <label class="form-check-label" for="IsPrimaryEdit">Primary</label>
+                            </div>
+
+                            <div class="mb-3">
+                                <label class="form-label">Username</label>
+                                <input name="Username" class="form-control" value="@m.Username" required />
+                                <div class="invalid-feedback">Required.</div>
+                            </div>
+
+                            <div class="mb-1">
+                                <label class="form-label">New Password</label>
+                                <input name="PasswordHash" type="password" class="form-control" autocomplete="new-password" />
+                                <div class="form-text">Leave blank to keep the current password.</div>
+                            </div>
+                        </div>
+
+                        <!-- Right column left empty for balance / future fields -->
+                        <div class="col-md-6"></div>
+
+                        <div class="col-12 d-flex gap-2">
+                            <button class="btn btn-primary">Save</button>
+                            <a asp-action="NetappHub" asp-controller="Settings" class="btn btn-outline-secondary">Cancel</a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        }
+    </div>
+
+
+    <!-- TAB: Volumes -->
+    <div class="tab-pane fade" id="pane-vols" role="tabpanel" aria-labelledby="tab-vols">
+        @if (!hasSelection)
+        {
+            <div class="alert alert-secondary">Select a controller to manage volumes.</div>
+        }
+        else
+        {
+            <div class="card">
+                <div class="card-header d-flex align-items-center justify-content-between">
+                    <span>Exported Volumes</span>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-sm btn-outline-secondary" id="expandAll">Expand all</button>
+                        <button class="btn btn-sm btn-outline-secondary" id="collapseAll">Collapse all</button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="row g-2 align-items-end mb-3">
+                        <div class="col-md-8">
+                            <label class="form-label">Search</label>
+                            <input id="volSearch" type="text" class="form-control" placeholder="Filter by SVM / volume / IP...">
+                        </div>
+                    </div>
+
+                    <div id="volume-list-container">
+                        <div class="text-muted">Loading available volumes…</div>
+                    </div>
+
+                    <input type="hidden" id="netappControllerId" value="@Model.Selected!.Id" />
+                    <div class="d-flex justify-content-end mt-3">
+                        <button class="btn btn-success" id="saveVolumes">Save Selected Volumes</button>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+</div>
+
+<!-- Hidden anti-forgery form for JS posts -->
+<form id="__afTokenForm" method="post" class="d-none">
+    @Html.AntiForgeryToken()
+</form>
+
+<!-- Add Controller – Modal Wizard -->
+<div class="modal fade" id="addControllerModal" tabindex="-1" aria-labelledby="addControllerLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content">
+            <form id="addControllerForm" asp-action="Create" asp-controller="Settings" method="post" class="needs-validation" novalidate>
+                @Html.AntiForgeryToken()
+
+                <div class="modal-header">
+                    <h5 class="modal-title" id="addControllerLabel">Add NetApp Cluster</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+
+                <!-- Simple stepper -->
+                <div class="px-4 pt-3">
+                    <ul class="nav nav-pills justify-content-center gap-2" id="naWizardSteps" role="tablist">
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link active" type="button" data-step="1">1. Identity</button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link disabled" type="button" data-step="2" tabindex="-1" aria-disabled="true">2. Credentials</button>
+                        </li>
+                    </ul>
+                </div>
+
+                <div class="modal-body">
+                    <!-- Step 1 -->
+                    <div class="wizard-step" data-step="1">
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <label class="form-label">Display name</label>
+                                <input name="Hostname" id="acHostname" class="form-control" required maxlength="128" />
+                                <div class="invalid-feedback">Display name is required.</div>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">IP / FQDN – Cluster Management</label>
+                                <input name="IpAddress" id="acIp" class="form-control" required />
+                                <div class="invalid-feedback">IP / FQDN is required.</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Step 2 -->
+                    <div class="wizard-step d-none" data-step="2">
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <label class="form-label">Username</label>
+                                <input name="Username" id="acUser" class="form-control" required />
+                                <div class="invalid-feedback">Username is required.</div>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">Password</label>
+                                <input name="PasswordHash" id="acPass" type="password" class="form-control" autocomplete="new-password" required />
+                                <div class="invalid-feedback">Password is required.</div>
+                            </div>
+                            <div class="col-md-12">
+                                <div class="form-check mt-2">
+                                    <input class="form-check-input" type="checkbox" name="IsPrimary" id="acPrimary" />
+                                    <label class="form-check-label" for="acPrimary">Primary controller</label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-footer">
+                    <div class="me-auto small text-muted" id="addControllerHint"></div>
+                    <button type="button" class="btn btn-outline-secondary" id="acBack" disabled>Back</button>
+                    <button type="button" class="btn btn-primary" id="acNext">Next</button>
+                    <button type="submit" class="btn btn-success d-none" id="acSubmit">Add</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        // basic client-side validation styling
+        document.addEventListener('submit', function (e) {
+          const form = e.target.closest('form.needs-validation');
+          if (!form) return;
+          if (!form.checkValidity()) { e.preventDefault(); e.stopPropagation(); }
+          form.classList.add('was-validated');
+        }, true);
+
+        // reveal hidden tabs if a controller is selected
+        document.addEventListener('DOMContentLoaded', function () {
+          const hasSelection = @((Model.Selected != null).ToString().ToLower());
+          if (hasSelection) {
+            document.getElementById('nav-edit')?.classList.remove('d-none');
+            document.getElementById('nav-vols')?.classList.remove('d-none');
+          }
+
+          // make rows clickable (except inner controls and delete buttons)
+          document.querySelectorAll('#controllersTable .row-link').forEach(tr => {
+            tr.addEventListener('click', function(e){
+              if (e.target.closest('a,button,form,.delete-ctrl-btn')) return;
+              const url = this.getAttribute('data-url');
+              if (url) window.location = url;
+            });
+          });
+
+          // activate tab based on query/hash
+          const params = new URLSearchParams(window.location.search);
+          const tab = params.get('tab');
+          const showTab = sel => {
+            const btn = document.querySelector(sel);
+            if (btn && typeof bootstrap !== 'undefined') new bootstrap.Tab(btn).show();
+          };
+          if (tab === 'vols') showTab('#tab-vols');
+          if (location.hash === '#pane-edit') showTab('#tab-edit');
+          if (location.hash === '#pane-vols')  showTab('#tab-vols');
+        });
+
+        // Volumes: AJAX load + search + expand/collapse
+        (async function(){
+          const cidEl = document.getElementById('netappControllerId');
+          if (!cidEl) return;
+
+          const container = document.getElementById('volume-list-container');
+          const res = await fetch(`@Url.Action("GetVolumesTree", "Settings")?storageId=${cidEl.value}`);
+          container.innerHTML = await res.text();
+
+          const search = document.getElementById('volSearch');
+          const btnExpand = document.getElementById('expandAll');
+          const btnCollapse = document.getElementById('collapseAll');
+
+          function applyFilter(){
+            const q = (search.value || '').toLowerCase();
+            container.querySelectorAll('.list-group .list-group .list-group-item').forEach(li => {
+              const text = (li.textContent || '').toLowerCase();
+              li.style.display = text.indexOf(q) !== -1 ? '' : 'none';
+            });
+          }
+
+          function toggleAll(expand){
+            container.querySelectorAll('.collapse').forEach(el => {
+              if (expand) new bootstrap.Collapse(el, { show: true });
+              else        new bootstrap.Collapse(el, { hide: true });
+            });
+          }
+
+          search?.addEventListener('input', applyFilter);
+          btnExpand?.addEventListener('click', () => toggleAll(true));
+          btnCollapse?.addEventListener('click', () => toggleAll(false));
+
+          document.getElementById('saveVolumes')?.addEventListener('click', async () => {
+            const boxes = container.querySelectorAll('.volume-checkbox:checked');
+            const volumes = Array.from(boxes).map(cb => ({
+              Vserver: cb.dataset.vserver,
+              VolumeName: cb.dataset.volume,
+              Uuid: cb.dataset.uuid,
+              MountIp: cb.dataset.mountip,
+              ClusterId: parseInt(cb.dataset.clusterid)
+            }));
+            const resp = await fetch("@Url.Action("SaveNetappSelectedVolumes", "Settings")", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(volumes)
+            });
+            if (resp.ok) {
+              alert("Volumes saved.");
+              const cid = cidEl.value;
+              window.location = `${'@Url.Action("NetappHub", "Settings")'}?selectedId=${encodeURIComponent(cid)}&tab=vols#pane-vols`;
+            } else {
+              alert("Failed to save volumes.");
+            }
+          });
+        })();
+
+        // ----- Add Controller modal wizard -----
+        (function(){
+          const modalEl   = document.getElementById('addControllerModal');
+          const form      = document.getElementById('addControllerForm');
+          const steps     = Array.from(document.querySelectorAll('.wizard-step'));
+          const pills     = Array.from(document.querySelectorAll('#naWizardSteps .nav-link'));
+          const btnBack   = document.getElementById('acBack');
+          const btnNext   = document.getElementById('acNext');
+          const btnSubmit = document.getElementById('acSubmit');
+          const hint      = document.getElementById('addControllerHint');
+
+          let current = 1;
+          const maxStep = 2;
+
+          function showStep(n){
+            current = n;
+            steps.forEach(s => s.classList.toggle('d-none', +s.dataset.step !== n));
+            pills.forEach(p => {
+              const step = +p.dataset.step;
+              p.classList.toggle('active', step === n);
+              const disabled = step > n;
+              p.classList.toggle('disabled', disabled);
+              p.tabIndex = disabled ? -1 : 0;
+              p.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+            });
+            btnBack.disabled = (n === 1);
+            btnNext.classList.toggle('d-none', n === maxStep);
+            btnSubmit.classList.toggle('d-none', n !== maxStep);
+            hint.textContent = (n === 1)
+              ? 'Enter the display name and management IP/FQDN.'
+              : 'Enter credentials and choose whether it is a primary controller.';
+          }
+
+          function stepValid(n){
+            if (n === 1) {
+              return document.getElementById('acHostname').checkValidity()
+                  && document.getElementById('acIp').checkValidity();
+            }
+            if (n === 2) {
+              return document.getElementById('acUser').checkValidity()
+                  && document.getElementById('acPass').checkValidity();
+            }
+            return true;
+          }
+
+          btnNext?.addEventListener('click', () => {
+            form.classList.add('was-validated');
+            if (!stepValid(current)) return;
+            showStep(Math.min(maxStep, current + 1));
+          });
+
+          btnBack?.addEventListener('click', () => showStep(Math.max(1, current - 1)));
+
+          // prevent submit if invalid (HTML5 validation)
+          form?.addEventListener('submit', (e) => {
+            if (!form.checkValidity()) {
+              e.preventDefault(); e.stopPropagation();
+              form.classList.add('was-validated');
+            }
+          });
+
+          // reset wizard when modal opens
+          modalEl?.addEventListener('shown.bs.modal', () => {
+            form.reset();
+            form.classList.remove('was-validated');
+            showStep(1);
+            document.getElementById('acHostname')?.focus();
+          });
+
+          // allow clicking completed step pills to go back
+          pills.forEach(p => {
+            p.addEventListener('click', () => {
+              const s = +p.dataset.step;
+              if (!p.classList.contains('disabled')) showStep(s);
+            });
+          });
+        })();
+
+        // ----- JS-driven Delete (with anti-forgery) -----
+        (function(){
+          const deleteUrl = '@Url.Action("Delete", "Settings")'; // [HttpPost, ActionName("Delete")]
+          function getCsrfToken() {
+            return document.querySelector('#__afTokenForm input[name="__RequestVerificationToken"]')?.value || '';
+          }
+          document.addEventListener('click', function(e){
+            const btn = e.target.closest('.delete-ctrl-btn');
+            if (!btn) return;
+            e.stopPropagation(); // don't trigger row navigation
+            e.preventDefault();
+
+            const id = btn.getAttribute('data-id');
+            const name = btn.getAttribute('data-name') || 'this controller';
+            if (!id) return;
+            if (!confirm(`Delete controller “${name}”?`)) return;
+
+            const token = getCsrfToken();
+            const formData = new FormData();
+            formData.append('__RequestVerificationToken', token);
+            formData.append('id', id);
+
+            fetch(deleteUrl, { method: 'POST', body: formData, credentials: 'same-origin' })
+              .then(res => {
+                if (res.ok) {
+                  window.location = '@Url.Action("NetappHub", "Settings")';
+                } else {
+                  return res.text().then(t => { throw new Error(t || 'Delete failed'); });
+                }
+              })
+              .catch(err => alert('Failed to delete: ' + (err?.message || 'Unknown error')));
+          }, true);
+        })();
+    </script>
+}

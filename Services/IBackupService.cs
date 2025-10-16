@@ -155,13 +155,25 @@ namespace BareProx.Services
                 if (cluster.Hosts == null || !cluster.Hosts.Any())
                     return await FailJobAsync(job, "Cluster not properly configured.", ct);
 
+                // NEW: fetch power status for all VMs once
+                var statusMap = new Dictionary<int, string>(capacity: vms.Count);
+                {
+                    var tasks = vms.Select(async vm =>
+                    {
+                        var st = await _proxmoxService.GetVmStatusAsync(cluster, vm.HostName, vm.HostAddress, vm.Id, ct);
+                        lock (statusMap) statusMap[vm.Id] = st ?? "";
+                    });
+                    await Task.WhenAll(tasks);
+                }
 
                 // 3) Pause VMs if IO-freeze requested
                 if (isApplicationAware && enableIoFreeze)
                 {
                     foreach (var vm in vms)
-                        await _proxmoxService.PauseVmAsync(cluster, vm.HostName, vm.HostAddress, vm.Id);
-
+                    {
+                        if (!string.Equals(statusMap[vm.Id], "stopped", StringComparison.OrdinalIgnoreCase))
+                            await _proxmoxService.PauseVmAsync(cluster, vm.HostName, vm.HostAddress, vm.Id);
+                    }
                     vmsWerePaused = true;
                     job.Status = "Paused VMs";
                     await _context.SaveChangesAsync(ct);
@@ -179,10 +191,8 @@ namespace BareProx.Services
 
                     foreach (var vm in vms)
                     {
-                        var status = await _proxmoxService.GetVmStatusAsync(
-                            cluster, vm.HostName, vm.HostAddress, vm.Id, ct);
-
-                        if (status == "stopped")
+                        var status = statusMap.TryGetValue(vm.Id, out var s) ? s : "";
+                        if (string.Equals(status, "stopped", StringComparison.OrdinalIgnoreCase))
                         {
                             _logger.LogWarning("Skipping snapshot for stopped VM {VmId}", vm.Id);
                             continue;
@@ -195,7 +205,6 @@ namespace BareProx.Services
                             withMemory,
                             dontTrySuspend, ct
                         );
-
                         if (!string.IsNullOrWhiteSpace(upid))
                         {
                             snapshotTasks[vm.Id] = upid;
@@ -263,7 +272,15 @@ namespace BareProx.Services
                 // 5b) Persist BackupRecord(s)
                 foreach (var vm in vms)
                 {
-                    var config = await _proxmoxService.GetVmConfigAsync(cluster, vm.HostName, vm.Id, ct);
+                    var cfg = await _proxmoxService.GetVmConfigAsync(cluster, vm.HostName, vm.Id, ct);
+                    var isStopped = statusMap.TryGetValue(vm.Id, out var s)
+                                    && string.Equals(s, "stopped", StringComparison.OrdinalIgnoreCase);
+
+                    // Per-VM flags: force 0 for stopped VMs
+                    var perVmIsAppAware = isStopped ? false : isApplicationAware;
+                    var perVmFreeze = isStopped ? false : enableIoFreeze;
+                    var perVmUseProxSnapshot = isStopped ? false : useProxmoxSnapshot;
+                    var perVmWithMemory = isStopped ? false : withMemory;
 
                     await _backupRepository.StoreBackupInfoAsync(new BackupRecord
                     {
@@ -278,11 +295,14 @@ namespace BareProx.Services
                         TimeStamp = DateTime.UtcNow,
                         ControllerId = netappControllerId,
                         SnapshotName = snapshotResult.SnapshotName,
-                        ConfigurationJson = config,
-                        IsApplicationAware = isApplicationAware,
-                        EnableIoFreeze = enableIoFreeze,
-                        UseProxmoxSnapshot = useProxmoxSnapshot,
-                        WithMemory = withMemory,
+                        ConfigurationJson = cfg,
+
+                        // ← per-VM reporting
+                        IsApplicationAware = perVmIsAppAware,
+                        EnableIoFreeze = perVmFreeze,     
+                        UseProxmoxSnapshot = perVmUseProxSnapshot,
+                        WithMemory = perVmWithMemory,
+
                         ScheduleId = scheduleId,
                         ReplicateToSecondary = replicateToSecondary,
                         SnapshotAsvolumeChain = snapChainActive
@@ -485,23 +505,6 @@ namespace BareProx.Services
             await _context.SaveChangesAsync(ct);
             return false;
         }
-        private async Task<bool> CheckJobCancellationAsync(Job job, CancellationToken ct)
-        {
-            // Reload the latest row from the database
-            await _context.Entry(job).ReloadAsync(ct);
 
-            // If somebody set Status = "Cancelled", we abort
-            if (job.Status == "Cancelled")
-            {
-                // Mark as failed (or whatever you prefer)
-                job.Status = "Failed";
-                job.ErrorMessage = "Job was cancelled.";
-                job.CompletedAt = DateTime.UtcNow;
-                await _context.SaveChangesAsync(ct);
-                return false;
-            }
-
-            return true;
-        }
     }
 }
