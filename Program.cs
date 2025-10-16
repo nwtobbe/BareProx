@@ -21,6 +21,7 @@
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using System;
 using System.IO;
+using System.IO.Compression;
 using System.Security.Cryptography;
 using BareProx.Data;
 using BareProx.Models;
@@ -40,6 +41,7 @@ using Serilog.Events;
 using BareProx.Services.Proxmox.Helpers;
 using BareProx.Services.Proxmox.Authentication;
 using BareProx.Services.Migration;
+using Serilog.Sinks.File.Archive;
 
 // Alias for clarity
 using DbConfigModel = BareProx.Models.DatabaseConfigModels;
@@ -59,17 +61,63 @@ Directory.CreateDirectory(dataPath);
 Directory.CreateDirectory(logFolder);
 
 // ─── 1) Configure Serilog ───────────────────────────────────────────────────────
+
+static void CompressStaleLogs(string folder)
+{
+    var today = DateTime.UtcNow.Date;
+    foreach (var path in Directory.EnumerateFiles(folder, "log-*.txt", SearchOption.TopDirectoryOnly))
+    {
+        var name = Path.GetFileName(path);
+        // Skip today's file and any file that already has a .gz alongside it
+        if (name.EndsWith(".gz", StringComparison.OrdinalIgnoreCase)) continue;
+
+        // Parse date from name: log-YYYYMMDD.txt  OR  log-YYYY-MM-DD.txt
+        var stem = Path.GetFileNameWithoutExtension(name); // e.g. "log-20251015"
+        var datePart = stem.Replace("log-", "");
+        if (!(DateTime.TryParse(datePart, out var parsed) || DateTime.TryParseExact(datePart, "yyyyMMdd", null, System.Globalization.DateTimeStyles.None, out parsed)))
+            continue;
+
+        if (parsed.Date >= today) continue; // don't touch today's active file
+
+        var gzPath = Path.Combine(folder, name + ".gz");
+        if (File.Exists(gzPath)) { File.Delete(path); continue; } // already compressed earlier
+
+        try
+        {
+            using var src = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var dst = File.Create(gzPath);
+            using var gz = new GZipStream(dst, CompressionLevel.Optimal, leaveOpen: true);
+            src.CopyTo(gz);
+        }
+        catch
+        {
+            // file locked or transient issue → skip; Serilog/next startup can try again
+            continue;
+        }
+
+        try { File.Delete(path); } catch { /* ignore */ }
+    }
+}
+
+// Compress any leftover plain .txt from previous days
+CompressStaleLogs(logFolder);
+
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Override("Microsoft", LogEventLevel.Information)
     .MinimumLevel.Override("Default", LogEventLevel.Debug)
     .Enrich.FromLogContext()
     .WriteTo.Console()
     .WriteTo.File(
-        path: Path.Combine(logFolder, "log-.txt"),
-        rollingInterval: RollingInterval.Day,
-        retainedFileCountLimit: 30,
-        shared: true,
-        outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} {Level:u3}] {Message:lj}{NewLine}{Exception}"
+    path: Path.Combine(logFolder, "log-.txt"),
+    rollingInterval: RollingInterval.Day,
+    // Optional: also roll if a file gets big
+    fileSizeLimitBytes: 50 * 1024 * 1024, // 50 MB
+    rollOnFileSizeLimit: true,
+    retainedFileCountLimit: 60,            // keep last 30 rolled files (compressed)
+    retainedFileTimeLimit: TimeSpan.FromDays(30), // or time-based retention
+    shared: false,
+    hooks: new ArchiveHooks(CompressionLevel.Optimal, logFolder),      // <- auto-compress on roll
+    outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} {Level:u3}] {SourceContext} {Message:lj}{NewLine}{Exception}"
     )
     .CreateLogger();
 

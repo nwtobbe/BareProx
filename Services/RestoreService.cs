@@ -246,11 +246,9 @@ namespace BareProx.Services
 
                         // Restore using original VMID on target host
                         restored = await proxmox.RestoreVmFromConfigWithOriginalIdAsync(
-                            model.OriginalConfig,
+                            model,
                             targetHost.HostAddress,
-                            int.Parse(model.VmId),
                             cloneName,
-                            model.StartDisconnected,
                             snapshotChainActive: snapChainActive,
                             backgroundCt);
                     }
@@ -258,12 +256,9 @@ namespace BareProx.Services
                     {
                         // Create new VM on target host
                         restored = await proxmox.RestoreVmFromConfigAsync(
-                            model.OriginalConfig,
+                            model,
                             targetHost.HostAddress,
-                            model.NewVmName!,
                             cloneName,
-                            model.ControllerId,
-                            model.StartDisconnected,
                             snapshotChainActive: snapChainActive,
                             backgroundCt);
                     }

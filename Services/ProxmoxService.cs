@@ -673,17 +673,13 @@ namespace BareProx.Services
             return result;
         }
 
-        public async Task<bool> RestoreVmFromConfigAsync(
-      string originalConfigJson,
+        public async Task<bool> RestoreVmFromConfigAsync(RestoreFormViewModel model,
       string hostAddress,
-      string newVmName,
       string cloneStorageName,
-      int controllerId,
-      bool startDisconnected,
       bool snapshotChainActive = false,         // ← NEW
       CancellationToken ct = default)
         {
-            using var rootDoc = JsonDocument.Parse(originalConfigJson);
+            using var rootDoc = JsonDocument.Parse(model.OriginalConfig);
             if (!rootDoc.RootElement.TryGetProperty("config", out var config))
                 return false;
 
@@ -726,13 +722,15 @@ namespace BareProx.Services
             if (string.IsNullOrEmpty(oldStorageName))
                 throw new InvalidOperationException("Failed to determine oldStorageName from config.");
 
-            payload["name"] = newVmName;
+            payload["name"] = model.NewVmName;
             payload.Remove("meta");
             payload.Remove("digest");
             payload["protection"] = "0";
 
+
+
             // Disconnect NICs if requested (main config)
-            if (startDisconnected)
+            if (model.StartDisconnected)
             {
                 foreach (var netKey in payload.Keys
                          .Where(k => Regex.IsMatch(k, @"^net\d+$", RegexOptions.IgnoreCase))
@@ -773,6 +771,28 @@ namespace BareProx.Services
                     vmid);
             }
 
+            // 1) Prepare new IDs (before writing anything)
+            string? newUuid = null, newVmgen = null;
+            if (model.GenerateNewUuid)
+            {
+                newUuid = Guid.NewGuid().ToString("D");
+                newVmgen = Guid.NewGuid().ToString("D");
+
+                // Ensure main payload smbios1 has the new uuid
+                if (payload.TryGetValue("smbios1", out var smbios))
+                {
+                    var parts = smbios.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                                      .Where(p => !p.StartsWith("uuid=", StringComparison.OrdinalIgnoreCase));
+                    payload["smbios1"] = string.Join(",", parts.Append($"uuid={newUuid}"));
+                }
+                else
+                {
+                    payload["smbios1"] = $"uuid={newUuid}";
+                }
+                payload["vmgenid"] = newVmgen!;
+            }
+
+            // 2) Build the .conf text
             var sb = new StringBuilder();
 
             // Write main config
@@ -796,7 +816,7 @@ namespace BareProx.Services
                     }
 
                     // Disconnect NICs if requested (apply to snapshot section)
-                    if (startDisconnected)
+                    if (model.StartDisconnected)
                     {
                         foreach (var netKey in snapDict.Keys
                                  .Where(k => Regex.IsMatch(k, @"^net\d+$", RegexOptions.IgnoreCase))
@@ -808,6 +828,21 @@ namespace BareProx.Services
                             else
                                 snapDict[netKey] = def + ",link_down=1";
                         }
+                    }
+                    // Write new UUID/VMGENID if requested (apply to snapshot section)
+                    if (newUuid != null && newVmgen != null)
+                    {
+                        if (snapDict.TryGetValue("smbios1", out var smbiosSnap))
+                        {
+                            var parts = smbiosSnap.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                                                  .Where(p => !p.StartsWith("uuid=", StringComparison.OrdinalIgnoreCase));
+                            snapDict["smbios1"] = string.Join(",", parts.Append($"uuid={newUuid}"));
+                        }
+                        else
+                        {
+                            snapDict["smbios1"] = $"uuid={newUuid}";
+                        }
+                        snapDict["vmgenid"] = newVmgen;
                     }
 
                     // Remap disk paths inside snapshot (keys like scsi0, virtio1, etc.)
@@ -873,67 +908,160 @@ namespace BareProx.Services
             // Post-restore: if snapshot chain was active AND a BareProx snapshot exists,
             // rollback to it (no autostart) and then delete it. Non-fatal on failure.
             // ─────────────────────────────────────────────────────────────────────────
-            if (snapshotChainActive)
+            try
             {
-                try
+                var vmidInt = int.Parse(vmid);
+
+                var snaps = await GetSnapshotListAsync(cluster, nodeName, hostAddress, vmidInt, ct);
+                if (snaps == null || snaps.Count == 0)
                 {
-                    var vmidInt = int.Parse(vmid);
+                    _logger.LogInformation("No snapshots found on VMID {Vmid}. Nothing to repair or rollback.", vmidInt);
+                    return false;
+                }
 
-                    var snaps = await GetSnapshotListAsync(cluster, nodeName, hostAddress, vmidInt, ct);
-                    if (snaps != null && snaps.Count > 0)
+                // Newest BareProx snapshot (preferred target for rollback)
+                var bareproxSnap = snaps
+                    .Where(s => !string.IsNullOrWhiteSpace(s.Name) &&
+                                s.Name.StartsWith("BareProx-", StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(s => s.Snaptime)
+                    .FirstOrDefault();
+
+                // Newest non-current snapshot (fallback target for rollback, and to decide chain repair)
+                var newestNonCurrent = snaps
+                    .Where(s => !string.Equals(s.Name, "current", StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(s => s.Snaptime)
+                    .FirstOrDefault();
+
+                // If there is any snapshot except "current", repair the chain (regardless of rollback).
+                if (newestNonCurrent != null)
+                {
+                    try
                     {
-                        // BareProx backup snapshots use names that start with "BareProx-"
-                        var bareproxSnap = snaps
-                            .Where(s => !string.IsNullOrWhiteSpace(s.Name) &&
-                                        s.Name.StartsWith("BareProx-", StringComparison.OrdinalIgnoreCase))
-                            .OrderByDescending(s => s.Snaptime)
-                            .FirstOrDefault();
+                        await RepairExternalSnapshotChainAsync(nodeName, cloneStorageName, vmidInt, ct);
+                        _logger.LogInformation("Repaired external snapshot chain for VMID {Vmid}.", vmidInt);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Snapshot chain repair failed for VMID {Vmid}; continuing.", vmidInt);
+                    }
+                }
 
-                        if (bareproxSnap != null)
+                if (model.RollbackSnapshot)
+                {
+                    var targetSnap = bareproxSnap ?? newestNonCurrent;
+                    if (targetSnap == null)
+                    {
+                        _logger.LogInformation("Rollback requested but no suitable snapshot found on VMID {Vmid}.", vmidInt);
+                        return false;
+                    }
+
+                    var rollbackUrl =
+                        $"https://{hostAddress}:8006/api2/json/nodes/{nodeName}/qemu/{vmidInt}/snapshot/{Uri.EscapeDataString(targetSnap.Name)}/rollback";
+                    var form = new FormUrlEncodedContent(new Dictionary<string, string> { ["start"] = "0" });
+
+                    try
+                    {
+                        var rbResp = await SendWithRefreshAsync(cluster, HttpMethod.Post, rollbackUrl, form, ct);
+                        var rbJson = await rbResp.Content.ReadAsStringAsync(ct);
+                        using var rbDoc = JsonDocument.Parse(rbJson);
+                        var upid = rbDoc.RootElement.TryGetProperty("data", out var d) ? d.GetString() : null;
+
+                        if (!string.IsNullOrWhiteSpace(upid))
                         {
-                            // 0a) Repair snapshot chain
-                            await RepairExternalSnapshotChainAsync(nodeName, cloneStorageName, vmidInt, ct);
+                            var ok = await WaitForTaskCompletionAsync(
+                                cluster, nodeName, hostAddress, upid!, TimeSpan.FromMinutes(20), _logger, ct);
 
-                            // 1) Rollback (don't autostart)
-                            var rollbackUrl =
-                                $"https://{hostAddress}:8006/api2/json/nodes/{nodeName}/qemu/{vmidInt}/snapshot/{Uri.EscapeDataString(bareproxSnap.Name)}/rollback";
-                            var form = new FormUrlEncodedContent(new Dictionary<string, string> { ["start"] = "0" });
-                            var rbResp = await SendWithRefreshAsync(cluster, HttpMethod.Post, rollbackUrl, form, ct);
-                            var rbJson = await rbResp.Content.ReadAsStringAsync(ct);
-                            using var rbDoc = JsonDocument.Parse(rbJson);
-                            var upid = rbDoc.RootElement.TryGetProperty("data", out var d) ? d.GetString() : null;
-
-                            if (!string.IsNullOrWhiteSpace(upid))
+                            if (!ok)
                             {
-                                var ok = await WaitForTaskCompletionAsync(
-                                    cluster, nodeName, hostAddress, upid!, TimeSpan.FromMinutes(20), _logger, ct);
+                                _logger.LogWarning("Rollback task for snapshot '{Snap}' on VMID {Vmid} did not complete OK.",
+                                    targetSnap.Name, vmidInt);
+                            }
+                        }
+                        else
+                        {
+                            _logger.LogWarning("Rollback API did not return a UPID for snapshot '{Snap}' on VMID {Vmid}.",
+                                targetSnap.Name, vmidInt);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Rollback call failed for snapshot '{Snap}' on VMID {Vmid}. Will still attempt delete.",
+                            targetSnap.Name, vmidInt);
+                    }
 
-                                if (ok)
+                    // Always attempt to delete the snapshot we rolled back from
+                    try
+                    {
+                        await DeleteSnapshotAsync(cluster, nodeName, hostAddress, vmidInt, targetSnap.Name, ct);
+                        _logger.LogInformation("Deleted snapshot '{Snap}' after rollback on VMID {Vmid}.",
+                            targetSnap.Name, vmidInt);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to delete snapshot '{Snap}' after rollback on VMID {Vmid}.",
+                            targetSnap.Name, vmidInt);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Post-restore snapshot handling (repair/rollback/delete) skipped due to error.");
+            }
+
+            // NEW: Regenerate MAC addresses by letting Proxmox auto-assign (qm set -netN ...)
+            if (model.GenerateNewMacAddresses)
+            {
+                // figure out which netX keys exist in the final payload we just wrote
+                var netKeys = payload.Keys
+                    .Where(k => Regex.IsMatch(k, @"^net\d+$", RegexOptions.IgnoreCase))
+                    .OrderBy(k => k, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                if (netKeys.Count > 0)
+                {
+                    using (var ssh2 = new Renci.SshNet.SshClient(hostAddress, sshUser, sshPass))
+                    {
+                        ssh2.Connect();
+
+                        foreach (var netKey in netKeys)
+                        {
+                            var def = payload[netKey]; // e.g. "virtio=BC:24:11:AF:C1:EC,bridge=vmbr0,firewall=1,link_down=1"
+                                                       // Strip the MAC from the first segment: "<model>[=<mac>]" -> "<model>"
+                                                       // keep the rest (bridge=..., firewall=..., link_down=..., etc.)
+                            var parts = def.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+                            if (parts.Count == 0) continue;
+
+                            var modelToken = parts[0]; // e.g. "virtio=BC:24:..." or "virtio"
+                            var modelOnly = modelToken.Split('=', 2)[0]; // "virtio"
+
+                            var tail = parts.Skip(1); // preserve all other options as-is
+                            var newNetValue = string.Join(",", new[] { modelOnly }.Concat(tail));
+
+                            // Build: qm set <vmid> -netN "<model[,opts-without-mac]>"
+                            var netIdx = Regex.Match(netKey, @"^net(\d+)$", RegexOptions.IgnoreCase).Groups[1].Value;
+                            var qmCmd = $"qm set {vmid} -net{netIdx} \"{newNetValue}\"";
+
+                            using (var cmd2 = ssh2.CreateCommand(qmCmd))
+                            {
+                                var _ = cmd2.Execute();
+                                if (cmd2.ExitStatus != 0)
                                 {
-                                    // 2) Delete snapshot
-                                    await DeleteSnapshotAsync(cluster, nodeName, hostAddress, vmidInt, bareproxSnap.Name, ct);
-                                    _logger.LogInformation("Reverted to and deleted BareProx snapshot '{Snap}' on VMID {Vmid}.",
-                                        bareproxSnap.Name, vmidInt);
+                                    _logger.LogWarning("Failed to regenerate MAC for {NetKey} on VMID {Vmid}. Exit={Exit} Error={Err}",
+                                        netKey, vmid, cmd2.ExitStatus, cmd2.Error);
                                 }
                                 else
                                 {
-                                    _logger.LogWarning("Rollback task for snapshot '{Snap}' on VMID {Vmid} did not complete OK.",
-                                        bareproxSnap.Name, vmidInt);
+                                    _logger.LogInformation("Regenerated MAC for {NetKey} on VMID {Vmid} using '{NewVal}'.",
+                                        netKey, vmid, newNetValue);
                                 }
                             }
-                            else
-                            {
-                                _logger.LogWarning("Rollback API did not return a UPID for snapshot '{Snap}' on VMID {Vmid}.",
-                                    bareproxSnap.Name, vmidInt);
-                            }
                         }
+
+                        ssh2.Disconnect();
                     }
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Post-restore snapshot revert/delete skipped due to error.");
-                }
             }
+ 
 
             return true;
         }
@@ -1109,22 +1237,20 @@ namespace BareProx.Services
 
 
         public async Task<bool> RestoreVmFromConfigWithOriginalIdAsync(
-     string originalConfigJson,
-     string hostAddress,
-     int originalVmId,
-     string cloneStorageName,
-     bool startDisconnected,
-     bool snapshotChainActive = false,
-     CancellationToken ct = default)
+            RestoreFormViewModel model,
+            string hostAddress,
+            string cloneStorageName,
+            bool snapshotChainActive = false,
+            CancellationToken ct = default)
         {
-            using var rootDoc = JsonDocument.Parse(originalConfigJson);
+            using var rootDoc = JsonDocument.Parse(model.OriginalConfig);
             // ←— look for either "config" or "data"
             if (!rootDoc.RootElement.TryGetProperty("config", out var config) &&
                 !rootDoc.RootElement.TryGetProperty("data", out config))
             {
                 return false;
             }
-
+            
             var host = await _context.ProxmoxHosts
                 .FirstOrDefaultAsync(h => h.HostAddress == hostAddress, ct);
             if (host == null || string.IsNullOrWhiteSpace(host.Hostname))
@@ -1137,12 +1263,12 @@ namespace BareProx.Services
             if (cluster == null || !_proxmoxHelpers.GetQueryableHosts(cluster).Any())
                 return false;
 
-            var vmid = originalVmId.ToString();
+            var vmid = int.Parse(model.VmId).ToString();
 
             var payload = _proxmoxHelpers.FlattenConfig(config);
 
             // Disconnect NICs if requested (main config)
-            if (startDisconnected)
+            if (model.StartDisconnected)
             {
                 foreach (var netKey in payload.Keys
                          .Where(k => Regex.IsMatch(k, @"^net\d+$", RegexOptions.IgnoreCase))
@@ -1242,7 +1368,7 @@ namespace BareProx.Services
                     }
 
                     // Disconnect NICs if requested (apply to snapshot section)
-                    if (startDisconnected)
+                    if (model.StartDisconnected)
                     {
                         foreach (var netKey in snapDict.Keys
                                  .Where(k => Regex.IsMatch(k, @"^net\d+$", RegexOptions.IgnoreCase))
@@ -1341,66 +1467,104 @@ namespace BareProx.Services
             // Post-restore: if snapshot chain was active AND a BareProx snapshot exists,
             // rollback to it (no autostart) and then delete it. Non-fatal on failure.
             // ─────────────────────────────────────────────────────────────────────────
-            if (snapshotChainActive)
+            try
             {
-                try
+                var vmidInt = int.Parse(vmid);
+
+                var snaps = await GetSnapshotListAsync(cluster, nodeName, hostAddress, vmidInt, ct);
+                if (snaps == null || snaps.Count == 0)
                 {
-                    var vmidInt = int.Parse(vmid);
+                    _logger.LogInformation("No snapshots found on VMID {Vmid}. Nothing to repair or rollback.", vmidInt);
+                    return false;
+                }
 
-                    var snaps = await GetSnapshotListAsync(cluster, nodeName, hostAddress, vmidInt, ct);
-                    if (snaps != null && snaps.Count > 0)
+                // Newest BareProx snapshot (preferred target for rollback)
+                var bareproxSnap = snaps
+                    .Where(s => !string.IsNullOrWhiteSpace(s.Name) &&
+                                s.Name.StartsWith("BareProx-", StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(s => s.Snaptime)
+                    .FirstOrDefault();
+
+                // Newest non-current snapshot (fallback target for rollback, and to decide chain repair)
+                var newestNonCurrent = snaps
+                    .Where(s => !string.Equals(s.Name, "current", StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(s => s.Snaptime)
+                    .FirstOrDefault();
+
+                // If there is any snapshot except "current", repair the chain (regardless of rollback).
+                if (newestNonCurrent != null)
+                {
+                    try
                     {
-                        // BareProx backup snapshots use names that start with "BareProx-"
-                        var bareproxSnap = snaps
-                            .Where(s => !string.IsNullOrWhiteSpace(s.Name) &&
-                                        s.Name.StartsWith("BareProx-", StringComparison.OrdinalIgnoreCase))
-                            .OrderByDescending(s => s.Snaptime)
-                            .FirstOrDefault();
-
-                        if (bareproxSnap != null)
-                        {
-                            // 0a) Repair snapshot chain
-                            await RepairExternalSnapshotChainAsync(nodeName, cloneStorageName, vmidInt, ct);
-
-                            // 1) Rollback (don't autostart)
-                            var rollbackUrl =
-                                $"https://{hostAddress}:8006/api2/json/nodes/{nodeName}/qemu/{vmidInt}/snapshot/{Uri.EscapeDataString(bareproxSnap.Name)}/rollback";
-                            var form = new FormUrlEncodedContent(new Dictionary<string, string> { ["start"] = "0" });
-                            var rbResp = await SendWithRefreshAsync(cluster, HttpMethod.Post, rollbackUrl, form, ct);
-                            var rbJson = await rbResp.Content.ReadAsStringAsync(ct);
-                            using var rbDoc = JsonDocument.Parse(rbJson);
-                            var upid = rbDoc.RootElement.TryGetProperty("data", out var d) ? d.GetString() : null;
-
-                            if (!string.IsNullOrWhiteSpace(upid))
-                            {
-                                var ok = await WaitForTaskCompletionAsync(
-                                    cluster, nodeName, hostAddress, upid!, TimeSpan.FromMinutes(20), _logger, ct);
-
-                                if (ok)
-                                {
-                                    // 2) Delete snapshot
-                                    await DeleteSnapshotAsync(cluster, nodeName, hostAddress, vmidInt, bareproxSnap.Name, ct);
-                                    _logger.LogInformation("Reverted to and deleted BareProx snapshot '{Snap}' on VMID {Vmid}.",
-                                        bareproxSnap.Name, vmidInt);
-                                }
-                                else
-                                {
-                                    _logger.LogWarning("Rollback task for snapshot '{Snap}' on VMID {Vmid} did not complete OK.",
-                                        bareproxSnap.Name, vmidInt);
-                                }
-                            }
-                            else
-                            {
-                                _logger.LogWarning("Rollback API did not return a UPID for snapshot '{Snap}' on VMID {Vmid}.",
-                                    bareproxSnap.Name, vmidInt);
-                            }
-                        }
+                        await RepairExternalSnapshotChainAsync(nodeName, cloneStorageName, vmidInt, ct);
+                        _logger.LogInformation("Repaired external snapshot chain for VMID {Vmid}.", vmidInt);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Snapshot chain repair failed for VMID {Vmid}; continuing.", vmidInt);
                     }
                 }
-                catch (Exception ex)
+
+                if (model.RollbackSnapshot)
                 {
-                    _logger.LogWarning(ex, "Post-restore snapshot revert/delete skipped due to error.");
+                    var targetSnap = bareproxSnap ?? newestNonCurrent;
+                    if (targetSnap == null)
+                    {
+                        _logger.LogInformation("Rollback requested but no suitable snapshot found on VMID {Vmid}.", vmidInt);
+                        return false;
+                    }
+
+                    var rollbackUrl =
+                        $"https://{hostAddress}:8006/api2/json/nodes/{nodeName}/qemu/{vmidInt}/snapshot/{Uri.EscapeDataString(targetSnap.Name)}/rollback";
+                    var form = new FormUrlEncodedContent(new Dictionary<string, string> { ["start"] = "0" });
+
+                    try
+                    {
+                        var rbResp = await SendWithRefreshAsync(cluster, HttpMethod.Post, rollbackUrl, form, ct);
+                        var rbJson = await rbResp.Content.ReadAsStringAsync(ct);
+                        using var rbDoc = JsonDocument.Parse(rbJson);
+                        var upid = rbDoc.RootElement.TryGetProperty("data", out var d) ? d.GetString() : null;
+
+                        if (!string.IsNullOrWhiteSpace(upid))
+                        {
+                            var ok = await WaitForTaskCompletionAsync(
+                                cluster, nodeName, hostAddress, upid!, TimeSpan.FromMinutes(20), _logger, ct);
+
+                            if (!ok)
+                            {
+                                _logger.LogWarning("Rollback task for snapshot '{Snap}' on VMID {Vmid} did not complete OK.",
+                                    targetSnap.Name, vmidInt);
+                            }
+                        }
+                        else
+                        {
+                            _logger.LogWarning("Rollback API did not return a UPID for snapshot '{Snap}' on VMID {Vmid}.",
+                                targetSnap.Name, vmidInt);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Rollback call failed for snapshot '{Snap}' on VMID {Vmid}. Will still attempt delete.",
+                            targetSnap.Name, vmidInt);
+                    }
+
+                    // Always attempt to delete the snapshot we rolled back from
+                    try
+                    {
+                        await DeleteSnapshotAsync(cluster, nodeName, hostAddress, vmidInt, targetSnap.Name, ct);
+                        _logger.LogInformation("Deleted snapshot '{Snap}' after rollback on VMID {Vmid}.",
+                            targetSnap.Name, vmidInt);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to delete snapshot '{Snap}' after rollback on VMID {Vmid}.",
+                            targetSnap.Name, vmidInt);
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Post-restore snapshot handling (repair/rollback/delete) skipped due to error.");
             }
 
             return true;

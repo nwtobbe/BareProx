@@ -132,6 +132,11 @@ namespace BareProx.Models
         public string NewVmName { get; set; } = string.Empty;
         public RestoreType RestoreType { get; set; } = RestoreType.CreateNew;
         public int ControllerId { get; set; }
+        public bool UsedProxmoxSnapshot { get; set; }
+        public bool RollbackSnapshot { get; set; }
+        public bool VmState { get; set; }
+        public bool GenerateNewMacAddresses { get; set; }
+        public bool GenerateNewUuid { get; set; }
         public bool StartDisconnected { get; set; } = false;
         public string OriginalHostAddress { get; set; }
         public string OriginalHostName { get; set; }
