@@ -1,9 +1,10 @@
 ﻿
 Fix intermittent copy export failue
 Fix mac addresses when restoring to new vmid
+Verify restore
+Fix readme
 
 Fix file rename not working when low on space
-	Fixed, changed function to create symlinks instead of moving vm-disks.
 
 	BareProx.Services
 ├── Authentication
