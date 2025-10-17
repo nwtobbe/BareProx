@@ -31,29 +31,29 @@ These instructions assume a fresh Debian “netinst” with SSH access.
 
 On a fresh install:
 
-\`\`\`bash
+```bash
 # Install base packages
 apt-get update
 apt-get install -y sudo curl gpg ca-certificates lsb-release
-\`\`\`
+```
 
 **Create BareProx user and grant sudo:**
 
-\`\`\`bash
+```bash
 adduser bareprox
 usermod -aG sudo bareprox
-\`\`\`
+```
 
 **A small tip to fix paths:**
 
-\`\`\`bash
+```bash
 cat << EOF | tee -a /etc/profile > /dev/null
 
 if ! echo "\$PATH" | grep -q "/sbin"; then
     export PATH="/usr/local/sbin:/usr/sbin:/sbin:\$PATH"
 fi
 EOF
-\`\`\`
+```
 
 Log out, then log back in as **bareprox**.
 
@@ -61,7 +61,7 @@ Log out, then log back in as **bareprox**.
 
 ### 2. Install Docker & Compose
 
-\`\`\`bash
+```bash
 sudo mkdir -p /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 
@@ -74,7 +74,7 @@ sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plug
 
 # Allow the BareProx user to manage Docker
 sudo usermod -aG docker bareprox
-\`\`\`
+```
 
 > Log out and back in again so the \`docker\` group membership takes effect.
 
@@ -89,10 +89,10 @@ It uses the prebuilt **BareProx** Docker image based on the official .NET 8 runt
 
 1. **Create host directories for config and data:**
 
-   \`\`\`bash
+   ```bash
    sudo mkdir -p /var/bareprox/config /var/bareprox/data
    sudo chown -R 1001:1001 /var/bareprox/{config,data}
-   \`\`\`
+   ```
 
 2. **Configuration files** and **log directory** will be created automatically on first run in \`/var/bareprox/config\`.
 
@@ -100,7 +100,7 @@ It uses the prebuilt **BareProx** Docker image based on the official .NET 8 runt
 
 4. **Create a \`docker-compose.yml\` file:**
 
-   \`\`\`yaml
+   ```yaml
    # Example docker-compose.yml
    services:
      web:
@@ -114,14 +114,14 @@ It uses the prebuilt **BareProx** Docker image based on the official .NET 8 runt
          - /var/bareprox/data:/data      # Database (BareProxDB.db)
        environment:
          - TZ=Europe/Stockholm           # Optional: set your timezone
-   \`\`\`
+   ```
 
 5. **Start the service:**
 
-   \`\`\`bash
+   ```bash
    cd /path/to/BareProx
    docker compose up -d
-   \`\`\`
+   ```
 
 BareProx will start automatically.  
 Configuration files will appear under \`/var/bareprox/config\`, and the SQLite database under \`/var/bareprox/data/BareProxDB.db\`.
@@ -132,18 +132,18 @@ Configuration files will appear under \`/var/bareprox/config\`, and the SQLite d
 
 - **Update BareProx:**
 
-  \`\`\`bash
+  ```bash
   docker compose down
   docker compose pull
   docker compose up -d
-  \`\`\`
+  ```
 
 - **View logs:**
 
-  \`\`\`bash
+  ```bash
   docker logs -f bareprox
   # or check under /var/bareprox/config/logs
-  \`\`\`
+  ```
 
 ---
 
