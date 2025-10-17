@@ -41,7 +41,7 @@ namespace BareProx.Models
         public bool IsApplicationAware { get; set; }
         public string Name { get; set; } = null!;
         public List<string> ExcludedVmIds { get; set; } = new();
-
+        public Dictionary<string, List<SelectListItem>> VmsByStorage { get; set; } = new();
         public bool EnableIoFreeze { get; set; }
         public bool UseProxmoxSnapshot { get; set; }
         public bool WithMemory { get; set; }
@@ -91,6 +91,7 @@ namespace BareProx.Models
         public bool EnableLocking { get; set; }
         public int? LockRetentionCount { get; set; }
         public string? LockRetentionUnit { get; set; } = "Hours";
+        public List<string>? ExcludedVmIds { get; set; } 
     }
     public class RestoreViewModel
     {

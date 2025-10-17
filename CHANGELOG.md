@@ -3,21 +3,61 @@
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),  
-and this project adheres to [Semantic Versioning](https://semver.org/).
+and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.0.2506.1708] – 2025-06-17
+## [1.0.2510.0914] – 2025-10-17
 
 ### Added
+- Support for Snapshots as volume chains
+- A bonus feature
+- compression of old logfiles (keeps ~30 days)
+- Restore:
+	Generate new uuid + vmgenid
+	Generate new mac addresses for nics
+	Rollback snapshot
+	VmState Warning for Rollback
+- Probably new bugs.
 
-- Cleanup, added unmount from all hosts and delete mountpoint. Proxmox Api only removes the mountpoint in gui, not from the hosts.
-- SSH for some functions since the Proxmox API is quite restrictive.
+### Changed
+- Settings / Proxmox
+- Settings / Netapp
+- Backup Create Schedules
+- Backup Edit Schedules
 
 ### Fixed
 
-- Restore, changed from api to ssh for configuration files due to the fact that proxmox api does not handle restoring vm:s with snapshots
-- Backup, changed reading vm:s configurations from api to ssh due to that we don't get all properties when reading from api.
-- Restore, changed when restoring a vm with disabled nics. The nics, now, actually gets disabled instead of removed.
-- Backup/Restore, new db-entries for config. Old restores may not work without manual configuration.
+- Job cleanup after 30 days (failed/cancelled/stuck)
+- VMID duplication issue when creating new VMs
+- Excluded VMs in jobs are now gettings excluded from proxmox options
+- Security updates
+- Performance improvements
+
+
+
+## [1.0.2510.0914] – 2025-10-09
+
+### Fixed
+
+- paused VM not resumed by BareProx, Fixed by lchanouha (Sorry for the late merge)
+
+## [1.0.2509.2513] – 2025-09-25
+
+### Fixed
+
+- Changed the way how Snapmirror relationships are updated. 
+- Fixed cleanup when removing netapp-cluster
+- Update of variuos modules.
+
+
+
+## [1.0.2509.0420] – 2025-09-04
+
+### Fixed
+
+- Restore of EFI boot disks.
+- Minor menu issue
+
+
 
 ## [1.0.2506.1614] – 2025-06-16
 
@@ -34,50 +74,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Mount from Secondary is now working
 - Restore from Secondary is now working.
 
-## [1.0.2509.0420] – 2025-09-04
 
 
-### Fixed
+## [1.0.2506.1708] – 2025-06-17
 
-- Restore of EFI boot disks.
-- Minor menu issue
+### Added
 
-## [1.0.2509.2513] – 2025-09-25
-
-### Fixed
-
-- Changed the way how Snapmirror relationships are updated. 
-
-## [1.0.2509.2513] – 2025-09-25
+- Cleanup, added unmount from all hosts and delete mountpoint. Proxmox Api only removes the mountpoint in gui, not from the hosts.
+- SSH for some functions since the Proxmox API is quite restrictive.
 
 ### Fixed
 
-- Fixed cleanup when removing netapp-cluster
-- Update of variuos modules.
-
-## [1.0.2510.0914] – 2025-10-09
-
-### Fixed
-
-- paused VM not resumed by BareProx, Fixed by lchanouha (Sorry for the late merge)
-
-## [1.0.2510.0914] – 2025-10-09
-
-### New
-- Added support for Snapshots as volume chains
-- Added a bonus feature
-- Added compression of old logfiles (keeps ~30 days)
-- Restore:
-	Added Generate new uuid + vmgenid
-	Added Generate new mac addresses for nics
-	Added Rollback snapshot
-	Added VmState Warning for Rollback
-- Probably new bugs.
-- Changed Settings / Proxmox
-- Changed Settings / Netapp
-
-### Fixed
-
-- Failed, cancelled, error-jobs, stuck running etc.. now gets pruned from the db after 30 days.
-- Fixed an issue where vmid was added to {vmid}.conf when creating a new vm.
-- Security fixes
+- Restore, changed from api to ssh for configuration files due to the fact that proxmox api does not handle restoring vm:s with snapshots
+- Backup, changed reading vm:s configurations from api to ssh due to that we don't get all properties when reading from api.
+- Restore, changed when restoring a vm with disabled nics. The nics, now, actually gets disabled instead of removed.
+- Backup/Restore, new db-entries for config. Old restores may not work without manual configuration.

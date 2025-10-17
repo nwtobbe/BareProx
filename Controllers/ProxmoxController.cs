@@ -30,15 +30,18 @@ namespace BareProx.Controllers
     {
         private readonly ApplicationDbContext _context;
         private readonly ProxmoxService _proxmoxService;
+        private readonly IProxmoxInventoryCache _invCache;
         private readonly ILogger<ProxmoxController> _logger;
 
         public ProxmoxController(
             ApplicationDbContext context,
             ProxmoxService proxmoxService,
+            IProxmoxInventoryCache invCache,
             ILogger<ProxmoxController> logger)
         {
             _context = context;
             _proxmoxService = proxmoxService;
+            _invCache = invCache;
             _logger = logger;
         }
 
@@ -100,7 +103,7 @@ namespace BareProx.Controllers
             Dictionary<string, List<ProxmoxVM>> storageVmMap;
             try
             {
-                storageVmMap = await _proxmoxService
+                storageVmMap = await _invCache
                     .GetVmsByStorageListAsync(cluster, selectedStorageNames, ct);
             }
             catch (ServiceUnavailableException ex)

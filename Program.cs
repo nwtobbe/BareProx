@@ -339,6 +339,8 @@ if (isConfigured)
     builder.Services.AddHostedService<ScheduledBackupService>();
     builder.Services.AddHostedService<JanitorService>();
     builder.Services.AddHostedService<CollectionService>();
+    builder.Services.AddMemoryCache();
+    builder.Services.AddSingleton<IProxmoxInventoryCache, ProxmoxInventoryCache>();
 
 }
 

@@ -47,7 +47,8 @@ namespace BareProx.Services
         bool enableLocking,
         int? lockRetentionCount,
         string? lockRetentionUnit,
-            CancellationToken ct);
+        IEnumerable<string>? excludedVmIds = null,
+            CancellationToken ct = default);
     }
 
     public class BackupService : IBackupService
@@ -62,6 +63,7 @@ namespace BareProx.Services
         private readonly TimeZoneInfo _timeZoneInfo;
         private readonly string _timeZoneId;
         private readonly IAppTimeZoneService _tz;
+        private readonly IProxmoxInventoryCache _invCache;
 
         public BackupService(
             ApplicationDbContext context,
@@ -72,7 +74,8 @@ namespace BareProx.Services
             IBackupRepository backupRepository,
             ILogger<BackupService> logger,
             IConfiguration configuration,
-            IAppTimeZoneService tz)
+            IAppTimeZoneService tz,
+            IProxmoxInventoryCache invCache)
         {
             _context = context;
             _proxmoxService = proxmoxService;
@@ -84,30 +87,41 @@ namespace BareProx.Services
             _timeZoneId = configuration["AppSettings:TimeZone"] ?? "UTC";
             _timeZoneInfo = TimeZoneInfo.FindSystemTimeZoneById(_timeZoneId);
             _tz = tz;
+            _invCache = invCache;
 
         }
 
         public async Task<bool> StartBackupAsync(
-        string storageName,
-        bool isApplicationAware,
-        string label,
-        int clusterId,
-        int netappControllerId,
-        int retentionCount,
-        string retentionUnit,
-        bool enableIoFreeze,
-        bool useProxmoxSnapshot,
-        bool withMemory,
-        bool dontTrySuspend,
-        int scheduleId,
-        bool replicateToSecondary,
-            bool enableLocking,
-            int? lockRetentionCount,
-            string? lockRetentionUnit,
-        CancellationToken ct)
-
+     string storageName,
+     bool isApplicationAware,
+     string label,
+     int clusterId,
+     int netappControllerId,
+     int retentionCount,
+     string retentionUnit,
+     bool enableIoFreeze,
+     bool useProxmoxSnapshot,
+     bool withMemory,
+     bool dontTrySuspend,
+     int scheduleId,
+     bool replicateToSecondary,
+     bool enableLocking,
+     int? lockRetentionCount,
+     string? lockRetentionUnit,
+     IEnumerable<string>? excludedVmIds,
+     CancellationToken ct)
         {
-            bool ProxSnapCleanup = false; // A checker to use if cleanup has run.
+            bool ProxSnapCleanup = false;
+
+            // Build excluded set (int VMIDs)
+            var excludedSet = new HashSet<int>();
+            if (excludedVmIds != null)
+            {
+                foreach (var s in excludedVmIds)
+                {
+                    if (int.TryParse(s, out var id)) excludedSet.Add(id);
+                }
+            }
 
             // 1) Create and save a Job
             var job = new Job
@@ -115,7 +129,7 @@ namespace BareProx.Services
                 Type = "Backup",
                 Status = "Running",
                 RelatedVm = storageName,
-                PayloadJson = $"{{\"storageName\":\"{storageName}\",\"label\":\"{label}\"}}",
+                PayloadJson = $"{{\"storageName\":\"{storageName}\",\"label\":\"{label}\",\"excludedCount\":{excludedSet.Count}}}",
                 StartedAt = DateTime.UtcNow
             };
             _context.Jobs.Add(job);
@@ -123,15 +137,15 @@ namespace BareProx.Services
 
             // 2) Discover cluster & VMs
             var cluster = await _context.ProxmoxClusters
-                                        .Include(c => c.Hosts)      // so you have host info
+                                        .Include(c => c.Hosts)
                                         .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
             if (cluster == null)
-                return await FailJobAsync(job, $"Cluster with ID {clusterId} not found.");
+                return await FailJobAsync(job, $"Cluster with ID {clusterId} not found.", ct);
 
             List<ProxmoxVM>? vms = null;
-            bool vmsWerePaused = false;
             var proxmoxSnapshotNames = new Dictionary<int, string>();
-            // 2b)
+            bool vmsWerePaused = false;
+            bool anyPaused = false;
             bool snapChainActive = false;
 
             try
@@ -146,7 +160,7 @@ namespace BareProx.Services
 
             try
             {
-                var storageWithVms = await _proxmoxService
+                var storageWithVms = await _invCache
                     .GetEligibleBackupStorageWithVMsAsync(cluster, netappControllerId, null, ct);
 
                 if (!storageWithVms.TryGetValue(storageName, out vms) || vms == null || !vms.Any())
@@ -155,7 +169,7 @@ namespace BareProx.Services
                 if (cluster.Hosts == null || !cluster.Hosts.Any())
                     return await FailJobAsync(job, "Cluster not properly configured.", ct);
 
-                // NEW: fetch power status for all VMs once
+                // Fetch power status for all VMs once
                 var statusMap = new Dictionary<int, string>(capacity: vms.Count);
                 {
                     var tasks = vms.Select(async vm =>
@@ -166,20 +180,29 @@ namespace BareProx.Services
                     await Task.WhenAll(tasks);
                 }
 
-                // 3) Pause VMs if IO-freeze requested
+                // 3) Pause VMs (only non-excluded, non-stopped) if IO-freeze requested
                 if (isApplicationAware && enableIoFreeze)
                 {
                     foreach (var vm in vms)
                     {
-                        if (!string.Equals(statusMap[vm.Id], "stopped", StringComparison.OrdinalIgnoreCase))
+                        if (excludedSet.Contains(vm.Id)) continue; // ← skip excluded
+                        var isStopped = statusMap.TryGetValue(vm.Id, out var st) &&
+                                        string.Equals(st, "stopped", StringComparison.OrdinalIgnoreCase);
+                        if (!isStopped)
+                        {
                             await _proxmoxService.PauseVmAsync(cluster, vm.HostName, vm.HostAddress, vm.Id);
+                            anyPaused = true;
+                        }
                     }
-                    vmsWerePaused = true;
-                    job.Status = "Paused VMs";
-                    await _context.SaveChangesAsync(ct);
+                    vmsWerePaused = anyPaused;
+                    if (anyPaused)
+                    {
+                        job.Status = "Paused VMs";
+                        await _context.SaveChangesAsync(ct);
+                    }
                 }
 
-                // 4) Proxmox snapshots (if requested)
+                // 4) Proxmox snapshots (if requested) for non-excluded, non-stopped
                 var localTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _timeZoneInfo);
                 var ProxMoxsnapshotName = $"BareProx-{label}_{localTime:yyyy-MM-dd-HH-mm-ss}";
                 var snapshotTasks = new Dictionary<int, string>();
@@ -191,10 +214,13 @@ namespace BareProx.Services
 
                     foreach (var vm in vms)
                     {
+                        if (excludedSet.Contains(vm.Id)) continue; // ← skip excluded
+
                         var status = statusMap.TryGetValue(vm.Id, out var s) ? s : "";
-                        if (string.Equals(status, "stopped", StringComparison.OrdinalIgnoreCase))
+                        var isStopped = string.Equals(status, "stopped", StringComparison.OrdinalIgnoreCase);
+                        if (isStopped)
                         {
-                            _logger.LogWarning("Skipping snapshot for stopped VM {VmId}", vm.Id);
+                            _logger.LogInformation("Skipping snapshot for stopped VM {VmId}", vm.Id);
                             continue;
                         }
 
@@ -205,6 +231,7 @@ namespace BareProx.Services
                             withMemory,
                             dontTrySuspend, ct
                         );
+
                         if (!string.IsNullOrWhiteSpace(upid))
                         {
                             snapshotTasks[vm.Id] = upid;
@@ -219,11 +246,10 @@ namespace BareProx.Services
                     job.Status = "Waiting for Proxmox snapshots";
                     await _context.SaveChangesAsync(ct);
 
-                    // Build a list of tasks with their associated VM IDs
+                    // Wait for only the tasks we created (non-excluded, non-stopped)
                     var waitTasks = snapshotTasks.Select(kv =>
                     {
                         var vm = vms.First(v => v.Id == kv.Key);
-                        // Start the wait task and package the result with the VM info
                         return new
                         {
                             Vm = vm,
@@ -234,26 +260,22 @@ namespace BareProx.Services
                         };
                     }).ToList();
 
-                    // Await all tasks in parallel
                     await Task.WhenAll(waitTasks.Select(x => x.Task));
 
-                    // Check and log failures
                     foreach (var entry in waitTasks)
                     {
-                        var success = await entry.Task; // Already completed, this is a synchronous read at this point
+                        var success = await entry.Task;
                         if (!success)
                         {
-                            _logger.LogWarning(
-                                "Snapshot task for VM {VmId} timed out in job {JobId}", entry.Vm.Id, job.Id);
+                            _logger.LogWarning("Snapshot task for VM {VmId} timed out in job {JobId}", entry.Vm.Id, job.Id);
                         }
                     }
 
-                    // Update job status
                     job.Status = "Proxmox snapshots completed";
                     await _context.SaveChangesAsync(ct);
                 }
 
-                // 5a) Create the NetApp snapshot
+                // 5a) Create the NetApp snapshot (storage-wide)
                 var snapshotResult = await _netAppSnapshotService.CreateSnapshotAsync(
                     netappControllerId,
                     storageName,
@@ -273,14 +295,17 @@ namespace BareProx.Services
                 foreach (var vm in vms)
                 {
                     var cfg = await _proxmoxService.GetVmConfigAsync(cluster, vm.HostName, vm.Id, ct);
-                    var isStopped = statusMap.TryGetValue(vm.Id, out var s)
-                                    && string.Equals(s, "stopped", StringComparison.OrdinalIgnoreCase);
 
-                    // Per-VM flags: force 0 for stopped VMs
-                    var perVmIsAppAware = isStopped ? false : isApplicationAware;
-                    var perVmFreeze = isStopped ? false : enableIoFreeze;
-                    var perVmUseProxSnapshot = isStopped ? false : useProxmoxSnapshot;
-                    var perVmWithMemory = isStopped ? false : withMemory;
+                    var isStopped = statusMap.TryGetValue(vm.Id, out var st) &&
+                                    string.Equals(st, "stopped", StringComparison.OrdinalIgnoreCase);
+                    var isExcluded = excludedSet.Contains(vm.Id);
+
+                    // Per-VM flags:
+                    // If excluded OR stopped => all false (as requested)
+                    var perVmIsAppAware = (!isExcluded && !isStopped) && isApplicationAware;
+                    var perVmFreeze = (!isExcluded && !isStopped) && enableIoFreeze;
+                    var perVmUseProxSnap = (!isExcluded && !isStopped) && useProxmoxSnapshot;
+                    var perVmWithMemory = (!isExcluded && !isStopped) && withMemory;
 
                     await _backupRepository.StoreBackupInfoAsync(new BackupRecord
                     {
@@ -297,10 +322,9 @@ namespace BareProx.Services
                         SnapshotName = snapshotResult.SnapshotName,
                         ConfigurationJson = cfg,
 
-                        // ← per-VM reporting
                         IsApplicationAware = perVmIsAppAware,
-                        EnableIoFreeze = perVmFreeze,     
-                        UseProxmoxSnapshot = perVmUseProxSnapshot,
+                        EnableIoFreeze = perVmFreeze,
+                        UseProxmoxSnapshot = perVmUseProxSnap,
                         WithMemory = perVmWithMemory,
 
                         ScheduleId = scheduleId,
@@ -309,11 +333,10 @@ namespace BareProx.Services
                     });
                 }
 
-
-                // ─────────────── populate JobId here ───────────────
+                // Track snapshot in DB (include JobId)
                 _context.NetappSnapshots.Add(new NetappSnapshot
                 {
-                    JobId = job.Id,               // ← set the JobId
+                    JobId = job.Id,
                     PrimaryVolume = storageName,
                     SnapshotName = snapshotResult.SnapshotName,
                     CreatedAt = _tz.ConvertUtcToApp(DateTime.UtcNow),
@@ -326,32 +349,28 @@ namespace BareProx.Services
                 });
                 await _context.SaveChangesAsync(ct);
 
-                // 5b) Delete Proxmox Snapshots if used
+                // 5c) Delete Proxmox snapshots if used (only those created)
                 if (useProxmoxSnapshot)
                 {
                     await CleanupProxmoxSnapshots(
                         cluster,
                         vms,
-                        proxmoxSnapshotNames,
+                        proxmoxSnapshotNames, // only contains created snapshots (non-excluded/running)
                         shouldCleanup: true,
                         ct: ct
                     );
-                    ProxSnapCleanup = true; // Mark cleanup as done
-                    _logger.LogInformation(
-                        "Proxmox snapshots deleted after storage snapshot."
-                    );
+                    ProxSnapCleanup = true;
+                    _logger.LogInformation("Proxmox snapshots deleted after storage snapshot.");
                 }
 
-                // 6) Conditionally replicate to secondary via SnapMirror
+                // 6) Replicate to secondary, if enabled
                 if (replicateToSecondary)
                 {
-                    // 6a) Lookup the SnapMirror relation
                     var relation = await _context.SnapMirrorRelations
                         .FirstOrDefaultAsync(r => r.SourceVolume == storageName, ct);
                     if (relation == null)
                         return await FailJobAsync(job, $"No SnapMirror relation for '{storageName}'.", ct);
 
-                    // 6b) Trigger an update on the relation
                     job.Status = "Triggering SnapMirror update";
                     await _context.SaveChangesAsync(ct);
 
@@ -359,7 +378,6 @@ namespace BareProx.Services
                     if (!triggered)
                         return await FailJobAsync(job, "Failed to trigger SnapMirror update.", ct);
 
-                    // a) Remember names & volumes for the check
                     var primaryVolume = storageName;
                     var secondaryVolume = relation.DestinationVolume;
                     var secondarySnap = snapshotResult.SnapshotName;
@@ -369,19 +387,15 @@ namespace BareProx.Services
                     await _context.SaveChangesAsync(ct);
 
                     var sw = Stopwatch.StartNew();
-                    SnapMirrorRelation updated;
-
-                    // 6c) Poll until idle/transferred, then confirm snapshot on secondary
                     while (sw.Elapsed < TimeSpan.FromMinutes(120))
                     {
-                        await Task.Delay(TimeSpan.FromSeconds(10));
-                         updated = await _netAppSnapmirrorService.GetSnapMirrorRelationAsync(relation.Uuid, ct);
+                        await Task.Delay(TimeSpan.FromSeconds(10), ct);
 
-                        // 1) Did SnapMirror say “success”?
+                        var updated = await _netAppSnapmirrorService.GetSnapMirrorRelationAsync(relation.Uuid, ct);
+
                         if (updated.state.Equals("snapmirrored", StringComparison.OrdinalIgnoreCase)
                             && updated.transfer?.State.Equals("success", StringComparison.OrdinalIgnoreCase) == true)
                         {
-                            // 2) Now confirm *your* snapshot
                             var snaps = await _netAppSnapshotService.GetSnapshotsAsync(
                                 secondaryControllerId,
                                 secondaryVolume,
@@ -390,18 +404,17 @@ namespace BareProx.Services
                             if (snaps.Any(s =>
                                 string.Equals(s, secondarySnap, StringComparison.OrdinalIgnoreCase)))
                             {
-                                // Found the exact snapshot you created → done
                                 break;
                             }
                         }
                     }
-                    // 6d) Mark the snapshot in the DB as replicated
+
                     var nowApp = _tz.ConvertUtcToApp(DateTime.UtcNow);
                     var netappSnap = await _context.NetappSnapshots
                         .FirstOrDefaultAsync(s =>
                             s.SnapshotName == secondarySnap
-                         && s.PrimaryVolume == storageName
-                         && s.PrimaryControllerId == netappControllerId, ct);
+                            && s.PrimaryVolume == storageName
+                            && s.PrimaryControllerId == netappControllerId, ct);
 
                     if (netappSnap != null)
                     {
@@ -410,18 +423,13 @@ namespace BareProx.Services
                         netappSnap.SecondaryControllerId = secondaryControllerId;
                         netappSnap.IsReplicated = true;
                         netappSnap.LastChecked = nowApp;
-
                         await _context.SaveChangesAsync(ct);
                     }
 
-                    // 6e) Final verification & finish
                     var toUpdate = await _context.BackupRecords
                         .Where(br => br.JobId == job.Id)
                         .ToListAsync(ct);
-                    foreach (var rec in toUpdate)
-                    {
-                        rec.ReplicateToSecondary = true;                                                                 
-                    }
+                    foreach (var rec in toUpdate) rec.ReplicateToSecondary = true;
 
                     job.Status = "Replication completed";
                     await _context.SaveChangesAsync(ct);
@@ -432,9 +440,7 @@ namespace BareProx.Services
                 if (job.Status == "Cancelled")
                     return await FailJobAsync(job, "Job was cancelled.", ct);
 
-
-
-                // 9) Finish job
+                // 8) Finish job
                 job.Status = "Completed";
                 job.CompletedAt = DateTime.UtcNow;
                 await _context.SaveChangesAsync(ct);
@@ -451,12 +457,12 @@ namespace BareProx.Services
                     await UnpauseIfNeeded(cluster, vms, isApplicationAware, enableIoFreeze, vmsWerePaused);
                     if (useProxmoxSnapshot && ProxSnapCleanup == false)
                     {
-                        // Cleanup Proxmox snapshots if they were created
                         await CleanupProxmoxSnapshots(cluster, vms, proxmoxSnapshotNames, useProxmoxSnapshot);
                     }
                 }
             }
         }
+
 
 
 

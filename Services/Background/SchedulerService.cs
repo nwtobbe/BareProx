@@ -84,6 +84,8 @@ namespace BareProx.Services.Background
             var ctrlLogger = scope.ServiceProvider.GetRequiredService<ILogger<BackupController>>();
 
             var localtime = _tz.ConvertUtcToApp(DateTime.UtcNow);
+
+            // Pull only enabled schedules (already filtered) but keep a cheap safety check below.
             var schedules = await _context.BackupSchedules
                                           .Where(s => s.IsEnabled)
                                           .ToListAsync(ct);
@@ -97,14 +99,25 @@ namespace BareProx.Services.Background
                 {
                     var controller = await _context.NetappControllers
                         .FindAsync(new object[] { sched.ControllerId }, ct);
+
                     var cluster = await _context.ProxmoxClusters
-                                                .Include(c => c.Hosts)
-                                                .FirstOrDefaultAsync(c => c.Id == sched.ClusterId, ct);
+                        .Include(c => c.Hosts)
+                        .FirstOrDefaultAsync(c => c.Id == sched.ClusterId, ct);
 
                     if (controller == null || cluster == null)
                     {
                         ctrlLogger.LogWarning("Missing controller or cluster for schedule {Id}", sched.Id);
                         continue;
+                    }
+
+                    // Parse excluded VM IDs from CSV (may be null/empty)
+                    IEnumerable<string>? excludedVmIds = null;
+                    if (!string.IsNullOrWhiteSpace(sched.ExcludedVmIds))
+                    {
+                        excludedVmIds = sched.ExcludedVmIds
+                            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                            .Distinct()
+                            .ToArray();
                     }
 
                     ctrlLogger.LogInformation("Starting background backup for storage {StorageName}", sched.StorageName);
@@ -114,24 +127,26 @@ namespace BareProx.Services.Background
                         using var innerScope = _services.CreateScope();
                         var scopedBackupService = innerScope.ServiceProvider.GetRequiredService<IBackupService>();
 
+                        // Pass everything from the schedule, including excludes + locking
                         await scopedBackupService.StartBackupAsync(
-                            sched.StorageName,
-                            sched.IsApplicationAware,
-                            sched.Name,
-                            sched.ClusterId,
-                            sched.ControllerId,
-                            sched.RetentionCount,
-                            sched.RetentionUnit,
-                            sched.EnableIoFreeze,
-                            sched.UseProxmoxSnapshot,
-                            sched.WithMemory,
+                            storageName: sched.StorageName,
+                            isApplicationAware: sched.IsApplicationAware,
+                            label: sched.Name,                 // human label
+                            clusterId: sched.ClusterId,
+                            netappControllerId: sched.ControllerId,
+                            retentionCount: sched.RetentionCount,
+                            retentionUnit: sched.RetentionUnit,
+                            enableIoFreeze: sched.EnableIoFreeze,
+                            useProxmoxSnapshot: sched.UseProxmoxSnapshot,
+                            withMemory: sched.WithMemory,
                             dontTrySuspend: false,
-                            ScheduleID: sched.Id,
+                            ScheduleID: sched.Id,                  // so service can also fetch from DB if needed
                             ReplicateToSecondary: sched.ReplicateToSecondary,
-                            enableLocking: false,
-                            lockRetentionCount: null,
-                            lockRetentionUnit: null,
-                            ct
+                            enableLocking: sched.EnableLocking,
+                            lockRetentionCount: sched.EnableLocking ? sched.LockRetentionCount : null,
+                            lockRetentionUnit: sched.EnableLocking ? sched.LockRetentionUnit : null,
+                            excludedVmIds: excludedVmIds,             // <--- NEW: explicit excludes for this run
+                            ct: token
                         );
                     });
 
@@ -143,7 +158,7 @@ namespace BareProx.Services.Background
                 }
             }
 
-            // Retry save on error
+            // Retry save on transient SQLITE_BUSY
             for (int i = 0; i < 3; i++)
             {
                 try
@@ -151,14 +166,14 @@ namespace BareProx.Services.Background
                     await _context.SaveChangesAsync(ct);
                     break;
                 }
-                catch (DbUpdateException ey)
-                    when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
+                catch (DbUpdateException ey) when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
                 {
                     if (i == 2) throw;
                     await Task.Delay(500, ct);
                 }
             }
         }
+
 
 
         private bool IsDue(BackupSchedule sched, DateTime now)

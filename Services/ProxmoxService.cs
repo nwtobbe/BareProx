@@ -45,6 +45,7 @@ namespace BareProx.Services
         private readonly ILogger<RestoreService> _logger;
         private readonly IProxmoxHelpers _proxmoxHelpers;
         private readonly IProxmoxAuthenticator _proxmoxAuthenticator;
+        private readonly IProxmoxInventoryCache _invCache;
 
         public ProxmoxService(
             ApplicationDbContext context,
@@ -53,7 +54,8 @@ namespace BareProx.Services
             INetappVolumeService netappVolumeService,
             ILogger<RestoreService> logger,
             IProxmoxHelpers proxmoxHelpers,
-            IProxmoxAuthenticator proxmoxAuthenticator)
+            IProxmoxAuthenticator proxmoxAuthenticator,
+            IProxmoxInventoryCache invCache)
         {
             _context = context;
             _netappService = netappService;
@@ -62,6 +64,7 @@ namespace BareProx.Services
             _logger = logger;
             _proxmoxHelpers = proxmoxHelpers;
             _proxmoxAuthenticator = proxmoxAuthenticator;
+            _invCache = invCache;
         }
 
         /// <summary>
@@ -164,14 +167,14 @@ namespace BareProx.Services
         }
 
 
-        public async Task<Dictionary<string, List<ProxmoxVM>>> GetEligibleBackupStorageWithVMsAsync(
+        public async Task<Dictionary<string, List<ProxmoxVM>>> GetEligibleBackupStorageWithVMsAsyncToCache(
     ProxmoxCluster cluster,
     int netappControllerId,
     List<string>? onlyIncludeStorageNames = null,
     CancellationToken ct = default)
         {
             var storageVmMap = onlyIncludeStorageNames != null
-                ? await GetVmsByStorageListAsync(cluster, onlyIncludeStorageNames, ct)
+                ? await _invCache.GetVmsByStorageListAsync(cluster, onlyIncludeStorageNames, ct)
                 : await GetFilteredStorageWithVMsAsync(cluster.Id, netappControllerId, ct);
 
             return storageVmMap
@@ -1823,7 +1826,7 @@ namespace BareProx.Services
         }
 
 
-        public async Task<Dictionary<string, List<ProxmoxVM>>> GetVmsByStorageListAsync(
+        public async Task<Dictionary<string, List<ProxmoxVM>>> GetVmsByStorageListAsyncToCache(
     ProxmoxCluster cluster,
     List<string> storageNames,
     CancellationToken ct = default)
