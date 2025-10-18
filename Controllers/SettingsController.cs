@@ -727,7 +727,7 @@ namespace BareProx.Controllers
             _context.SelectedNetappVolumes.AddRange(entities);
             await _context.SaveChangesAsync(ct);
 
-            await _netappService.UpdateAllSelectedVolumesAsync(ct);
+            await _netappVolumeService.UpdateAllSelectedVolumesAsync(ct);
 
             return Ok();
         }

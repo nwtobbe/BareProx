@@ -1,0 +1,88 @@
+﻿using System;
+using System.Security.Cryptography;
+using System.Text;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+
+namespace BareProx.Services
+{
+    public sealed class EncryptionService : IEncryptionService
+    {
+        private readonly string _key;
+        private readonly ILogger<EncryptionService> _logger;
+
+        public EncryptionService(IConfiguration config, ILogger<EncryptionService> logger)
+        {
+            _key = config["Encryption:Key"] ?? throw new InvalidOperationException("Missing Encryption key in configuration.");
+            if (_key.Length != 32)
+                throw new InvalidOperationException("Encryption key must be exactly 32 characters long.");
+            _logger = logger;
+        }
+
+        public string Encrypt(string plainText)
+        {
+            using var aes = Aes.Create();
+            aes.Key = Encoding.UTF8.GetBytes(_key);
+            aes.GenerateIV();
+
+            using var encryptor = aes.CreateEncryptor();
+            var plainBytes = Encoding.UTF8.GetBytes(plainText);
+            var encrypted = encryptor.TransformFinalBlock(plainBytes, 0, plainBytes.Length);
+
+            var result = new byte[aes.IV.Length + encrypted.Length];
+            Buffer.BlockCopy(aes.IV, 0, result, 0, aes.IV.Length);
+            Buffer.BlockCopy(encrypted, 0, result, aes.IV.Length, encrypted.Length);
+
+            return Convert.ToBase64String(result);
+        }
+
+        public string Decrypt(string cipherText)
+        {
+            if (string.IsNullOrEmpty(cipherText)) return cipherText;
+
+            try
+            {
+                var fullCipher = Convert.FromBase64String(cipherText);
+                using var aes = Aes.Create();
+                aes.Key = Encoding.UTF8.GetBytes(_key);
+
+                int ivLength = aes.BlockSize / 8;
+                if (fullCipher.Length <= ivLength)
+                    throw new CryptographicException("Cipher text too short.");
+
+                var iv = new byte[ivLength];
+                var cipher = new byte[fullCipher.Length - ivLength];
+                Buffer.BlockCopy(fullCipher, 0, iv, 0, ivLength);
+                Buffer.BlockCopy(fullCipher, ivLength, cipher, 0, cipher.Length);
+                aes.IV = iv;
+
+                using var decryptor = aes.CreateDecryptor();
+                var decrypted = decryptor.TransformFinalBlock(cipher, 0, cipher.Length);
+                return Encoding.UTF8.GetString(decrypted);
+            }
+            catch (FormatException fe) when (LogAndContinue(fe, LogLevel.Warning, "Invalid Base64 in encrypted text. Returning original input."))
+            {
+                return cipherText;
+            }
+            catch (OverflowException oe) when (LogAndContinue(oe, LogLevel.Warning, "Numeric overflow during decryption. Returning original input."))
+            {
+                return cipherText;
+            }
+            catch (CryptographicException ce) when (LogAndContinue(ce, LogLevel.Error, "Cryptographic error during decryption. Returning original input."))
+            {
+                return cipherText;
+            }
+            catch (Exception ex) when (LogAndContinue(ex, LogLevel.Error, "Unexpected error during decryption. Returning original input."))
+            {
+                return cipherText;
+            }
+        }
+
+        // Helper that logs and returns false so the catch body still runs
+        private bool LogAndContinue(Exception ex, LogLevel level, string message)
+        {
+            _logger.Log(level, ex, message);
+            return false;
+        }
+    }
+}

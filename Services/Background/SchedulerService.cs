@@ -141,8 +141,8 @@ namespace BareProx.Services.Background
                             useProxmoxSnapshot: sched.UseProxmoxSnapshot,
                             withMemory: sched.WithMemory,
                             dontTrySuspend: false,
-                            ScheduleID: sched.Id,                  // so service can also fetch from DB if needed
-                            ReplicateToSecondary: sched.ReplicateToSecondary,
+                            scheduleId: sched.Id,                  // so service can also fetch from DB if needed
+                            replicateToSecondary: sched.ReplicateToSecondary,
                             enableLocking: sched.EnableLocking,
                             lockRetentionCount: sched.EnableLocking ? sched.LockRetentionCount : null,
                             lockRetentionUnit: sched.EnableLocking ? sched.LockRetentionUnit : null,

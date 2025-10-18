@@ -315,7 +315,6 @@ if (isConfigured)
     builder.Services.AddScoped<IMigrationExecutor, ProxmoxMigrationExecutor>();
     builder.Services.AddScoped<IStorageSnapshotCoordinator, StorageSnapshotCoordinator>();
 
-
     // --- Remote API Client -----------------------------------------------------
     builder.Services.AddSingleton<IRemoteApiClient, RemoteApiClient>();
 
@@ -381,18 +380,17 @@ builder.WebHost.ConfigureKestrel(options =>
 
     options.ListenAnyIP(443, listenOpts =>
     {
-        var certService = builder.Services.BuildServiceProvider()
-                                 .GetRequiredService<SelfSignedCertificateService>();
-
-        var cert = certService.CurrentCertificate;
-        if (cert == null)
+        listenOpts.UseHttps(httpsOpts =>
         {
-            throw new InvalidOperationException("Failed to load or generate the self‐signed certificate.");
-        }
-
-        listenOpts.UseHttps(cert);
+            var sp = options.ApplicationServices; // <-- the real app provider
+            var certService = sp.GetRequiredService<SelfSignedCertificateService>();
+            var cert = certService.CurrentCertificate
+                      ?? throw new InvalidOperationException("Failed to load or generate the self-signed certificate.");
+            httpsOpts.ServerCertificate = cert;
+        });
     });
 });
+
 
 
 var app = builder.Build();

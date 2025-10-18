@@ -30,5 +30,6 @@ namespace BareProx.Services
         Task<List<string>> ListVolumesByPrefixAsync(string prefix, int controllerId, CancellationToken ct = default);
         Task<VolumeInfo?> LookupVolumeAsync(string volumeName, int controllerId, CancellationToken ct = default);
         Task<bool> DeleteVolumeAsync(string volumeName, int controllerId, CancellationToken ct = default);
+        Task UpdateAllSelectedVolumesAsync(CancellationToken ct = default);
     }
 }

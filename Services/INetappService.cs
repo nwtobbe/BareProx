@@ -28,21 +28,14 @@ namespace BareProx.Services
     public interface INetappService
     {
         // --- Periodic volume and mount‐info sync ---
-        Task UpdateAllSelectedVolumesAsync(CancellationToken ct = default);
+        //Task UpdateAllSelectedVolumesAsync(CancellationToken ct = default);
 
         // --- Vserver and volume info ---
         
         Task<List<string>> ListFlexClonesAsync(int controllerId, CancellationToken ct = default);
-        
 
         // --- Cloning and export policies ---
-        Task<bool> EnsureExportPolicyExistsOnSecondaryAsync(
-    string exportPolicyName,
-    int primaryControllerId,
-    int secondaryControllerId,
-    string svmName,
-    CancellationToken ct = default);
-
+        Task<bool> EnsureExportPolicyExistsOnSecondaryAsync(string exportPolicyName,int primaryControllerId,int secondaryControllerId,string svmName,CancellationToken ct = default);
         Task<FlexCloneResult> CloneVolumeFromSnapshotAsync(string volumeName, string snapshotName, string cloneName, int controllerId, CancellationToken ct = default);
         Task<bool> SetExportPolicyAsync(string volumeName, string exportPolicyName, int controllerId, CancellationToken ct = default);
         Task<bool> CopyExportPolicyAsync(string sourceVolume, string targetVolume, int controllerId, CancellationToken ct = default);

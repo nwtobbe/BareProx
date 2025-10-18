@@ -18,28 +18,32 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
+using System;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
-
-public class CollectionService
-    : BackgroundService
+public sealed class CollectionService : BackgroundService
 {
-    private readonly IServiceProvider _services;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<CollectionService> _logger;
 
-    public CollectionService(IServiceProvider services, ILogger<CollectionService> logger)
+    public CollectionService(IServiceScopeFactory scopeFactory, ILogger<CollectionService> logger)
     {
-        _services = services;
+        _scopeFactory = scopeFactory;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-
         var nextSelectedVolumeUpdate = DateTime.UtcNow;
         var nextClusterStatusCheck = DateTime.UtcNow;
 
@@ -47,40 +51,49 @@ public class CollectionService
         {
             try
             {
-                using var scope = _services.CreateScope();
-                var netappService = scope.ServiceProvider.GetRequiredService<INetappService>();
-                var netappSnapmirrorService = scope.ServiceProvider.GetRequiredService<INetappSnapmirrorService>();
+                // --- SnapMirror relation sync (scoped) ---
+                using (var scope = _scopeFactory.CreateScope())
+                {
+                    var netappSnapmirrorService = scope.ServiceProvider.GetRequiredService<INetappSnapmirrorService>();
+                    await netappSnapmirrorService.SyncSnapMirrorRelationsAsync(stoppingToken);
+                }
 
-                await netappSnapmirrorService.SyncSnapMirrorRelationsAsync(stoppingToken);
+                // Ensure policies (scoped inside)
                 await EnsureSnapMirrorPoliciesAsync(stoppingToken);
 
-                // Check if it's time to update volumes
+                // Update selected volumes hourly
                 if (DateTime.UtcNow >= nextSelectedVolumeUpdate)
                 {
-                    await netappService.UpdateAllSelectedVolumesAsync(stoppingToken);
+                    using var scope = _scopeFactory.CreateScope();
+                    var volumes = scope.ServiceProvider.GetRequiredService<INetappVolumeService>();
+                    await volumes.UpdateAllSelectedVolumesAsync(stoppingToken);
                     nextSelectedVolumeUpdate = DateTime.UtcNow.AddHours(1);
                 }
 
-                // Call health check every 5 minutes
+                // Cluster/host health every 5 minutes
                 if (DateTime.UtcNow >= nextClusterStatusCheck)
                 {
                     await CheckProxmoxClusterAndHostsStatusAsync(stoppingToken);
                     nextClusterStatusCheck = DateTime.UtcNow.AddMinutes(5);
                 }
-
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break; // graceful shutdown
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error syncing SnapMirror relations or checking cluster status");
+                _logger.LogError(ex, "Error in CollectionService loop (SnapMirror/Cluster checks).");
             }
 
-            // --- Set Time!
+            // Sleep between iterations
             await Task.Delay(TimeSpan.FromMinutes(2), stoppingToken);
-        } 
+        }
     }
+
     private async Task EnsureSnapMirrorPoliciesAsync(CancellationToken ct)
     {
-        using var scope = _services.CreateScope();
+        using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var netappSnapmirrorService = scope.ServiceProvider.GetRequiredService<INetappSnapmirrorService>();
 
@@ -105,13 +118,11 @@ public class CollectionService
 
                 if (dbPolicy == null)
                 {
-                    // Not present: Add new
                     db.SnapMirrorPolicies.Add(fetchedPolicy);
                     await db.SaveChangesAsync(ct);
                     continue;
                 }
 
-                // --- Compare fields, update if changed ---
                 bool changed = false;
                 if (dbPolicy.Name != fetchedPolicy.Name) { dbPolicy.Name = fetchedPolicy.Name; changed = true; }
                 if (dbPolicy.Scope != fetchedPolicy.Scope) { dbPolicy.Scope = fetchedPolicy.Scope; changed = true; }
@@ -119,8 +130,6 @@ public class CollectionService
                 if (dbPolicy.NetworkCompressionEnabled != fetchedPolicy.NetworkCompressionEnabled) { dbPolicy.NetworkCompressionEnabled = fetchedPolicy.NetworkCompressionEnabled; changed = true; }
                 if (dbPolicy.Throttle != fetchedPolicy.Throttle) { dbPolicy.Throttle = fetchedPolicy.Throttle; changed = true; }
 
-                // --- Deep compare retentions ---
-                // Simplest: Remove all and re-add if any difference (you can optimize if needed)
                 if (!AreRetentionsEqual(dbPolicy.Retentions, fetchedPolicy.Retentions))
                 {
                     dbPolicy.Retentions.Clear();
@@ -134,18 +143,18 @@ public class CollectionService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to sync SnapMirror policy for controller {ControllerId} and policy {PolicyUuid}", pair.DestinationControllerId, pair.PolicyUuid);
+                _logger.LogError(ex,
+                    "Failed to sync SnapMirror policy for controller {ControllerId} and policy {PolicyUuid}",
+                    pair.DestinationControllerId, pair.PolicyUuid);
             }
         }
     }
 
-    // Helper for deep comparing two retention lists
     private static bool AreRetentionsEqual(
         IList<SnapMirrorPolicyRetention> a,
         IList<SnapMirrorPolicyRetention> b)
     {
-        if (a.Count != b.Count)
-            return false;
+        if (a.Count != b.Count) return false;
         for (int i = 0; i < a.Count; i++)
         {
             if (a[i].Label != b[i].Label ||
@@ -158,10 +167,9 @@ public class CollectionService
         return true;
     }
 
-
     private async Task CheckProxmoxClusterAndHostsStatusAsync(CancellationToken ct)
     {
-        using var scope = _services.CreateScope();
+        using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var proxmoxService = scope.ServiceProvider.GetRequiredService<ProxmoxService>();
 
@@ -173,11 +181,9 @@ public class CollectionService
         {
             try
             {
-                // Single call covers both cluster & per-host up/down
                 var (quorate, onlineCount, totalCount, hostStates, summary) =
                     await proxmoxService.GetClusterStatusAsync(cluster, ct);
 
-                // Update cluster
                 cluster.HasQuorum = quorate;
                 cluster.OnlineHostCount = onlineCount;
                 cluster.TotalHostCount = totalCount;
@@ -185,7 +191,6 @@ public class CollectionService
                 cluster.LastStatusMessage = summary;
                 cluster.LastChecked = DateTime.UtcNow;
 
-                // Update each host
                 foreach (var host in cluster.Hosts)
                 {
                     var key = host.Hostname ?? host.HostAddress;
@@ -198,7 +203,7 @@ public class CollectionService
                     }
                 }
 
-                // Save with SQLite retry
+                // Save with SQLite retry (db is scoped)
                 for (int i = 0; i < 3; i++)
                 {
                     try
@@ -207,7 +212,7 @@ public class CollectionService
                         break;
                     }
                     catch (DbUpdateException ex)
-                        when (ex.InnerException is SqliteException se && se.SqliteErrorCode == 5)
+                        when (ex.InnerException is SqliteException se && se.SqliteErrorCode == 5) // SQLITE_BUSY
                     {
                         if (i == 2) throw;
                         await Task.Delay(500, ct);
@@ -217,11 +222,11 @@ public class CollectionService
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to check status for cluster {ClusterId}", cluster.Id);
+
                 cluster.LastStatus = "Error";
                 cluster.LastStatusMessage = ex.Message;
                 cluster.LastChecked = DateTime.UtcNow;
 
-                // Retry save on error
                 for (int i = 0; i < 3; i++)
                 {
                     try
@@ -239,5 +244,4 @@ public class CollectionService
             }
         }
     }
-
 }
