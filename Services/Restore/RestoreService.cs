@@ -25,7 +25,7 @@ using BareProx.Services.Background;
 using Microsoft.EntityFrameworkCore;
 
 
-namespace BareProx.Services
+namespace BareProx.Services.Restore
 {
     public class RestoreService : IRestoreService
     {
@@ -108,20 +108,20 @@ namespace BareProx.Services
                             .FirstOrDefaultAsync(s => s.JobId == model.BackupId, backgroundCt);
 
                         int primaryCtrl = snap?.PrimaryControllerId
-                                           ?? (await ctx.SnapMirrorRelations
+                                           ?? await ctx.SnapMirrorRelations
                                                 .Where(r =>
                                                     r.DestinationControllerId == model.ControllerId &&
                                                     r.DestinationVolume == model.VolumeName)
                                                 .Select(r => r.SourceControllerId)
-                                                .FirstOrDefaultAsync(backgroundCt));
+                                                .FirstOrDefaultAsync(backgroundCt);
 
                         string primaryVol = snap?.PrimaryVolume
-                                            ?? (await ctx.SnapMirrorRelations
+                                            ?? await ctx.SnapMirrorRelations
                                                  .Where(r =>
                                                      r.DestinationControllerId == model.ControllerId &&
                                                      r.DestinationVolume == model.VolumeName)
                                                  .Select(r => r.SourceVolume)
-                                                 .FirstOrDefaultAsync(backgroundCt));
+                                                 .FirstOrDefaultAsync(backgroundCt);
 
                         // b) read the export‐policy name from SelectedNetappVolumes on primary
                         var primaryPolicy = await ctx.SelectedNetappVolumes
@@ -136,11 +136,11 @@ namespace BareProx.Services
                             exportPolicyName: primaryPolicy,
                             primaryControllerId: primaryCtrl,
                             secondaryControllerId: model.ControllerId,
-                            svmName: (await ctx.SelectedNetappVolumes
+                            svmName: await ctx.SelectedNetappVolumes
                                                        .Where(v => v.NetappControllerId == model.ControllerId &&
                                                                    v.VolumeName == model.VolumeName)
                                                        .Select(v => v.Vserver)
-                                                       .FirstOrDefaultAsync(backgroundCt))
+                                                       .FirstOrDefaultAsync(backgroundCt)
                                                     ?? throw new InvalidOperationException("Missing SVM"),
                             ct: backgroundCt);
 

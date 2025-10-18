@@ -24,32 +24,8 @@ using BareProx.Repositories;
 using Microsoft.EntityFrameworkCore;
 using System.Diagnostics;
 
-namespace BareProx.Services
+namespace BareProx.Services.Backup
 {
-    public interface IBackupService
-    {
-        Task<bool> StartBackupAsync(
-            string storageName,
-            bool isApplicationAware,
-            string label,
-            int clusterId,
-            int netappControllerId,
-            int retentionCount,
-            string retentionUnit,
-            bool enableIoFreeze,
-            bool useProxmoxSnapshot,
-            bool withMemory,
-            bool dontTrySuspend,
-            int ScheduleID,
-            bool ReplicateToSecondary,
-
-        // ← NEW: locking parameters
-        bool enableLocking,
-        int? lockRetentionCount,
-        string? lockRetentionUnit,
-        IEnumerable<string>? excludedVmIds = null,
-            CancellationToken ct = default);
-    }
 
     public class BackupService : IBackupService
     {
@@ -281,7 +257,7 @@ namespace BareProx.Services
                     storageName,
                     label,
                     snapLocking: enableLocking,
-                    lockRetentionCount: enableLocking ? lockRetentionCount : (int?)null,
+                    lockRetentionCount: enableLocking ? lockRetentionCount : null,
                     lockRetentionUnit: enableLocking ? lockRetentionUnit : null,
                     ct: ct);
 
@@ -302,10 +278,10 @@ namespace BareProx.Services
 
                     // Per-VM flags:
                     // If excluded OR stopped => all false (as requested)
-                    var perVmIsAppAware = (!isExcluded && !isStopped) && isApplicationAware;
-                    var perVmFreeze = (!isExcluded && !isStopped) && enableIoFreeze;
-                    var perVmUseProxSnap = (!isExcluded && !isStopped) && useProxmoxSnapshot;
-                    var perVmWithMemory = (!isExcluded && !isStopped) && withMemory;
+                    var perVmIsAppAware = !isExcluded && !isStopped && isApplicationAware;
+                    var perVmFreeze = !isExcluded && !isStopped && enableIoFreeze;
+                    var perVmUseProxSnap = !isExcluded && !isStopped && useProxmoxSnapshot;
+                    var perVmWithMemory = !isExcluded && !isStopped && withMemory;
 
                     await _backupRepository.StoreBackupInfoAsync(new BackupRecord
                     {

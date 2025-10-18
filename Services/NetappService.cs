@@ -186,9 +186,6 @@ namespace BareProx.Services
                       .ToList();
         }
 
-
-
-
         public async Task<bool> CopyExportPolicyAsync(
             string sourceVolumeName,
             string targetCloneName,
@@ -290,8 +287,6 @@ namespace BareProx.Services
             _logger.LogError("Failed to apply export policy after multiple retries for volume '{Clone}'.", targetCloneName);
             return false;
         }
-
-
 
         public async Task<List<string>> ListFlexClonesAsync(int controllerId, CancellationToken ct = default)
         {
@@ -670,10 +665,10 @@ namespace BareProx.Services
         }
 
         public async Task<bool> SetExportPolicyAsync(
-    string volumeName,
-    string exportPolicyName,
-    int controllerId,
-    CancellationToken ct = default)
+            string volumeName,
+            string exportPolicyName,
+            int controllerId,
+            CancellationToken ct = default)
         {
             var controller = await _context.NetappControllers.FindAsync(controllerId, ct);
             if (controller == null) return false;
@@ -805,250 +800,7 @@ namespace BareProx.Services
             );
         }
 
-
-       public async Task<List<VolumeSnapshotTreeDto>> GetSnapshotsForVolumesAsync(HashSet<string> volumeNames, CancellationToken ct = default)
-        {
-            var controller = await _context.NetappControllers.FirstOrDefaultAsync(ct);
-            if (controller == null)
-                throw new Exception("No NetApp controller found.");
-
-            // 🔐 Use encrypted credentials and base URL helper
-            var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
-
-            var volumesUrl = $"{baseUrl}storage/volumes?fields=name,uuid,svm.name";
-            var volumesResp = await client.GetAsync(volumesUrl, ct);
-            volumesResp.EnsureSuccessStatusCode();
-
-            using var volumesDoc = JsonDocument.Parse(await volumesResp.Content.ReadAsStringAsync(ct));
-            var volumeRecords = volumesDoc.RootElement.GetProperty("records");
-
-            var result = new List<VolumeSnapshotTreeDto>();
-
-            foreach (var vol in volumeRecords.EnumerateArray())
-            {
-                var name = vol.GetProperty("name").GetString() ?? "";
-                var uuid = vol.GetProperty("uuid").GetString() ?? "";
-                var svm = vol.GetProperty("svm").GetProperty("name").GetString() ?? "";
-
-                if (!volumeNames.Contains(name))
-                    continue;
-
-                var snapUrl = $"{baseUrl}storage/volumes/{uuid}/snapshots?fields=name";
-                var snapResp = await client.GetAsync(snapUrl, ct);
-                if (!snapResp.IsSuccessStatusCode)
-                    continue;
-
-                using var snapDoc = JsonDocument.Parse(await snapResp.Content.ReadAsStringAsync(ct));
-                var snapshots = snapDoc.RootElement
-                    .GetProperty("records")
-                    .EnumerateArray()
-                    .Select(e => e.GetProperty("name").GetString() ?? "")
-                    .Where(n => !string.IsNullOrWhiteSpace(n))
-                    .ToList();
-
-                result.Add(new VolumeSnapshotTreeDto
-                {
-                    Vserver = svm,
-                    VolumeName = name,
-                    Snapshots = snapshots
-                });
-            }
-
-            return result;
-        }
-
-        /// <summary>
-        /// Recursively moves and renames all files under /images/{oldvmid} to /images/{newvmid} on the specified NetApp volume.
-        /// Only files with oldvmid in their name are renamed; directory structure is preserved.
-        /// </summary>
-        public async Task<bool> MoveAndRenameAllVmFilesAsync(
-           string volumeName,
-           int controllerId,
-           string oldvmid,
-           string newvmid,
-           CancellationToken ct = default)
-        {
-            // 1. Lookup controller and volume UUID
-            var controller = await _context.NetappControllers.FindAsync(controllerId, ct);
-            if (controller == null)
-            {
-                _logger.LogError("NetApp controller not found for ID {ControllerId}", controllerId);
-                return false;
-            }
-            var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
-
-            var lookupUrl = $"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volumeName)}";
-            var lookupResp = await httpClient.GetAsync(lookupUrl, ct);
-            if (!lookupResp.IsSuccessStatusCode)
-            {
-                _logger.LogError("Failed to lookup volume {VolumeName} for rename: {Status}", volumeName, lookupResp.StatusCode);
-                return false;
-            }
-
-            using var lookupDoc = JsonDocument.Parse(await lookupResp.Content.ReadAsStringAsync(ct));
-            var lookupRecords = lookupDoc.RootElement.GetProperty("records");
-            if (lookupRecords.GetArrayLength() == 0)
-            {
-                _logger.LogError("Volume '{VolumeName}' not found on controller.", volumeName);
-                return false;
-            }
-            var volEntry = lookupRecords[0];
-            var volumeUuid = volEntry.GetProperty("uuid").GetString()!;
-
-
-            // 2. Ensure the destination directory exists: /images/{newvmid}
-            var folderPath = $"images/{newvmid}";
-            var encodedFolderPath = Uri.EscapeDataString(folderPath); // e.g. images%2F113
-            var createDirUrl = $"{baseUrl}storage/volumes/{volumeUuid}/files/{encodedFolderPath}";
-            var createDirBody = new { type = "directory", unix_permissions = 0 };
-            var createDirContent = new StringContent(System.Text.Json.JsonSerializer.Serialize(createDirBody), Encoding.UTF8, "application/json");
-
-            var createDirResp = await httpClient.PostAsync(createDirUrl, createDirContent, ct);
-            if (createDirResp.IsSuccessStatusCode)
-            {
-                _logger.LogInformation("Created directory {FolderPath}", folderPath);
-            }
-            else
-            {
-                var err = await createDirResp.Content.ReadAsStringAsync(ct);
-                // If it already exists, just log and continue
-                if (err.Contains("\"error\"", StringComparison.OrdinalIgnoreCase) && !err.Contains("already exists", StringComparison.OrdinalIgnoreCase))
-                {
-                    _logger.LogWarning("Failed to create directory {FolderPath}: {Status} {Body}", folderPath, createDirResp.StatusCode, err);
-                }
-            }
-
-            // 3. Collect expected filenames and move files recursively
-            var expectedFiles = new List<string>();
-
-            async Task<bool> MoveFilesRecursive(string oldFolder)
-            {
-                var listUrl = $"{baseUrl}storage/volumes/{volumeUuid}/files/{Uri.EscapeDataString(oldFolder.TrimStart('/'))}";
-                var listResp = await httpClient.GetAsync(listUrl, ct);
-                if (!listResp.IsSuccessStatusCode)
-                {
-                    _logger.LogError("Failed to list NetApp folder {Folder}: {Status}", oldFolder, listResp.StatusCode);
-                    return false;
-                }
-
-                var json = await listResp.Content.ReadAsStringAsync(ct);
-                using var doc = JsonDocument.Parse(json);
-                if (!doc.RootElement.TryGetProperty("records", out var records) || records.ValueKind != JsonValueKind.Array)
-                    return true; // nothing to do
-
-                foreach (var rec in records.EnumerateArray())
-                {
-                    var name = rec.GetProperty("name").GetString();
-                    var type = rec.GetProperty("type").GetString(); // "file" or "directory"
-                    if (string.IsNullOrEmpty(name) || name == "." || name == "..")
-                        continue;
-
-                    if (type == "directory")
-                    {
-                        var subOldPath = $"{oldFolder}/{name}";
-                        var ok = await MoveFilesRecursive(subOldPath);
-                        if (!ok)
-                            return false;
-                    }
-                    else if (type == "file")
-                    {
-                        if (!name.Contains(oldvmid))
-                            continue;
-
-                        // Skip CD-ROM/ISO
-                        if (name.EndsWith(".iso", StringComparison.OrdinalIgnoreCase))
-                            continue;
-
-                        // 1) Compute new names
-                        var newFileName = name.Replace(oldvmid, newvmid);
-
-                        // 2) Build the raw link path inside the volume (no leading slash)
-                        var rawLinkPath = $"images/{newvmid}/{newFileName}";
-
-                        // 3) Percent-encode '/' → '%2F' and '.' → '%2E'
-                        var encodedLinkPath = rawLinkPath
-                            .Replace("/", "%2F")
-                            .Replace(".", "%2E");
-
-                        // 4) Lookup the clone’s UUID once (you should have done this earlier):
-                        //    var volumeUuid = (await _netappVolumeService.LookupVolumeAsync(cloneName, controllerId, ct)).Uuid;
-
-                        // 5) Build the symlink-create URL (baseUrl already ends with "/api/")
-                        var symlinkUrl = $"{baseUrl}storage/volumes/{volumeUuid}/files/{encodedLinkPath}";
-
-                        // 6) Build a relative target so NFS clients resolve it under the same mount
-                        //    From images/{newvmid}/, go up one and into images/{oldvmid}/
-                        var relativeTarget = $"../{oldvmid}/{name}";
-
-                        // 7) POST the symlink request
-                        var payload = new { target = relativeTarget };
-                        var content = new StringContent(
-                            System.Text.Json.JsonSerializer.Serialize(payload),
-                            Encoding.UTF8,
-                            "application/json"
-                        );
-
-                        var resp = await httpClient.PostAsync(symlinkUrl, content, ct);
-                        var respText = await resp.Content.ReadAsStringAsync(ct);
-
-                        if (!resp.IsSuccessStatusCode)
-                        {
-                            _logger.LogError(
-                                "Symlink create failed for {Link} → {Target}: {Status} {Body}",
-                                rawLinkPath, relativeTarget, resp.StatusCode, respText
-                            );
-                            return false;
-                        }
-
-                        _logger.LogInformation("Created symlink {Link} → {Target}", rawLinkPath, relativeTarget);
-
-                    }
-                }
-                return true;
-            }
-
-            var moveResult = await MoveFilesRecursive($"/images/{oldvmid}");
-
-            // 4. Poll for the files to appear in the destination folder
-            async Task<bool> WaitForFilesInDestinationAsync(string destFolder, List<string> filesToCheck, int timeoutSeconds = 20)
-            {
-                var encodedDestFolder = Uri.EscapeDataString(destFolder);
-                var url = $"{baseUrl}storage/volumes/{volumeUuid}/files/{encodedDestFolder}";
-
-                for (int i = 0; i < timeoutSeconds; i++)
-                {
-                    var resp = await httpClient.GetAsync(url, ct);
-                    if (resp.IsSuccessStatusCode)
-                    {
-                        var content = await resp.Content.ReadAsStringAsync(ct);
-                        using var doc = JsonDocument.Parse(content);
-                        if (doc.RootElement.TryGetProperty("records", out var records) && records.ValueKind == JsonValueKind.Array)
-                        {
-                            var foundFiles = new HashSet<string>(
-                                records.EnumerateArray()
-                                       .Where(r => r.GetProperty("type").GetString() == "file")
-                                       .Select(r => r.GetProperty("name").GetString() ?? "")
-                            );
-                            if (filesToCheck.All(f => foundFiles.Contains(f)))
-                            {
-                                _logger.LogInformation("All files found in destination after {Seconds}s", i + 1);
-                                return true;
-                            }
-                        }
-                    }
-                    await Task.Delay(1000);
-                }
-
-                _logger.LogWarning(
-                    "Not all files appeared in destination folder {DestFolder} after {Timeout}s: {Files}",
-                    destFolder, timeoutSeconds, string.Join(",", filesToCheck));
-                return false;
-            }
-
-            var waitResult = await WaitForFilesInDestinationAsync($"images/{newvmid}", expectedFiles);
-            return moveResult && waitResult;
-        }
-
+       
         public async Task SyncSelectedVolumesAsync(int controllerId, string volumeUuid, CancellationToken ct = default)
         {
             var controller = await _context.NetappControllers.FirstOrDefaultAsync(c => c.Id == controllerId, ct);
@@ -1117,3 +869,196 @@ namespace BareProx.Services
         }
     }
 }
+
+
+///// <summary>
+///// Recursively moves and renames all files under /images/{oldvmid} to /images/{newvmid} on the specified NetApp volume.
+///// Only files with oldvmid in their name are renamed; directory structure is preserved.
+///// </summary>
+//public async Task<bool> MoveAndRenameAllVmFilesAsync(
+//   string volumeName,
+//   int controllerId,
+//   string oldvmid,
+//   string newvmid,
+//   CancellationToken ct = default)
+//{
+//    // 1. Lookup controller and volume UUID
+//    var controller = await _context.NetappControllers.FindAsync(controllerId, ct);
+//    if (controller == null)
+//    {
+//        _logger.LogError("NetApp controller not found for ID {ControllerId}", controllerId);
+//        return false;
+//    }
+//    var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+
+//    var lookupUrl = $"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volumeName)}";
+//    var lookupResp = await httpClient.GetAsync(lookupUrl, ct);
+//    if (!lookupResp.IsSuccessStatusCode)
+//    {
+//        _logger.LogError("Failed to lookup volume {VolumeName} for rename: {Status}", volumeName, lookupResp.StatusCode);
+//        return false;
+//    }
+
+//    using var lookupDoc = JsonDocument.Parse(await lookupResp.Content.ReadAsStringAsync(ct));
+//    var lookupRecords = lookupDoc.RootElement.GetProperty("records");
+//    if (lookupRecords.GetArrayLength() == 0)
+//    {
+//        _logger.LogError("Volume '{VolumeName}' not found on controller.", volumeName);
+//        return false;
+//    }
+//    var volEntry = lookupRecords[0];
+//    var volumeUuid = volEntry.GetProperty("uuid").GetString()!;
+
+
+//    // 2. Ensure the destination directory exists: /images/{newvmid}
+//    var folderPath = $"images/{newvmid}";
+//    var encodedFolderPath = Uri.EscapeDataString(folderPath); // e.g. images%2F113
+//    var createDirUrl = $"{baseUrl}storage/volumes/{volumeUuid}/files/{encodedFolderPath}";
+//    var createDirBody = new { type = "directory", unix_permissions = 0 };
+//    var createDirContent = new StringContent(System.Text.Json.JsonSerializer.Serialize(createDirBody), Encoding.UTF8, "application/json");
+
+//    var createDirResp = await httpClient.PostAsync(createDirUrl, createDirContent, ct);
+//    if (createDirResp.IsSuccessStatusCode)
+//    {
+//        _logger.LogInformation("Created directory {FolderPath}", folderPath);
+//    }
+//    else
+//    {
+//        var err = await createDirResp.Content.ReadAsStringAsync(ct);
+//        // If it already exists, just log and continue
+//        if (err.Contains("\"error\"", StringComparison.OrdinalIgnoreCase) && !err.Contains("already exists", StringComparison.OrdinalIgnoreCase))
+//        {
+//            _logger.LogWarning("Failed to create directory {FolderPath}: {Status} {Body}", folderPath, createDirResp.StatusCode, err);
+//        }
+//    }
+
+//    // 3. Collect expected filenames and move files recursively
+//    var expectedFiles = new List<string>();
+
+//    async Task<bool> MoveFilesRecursive(string oldFolder)
+//    {
+//        var listUrl = $"{baseUrl}storage/volumes/{volumeUuid}/files/{Uri.EscapeDataString(oldFolder.TrimStart('/'))}";
+//        var listResp = await httpClient.GetAsync(listUrl, ct);
+//        if (!listResp.IsSuccessStatusCode)
+//        {
+//            _logger.LogError("Failed to list NetApp folder {Folder}: {Status}", oldFolder, listResp.StatusCode);
+//            return false;
+//        }
+
+//        var json = await listResp.Content.ReadAsStringAsync(ct);
+//        using var doc = JsonDocument.Parse(json);
+//        if (!doc.RootElement.TryGetProperty("records", out var records) || records.ValueKind != JsonValueKind.Array)
+//            return true; // nothing to do
+
+//        foreach (var rec in records.EnumerateArray())
+//        {
+//            var name = rec.GetProperty("name").GetString();
+//            var type = rec.GetProperty("type").GetString(); // "file" or "directory"
+//            if (string.IsNullOrEmpty(name) || name == "." || name == "..")
+//                continue;
+
+//            if (type == "directory")
+//            {
+//                var subOldPath = $"{oldFolder}/{name}";
+//                var ok = await MoveFilesRecursive(subOldPath);
+//                if (!ok)
+//                    return false;
+//            }
+//            else if (type == "file")
+//            {
+//                if (!name.Contains(oldvmid))
+//                    continue;
+
+//                // Skip CD-ROM/ISO
+//                if (name.EndsWith(".iso", StringComparison.OrdinalIgnoreCase))
+//                    continue;
+
+//                // 1) Compute new names
+//                var newFileName = name.Replace(oldvmid, newvmid);
+
+//                // 2) Build the raw link path inside the volume (no leading slash)
+//                var rawLinkPath = $"images/{newvmid}/{newFileName}";
+
+//                // 3) Percent-encode '/' → '%2F' and '.' → '%2E'
+//                var encodedLinkPath = rawLinkPath
+//                    .Replace("/", "%2F")
+//                    .Replace(".", "%2E");
+
+//                // 4) Lookup the clone’s UUID once (you should have done this earlier):
+//                //    var volumeUuid = (await _netappVolumeService.LookupVolumeAsync(cloneName, controllerId, ct)).Uuid;
+
+//                // 5) Build the symlink-create URL (baseUrl already ends with "/api/")
+//                var symlinkUrl = $"{baseUrl}storage/volumes/{volumeUuid}/files/{encodedLinkPath}";
+
+//                // 6) Build a relative target so NFS clients resolve it under the same mount
+//                //    From images/{newvmid}/, go up one and into images/{oldvmid}/
+//                var relativeTarget = $"../{oldvmid}/{name}";
+
+//                // 7) POST the symlink request
+//                var payload = new { target = relativeTarget };
+//                var content = new StringContent(
+//                    System.Text.Json.JsonSerializer.Serialize(payload),
+//                    Encoding.UTF8,
+//                    "application/json"
+//                );
+
+//                var resp = await httpClient.PostAsync(symlinkUrl, content, ct);
+//                var respText = await resp.Content.ReadAsStringAsync(ct);
+
+//                if (!resp.IsSuccessStatusCode)
+//                {
+//                    _logger.LogError(
+//                        "Symlink create failed for {Link} → {Target}: {Status} {Body}",
+//                        rawLinkPath, relativeTarget, resp.StatusCode, respText
+//                    );
+//                    return false;
+//                }
+
+//                _logger.LogInformation("Created symlink {Link} → {Target}", rawLinkPath, relativeTarget);
+
+//            }
+//        }
+//        return true;
+//    }
+
+//    var moveResult = await MoveFilesRecursive($"/images/{oldvmid}");
+
+//    // 4. Poll for the files to appear in the destination folder
+//    async Task<bool> WaitForFilesInDestinationAsync(string destFolder, List<string> filesToCheck, int timeoutSeconds = 20)
+//    {
+//        var encodedDestFolder = Uri.EscapeDataString(destFolder);
+//        var url = $"{baseUrl}storage/volumes/{volumeUuid}/files/{encodedDestFolder}";
+
+//        for (int i = 0; i < timeoutSeconds; i++)
+//        {
+//            var resp = await httpClient.GetAsync(url, ct);
+//            if (resp.IsSuccessStatusCode)
+//            {
+//                var content = await resp.Content.ReadAsStringAsync(ct);
+//                using var doc = JsonDocument.Parse(content);
+//                if (doc.RootElement.TryGetProperty("records", out var records) && records.ValueKind == JsonValueKind.Array)
+//                {
+//                    var foundFiles = new HashSet<string>(
+//                        records.EnumerateArray()
+//                               .Where(r => r.GetProperty("type").GetString() == "file")
+//                               .Select(r => r.GetProperty("name").GetString() ?? "")
+//                    );
+//                    if (filesToCheck.All(f => foundFiles.Contains(f)))
+//                    {
+//                        _logger.LogInformation("All files found in destination after {Seconds}s", i + 1);
+//                        return true;
+//                    }
+//                }
+//            }
+//            await Task.Delay(1000);
+//        }
+
+//        _logger.LogWarning(
+//            "Not all files appeared in destination folder {DestFolder} after {Timeout}s: {Files}",
+//            destFolder, timeoutSeconds, string.Join(",", filesToCheck));
+//        return false;
+//    }
+
+//    var waitResult = await WaitForFilesInDestinationAsync($"images/{newvmid}", expectedFiles);
+//    return moveResult && waitResult;
+//}

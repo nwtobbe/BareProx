@@ -33,6 +33,7 @@ using System.Security.Cryptography;   // for SHA1
 using Renci.SshNet;
 using BareProx.Services.Proxmox.Authentication;
 using BareProx.Services.Proxmox.Helpers;
+using BareProx.Services.Restore;
 
 namespace BareProx.Services
 {
@@ -48,7 +49,7 @@ namespace BareProx.Services
         private readonly IProxmoxInventoryCache _invCache;
 
         public ProxmoxService(
-            ApplicationDbContext context,
+             ApplicationDbContext context,
             INetappService netappService,
             IEncryptionService encryptionService,
             INetappVolumeService netappVolumeService,
@@ -417,7 +418,7 @@ namespace BareProx.Services
             ProxmoxCluster cluster,
             string host,
             string hostaddress,
-            int vmId, 
+            int vmId,
             CancellationToken ct = default)
         {
             // Fetch current status
@@ -540,7 +541,7 @@ namespace BareProx.Services
             ProxmoxCluster cluster,
             string node,
             string hostAddress,
-            int vmid, 
+            int vmid,
             CancellationToken ct = default)
         {
             var client = await _proxmoxAuthenticator.GetAuthenticatedClientAsync(cluster, ct);
@@ -1064,7 +1065,7 @@ namespace BareProx.Services
                     }
                 }
             }
- 
+
 
             return true;
         }
@@ -1253,7 +1254,7 @@ namespace BareProx.Services
             {
                 return false;
             }
-            
+
             var host = await _context.ProxmoxHosts
                 .FirstOrDefaultAsync(h => h.HostAddress == hostAddress, ct);
             if (host == null || string.IsNullOrWhiteSpace(host.Hostname))
@@ -1755,7 +1756,7 @@ namespace BareProx.Services
         public async Task<bool> UnmountNfsStorageViaApiAsync_old(
             ProxmoxCluster cluster,
             string nodeName,
-            string storageName, 
+            string storageName,
             CancellationToken ct = default)
         {
             // Find the host entry for this node
@@ -2543,7 +2544,7 @@ namespace BareProx.Services
         public async Task<bool> IsSnapshotChainActiveFromDefAsync(
             ProxmoxCluster cluster,
             string storageName,
-            
+
             CancellationToken ct = default)
         {
             if (cluster?.Hosts == null || cluster.Hosts.Count == 0)

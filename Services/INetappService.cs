@@ -35,26 +35,6 @@ namespace BareProx.Services
         Task<List<string>> ListFlexClonesAsync(int controllerId, CancellationToken ct = default);
         
 
-        // --- Snapshots ---
-        /// <summary>
-        /// Creates a NetApp snapshot, optionally with SnapLock protection.
-        /// </summary>
-        /// <param name="clusterId">Proxmox cluster ID (to resolve the volume).</param>
-        /// <param name="storageName">Name of the NetApp volume.</param>
-        /// <param name="snapmirrorLabel">Label to stamp into the snapshot name.</param>
-        /// <param name="snapLocking">Whether to turn on SnapLock protection.</param>
-        /// <param name="lockRetentionCount">
-        ///   If snapLocking=true, the number of units to lock. Otherwise ignored.
-        /// </param>
-        /// <param name="lockRetentionUnit">
-        ///   If snapLocking=true, one of "Hours", "Days", or "Weeks". Otherwise ignored.
-        /// </param>
-        /// <param name="ct">Cancellation token.</param>
-        /// <returns>A SnapshotResult indicating success, the snapshot name, or an error.</returns>
-
-        Task<List<VolumeSnapshotTreeDto>> GetSnapshotsForVolumesAsync(HashSet<string> volumeNames, CancellationToken ct = default);
-
-
         // --- Cloning and export policies ---
         Task<bool> EnsureExportPolicyExistsOnSecondaryAsync(
     string exportPolicyName,
