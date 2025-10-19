@@ -247,7 +247,7 @@
         {
             var sv = Model.StorageView;
             <form asp-controller="Settings" asp-action="SaveSelectedStorage" method="post">
-                @Html.HiddenFor(_ => sv!.ClusterId)
+                <input type="hidden" name="ClusterId" value="@Model.StorageView!.ClusterId" />
 
                 <div class="card mb-3">
                     <div class="card-body">

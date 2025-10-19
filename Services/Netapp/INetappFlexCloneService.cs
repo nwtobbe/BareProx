@@ -19,13 +19,13 @@
  */
 
 using BareProx.Models;
-using System.Net.Http.Headers;
 
 namespace BareProx.Services.Netapp
 {
-    public interface INetappAuthService
+
+    public interface INetappFlexCloneService
     {
-        AuthenticationHeaderValue GetEncryptedAuthHeader(string username, string encryptedPassword);
-        HttpClient CreateAuthenticatedClient(NetappController controller, out string baseUrl);
+        Task<List<string>> ListFlexClonesAsync(int controllerId, CancellationToken ct = default);
+        Task<FlexCloneResult> CloneVolumeFromSnapshotAsync(string volumeName, string snapshotName, string cloneName, int controllerId, CancellationToken ct = default);
     }
 }

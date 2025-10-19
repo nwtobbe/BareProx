@@ -21,6 +21,7 @@
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services;
+using BareProx.Services.Netapp;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.RegularExpressions;
@@ -30,7 +31,8 @@ namespace BareProx.Controllers
     public class WaflController : Controller
     {
         private readonly ApplicationDbContext _context;
-        private readonly INetappService _netappService;
+        private readonly INetappFlexCloneService _netappflexcloneService;
+        private readonly INetappExportNFSService _netappExportNFSService;
         private readonly INetappSnapmirrorService _netappSnapmirrorService;
         private readonly INetappVolumeService _netappVolumeService;
         private readonly INetappSnapshotService _netappSnapshotService;
@@ -38,14 +40,16 @@ namespace BareProx.Controllers
 
         public WaflController(
                 ApplicationDbContext context,
-                INetappService netappService,
+                INetappFlexCloneService netappflexcloneService,
+                INetappExportNFSService netappExportNFSService,
                 INetappSnapmirrorService netappSnapmirrorService,
                 INetappVolumeService netappVolumeService,
                 INetappSnapshotService netappSnapshotService,
                 ProxmoxService proxmoxService)
         {
             _context = context;
-            _netappService = netappService;
+            _netappflexcloneService = netappflexcloneService;
+            _netappExportNFSService = netappExportNFSService;
             _netappSnapmirrorService = netappSnapmirrorService;
             _netappVolumeService = netappVolumeService;
             _netappSnapshotService = netappSnapshotService;
@@ -240,8 +244,7 @@ namespace BareProx.Controllers
             int controllerId,
             CancellationToken ct)
         {
-            var ips = await _netappService
-                .GetNfsEnabledIpsAsync(controllerId, vserver, ct);
+            var ips = await _netappExportNFSService.GetNfsEnabledIpsAsync(controllerId, vserver, ct);
             return Json(new { ips });
         }
 
@@ -264,7 +267,7 @@ namespace BareProx.Controllers
                     return BadRequest("Invalid controller ID.");
 
                 // 2) Clone the snapshot
-                var result = await _netappService
+                var result = await _netappflexcloneService
                     .CloneVolumeFromSnapshotAsync(
                         volumeName: model.VolumeName,
                         snapshotName: model.SnapshotName,
@@ -354,7 +357,7 @@ namespace BareProx.Controllers
                         return StatusCode(500, "Could not determine SVM name for clone.");
 
                     // Ensure the policy (and its rules) exist on secondary (copy if needed)
-                    var copied = await _netappService.EnsureExportPolicyExistsOnSecondaryAsync(
+                    var copied = await _netappExportNFSService.EnsureExportPolicyExistsOnSecondaryAsync(
                         exportPolicyName: primaryExportPolicy,
                         primaryControllerId: primaryControllerId,
                         secondaryControllerId: model.ControllerId,
@@ -365,7 +368,7 @@ namespace BareProx.Controllers
                         return StatusCode(500, "Failed to ensure export policy exists on secondary controller.");
 
                     // Now assign the policy to the clone (on secondary)
-                    var ok = await _netappService.SetExportPolicyAsync(
+                    var ok = await _netappExportNFSService.SetExportPolicyAsync(
                         volumeName: cloneName,
                         exportPolicyName: primaryExportPolicy,
                         controllerId: model.ControllerId,
@@ -377,7 +380,7 @@ namespace BareProx.Controllers
                 else
                 {
                     // Primary: just copy export policy on same controller
-                    await _netappService.CopyExportPolicyAsync(
+                    await _netappExportNFSService.CopyExportPolicyAsync(
                         model.VolumeName,
                         cloneName,
                         controllerId: controllerId,
@@ -391,7 +394,7 @@ namespace BareProx.Controllers
                     return StatusCode(500, $"Failed to find UUID for cloned volume '{result.CloneVolumeName}'.");
 
                 // set nas.path = "/{cloneName}"
-                await _netappService.SetVolumeExportPathAsync(
+                await _netappExportNFSService.SetVolumeExportPathAsync(
                     volumeInfo.Uuid,
                     $"/{cloneName}",
                     controllerId,

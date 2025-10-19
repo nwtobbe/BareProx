@@ -41,7 +41,6 @@ namespace BareProx.Controllers
         private readonly IFeatureService _features;
         private readonly ApplicationDbContext _context;
         private readonly ProxmoxService _proxmoxService;
-        private readonly INetappService _netappService;
         private readonly IEncryptionService _encryptionService;
         private readonly string _configFile;
         private readonly SelfSignedCertificateService _certService;
@@ -54,7 +53,6 @@ namespace BareProx.Controllers
             ApplicationDbContext context,
             IFeatureService features,
             ProxmoxService proxmoxService,
-            INetappService netappService,
             IEncryptionService encryptionService,
             SelfSignedCertificateService certService,
             IHostApplicationLifetime appLifetime,
@@ -64,7 +62,6 @@ namespace BareProx.Controllers
             _context = context;
             _features = features;
             _proxmoxService = proxmoxService;
-            _netappService = netappService;
             _encryptionService = encryptionService;
             _configFile = Path.Combine("/config", "appsettings.json");
             _certService = certService;
@@ -534,7 +531,7 @@ namespace BareProx.Controllers
             await _context.SaveChangesAsync(ct);
 
             TempData["Message"] = $"Host \"{hostname}\" added.";
-            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = clusterId }); // CHANGED
+            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = clusterId, tab = "edit" });
         }
 
         [HttpPost]
@@ -554,51 +551,59 @@ namespace BareProx.Controllers
         // POST: Settings/NetappControllers/Create
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> Create(string Hostname, string IpAddress, bool IsPrimary, string Username, string PasswordHash, CancellationToken ct)
+        public async Task<IActionResult> Create(
+            [FromForm] string Hostname,
+            [FromForm] string IpAddress,
+            [FromForm] bool IsPrimary,       // <- binds from hidden+checkbox
+            [FromForm] string Username,
+            [FromForm] string PasswordHash,
+            CancellationToken ct)
         {
             var controller = new NetappController
             {
                 Hostname = Hostname,
                 IpAddress = IpAddress,
-                IsPrimary = IsPrimary,
+                IsPrimary = IsPrimary,       // <- no “single primary” logic added
                 Username = Username,
                 PasswordHash = _encryptionService.Encrypt(PasswordHash)
             };
-            if (ModelState.IsValid)
+
+            if (!ModelState.IsValid)
             {
-                _context.Add(controller);
-                await _context.SaveChangesAsync(ct);
-                TempData["Message"] = $"Controller \"{controller.Hostname}\" added.";
-                return RedirectToAction(nameof(NetappHub), new { selectedId = controller.Id }); // ← to hub
+                TempData["Message"] = "Validation failed.";
+                return RedirectToAction(nameof(NetappHub));
             }
-            TempData["Message"] = "Validation failed.";
-            return RedirectToAction(nameof(NetappHub));
+
+            _context.Add(controller);
+            await _context.SaveChangesAsync(ct);
+
+            TempData["Message"] = $"Controller \"{controller.Hostname}\" added.";
+            return RedirectToAction(nameof(NetappHub), new { selectedId = controller.Id });
         }
 
-        // POST: Settings/NetappControllers/Edit/5
+
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> Edit(int id, string Hostname, string IpAddress, bool IsPrimary, string Username, string PasswordHash, CancellationToken ct)
+        public async Task<IActionResult> Edit(
+            int id, string Hostname, string IpAddress, bool IsPrimary, string Username, string PasswordHash, CancellationToken ct)
         {
             var existing = await _context.NetappControllers.FindAsync(id, ct);
             if (existing == null) return RedirectToAction(nameof(NetappHub));
 
-            if (ModelState.IsValid)
-            {
-                existing.Hostname = Hostname;
-                existing.IpAddress = IpAddress;
-                existing.IsPrimary = IsPrimary;
-                existing.Username = Username;
-                if (!string.IsNullOrWhiteSpace(PasswordHash))
-                    existing.PasswordHash = _encryptionService.Encrypt(PasswordHash);
+            // Update unconditionally (you’re binding primitives)
+            existing.Hostname = Hostname;
+            existing.IpAddress = IpAddress;
+            existing.IsPrimary = IsPrimary;
+            existing.Username = Username;
+            if (!string.IsNullOrWhiteSpace(PasswordHash))
+                existing.PasswordHash = _encryptionService.Encrypt(PasswordHash);
 
-                await _context.SaveChangesAsync(ct);
-                TempData["Message"] = $"Controller \"{existing.Hostname}\" saved.";
-                return RedirectToAction(nameof(NetappHub), new { selectedId = id }); // ← back to hub
-            }
-            TempData["Message"] = "Validation failed.";
+            await _context.SaveChangesAsync(ct);
+
+            TempData["Message"] = $"Controller \"{existing.Hostname}\" saved.";
             return RedirectToAction(nameof(NetappHub), new { selectedId = id });
         }
+
 
         // GET: Settings/Delete/5
         [HttpPost, ValidateAntiForgeryToken, ActionName("Delete")]

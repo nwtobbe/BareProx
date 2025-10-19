@@ -23,7 +23,7 @@ using System.Text;
 using BareProx.Models;
 
 
-namespace BareProx.Services
+namespace BareProx.Services.Netapp
 {
     public class NetappAuthService : INetappAuthService
     {

@@ -33,7 +33,6 @@ namespace BareProx.Controllers
     public class BackupController : Controller
     {
         private readonly ProxmoxService _proxmoxService;
-        private readonly INetappService _netappService;
         private readonly ApplicationDbContext _context;
         private readonly IBackupService _backupService;
         private readonly IServiceScopeFactory _scopeFactory;
@@ -42,14 +41,12 @@ namespace BareProx.Controllers
         public BackupController(
             ApplicationDbContext context,
             ProxmoxService proxmoxService,
-            INetappService netappService,
             IBackupService backupService,
             IServiceScopeFactory scopeFactory,
             IProxmoxInventoryCache invCache)
         {
             _context = context;
             _proxmoxService = proxmoxService;
-            _netappService = netappService;
             _backupService = backupService;
             _scopeFactory = scopeFactory;
             _invCache = invCache;

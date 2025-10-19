@@ -23,6 +23,7 @@ using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services.Background;
 using Microsoft.EntityFrameworkCore;
+using BareProx.Services.Netapp;
 
 
 namespace BareProx.Services.Restore
@@ -69,9 +70,10 @@ namespace BareProx.Services.Restore
             {
                 using var scope = _scopeFactory.CreateScope();
                 var ctx = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-                var netapp = scope.ServiceProvider.GetRequiredService<INetappService>();
+                var netappflexclone = scope.ServiceProvider.GetRequiredService<INetappFlexCloneService>();
                 var proxmox = scope.ServiceProvider.GetRequiredService<ProxmoxService>();
                 var netappVolumeSvc = scope.ServiceProvider.GetRequiredService<INetappVolumeService>();
+                var netappExportNfs = scope.ServiceProvider.GetRequiredService<INetappExportNFSService>();
 
                 // Reload job in new context
                 var backgroundJob = await ctx.Jobs.FindAsync(new object[] { jobId }, backgroundCt);
@@ -90,7 +92,7 @@ namespace BareProx.Services.Restore
                         .Where(b => b.Id == model.BackupId)
                         .AnyAsync(b => b.SnapshotAsvolumeChain, backgroundCt);
 
-                    var cloneResult = await netapp.CloneVolumeFromSnapshotAsync(
+                    var cloneResult = await netappflexclone.CloneVolumeFromSnapshotAsync(
                         model.VolumeName,
                         model.SnapshotName,
                         cloneName,
@@ -132,7 +134,7 @@ namespace BareProx.Services.Restore
                             ?? throw new InvalidOperationException($"No policy for {primaryVol}@{primaryCtrl}");
 
                         // c) ensure it exists on secondary
-                        await netapp.EnsureExportPolicyExistsOnSecondaryAsync(
+                        await netappExportNfs.EnsureExportPolicyExistsOnSecondaryAsync(
                             exportPolicyName: primaryPolicy,
                             primaryControllerId: primaryCtrl,
                             secondaryControllerId: model.ControllerId,
@@ -145,7 +147,7 @@ namespace BareProx.Services.Restore
                             ct: backgroundCt);
 
                         // d) assign it to the new clone
-                        var setOk = await netapp.SetExportPolicyAsync(
+                        var setOk = await netappExportNfs.SetExportPolicyAsync(
                             volumeName: cloneName,
                             exportPolicyName: primaryPolicy,
                             controllerId: model.ControllerId,
@@ -160,7 +162,7 @@ namespace BareProx.Services.Restore
                     else
                     {
                         // Primary: just copy the policy in‐place
-                        var policyOk = await netapp.CopyExportPolicyAsync(
+                        var policyOk = await netappExportNfs.CopyExportPolicyAsync(
                             model.VolumeName,
                             cloneName,
                             model.ControllerId,
@@ -180,7 +182,7 @@ namespace BareProx.Services.Restore
                         throw new InvalidOperationException($"UUID not found for clone '{cloneName}'.");
 
                     var exportPath = $"/{cloneName}";
-                    var exported = await netapp.SetVolumeExportPathAsync(
+                    var exported = await netappExportNfs.SetVolumeExportPathAsync(
                         volInfo.Uuid,
                         exportPath,
                         model.ControllerId,

@@ -29,6 +29,7 @@ using BareProx.Services.Migration;
 using BareProx.Services.Proxmox.Authentication;
 using BareProx.Services.Proxmox.Helpers;
 using BareProx.Services.Restore;
+using BareProx.Services.Netapp;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
@@ -302,7 +303,8 @@ if (isConfigured)
     builder.Services.AddScoped<IBackupRepository, BackupRepository>();
     builder.Services.AddScoped<IBackupService, BackupService>();
     builder.Services.AddScoped<INetappAuthService, NetappAuthService>();
-    builder.Services.AddScoped<INetappService, NetappService>();
+    builder.Services.AddScoped<INetappFlexCloneService, NetappFlexCloneService>();
+    builder.Services.AddScoped<INetappExportNFSService, NetappExportNFSService>();
     builder.Services.AddScoped<INetappVolumeService, NetappVolumeService>();
     builder.Services.AddScoped<INetappSnapmirrorService, NetappSnapmirrorService>();
     builder.Services.AddScoped<INetappSnapshotService, NetappSnapshotService>();

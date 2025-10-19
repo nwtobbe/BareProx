@@ -33,7 +33,6 @@ namespace BareProx.Controllers
     {
         private readonly ApplicationDbContext _context;
         private readonly IBackupService _backupService;
-        private readonly INetappService _netappService;
         private readonly ProxmoxService _proxmoxService;
         private readonly IRestoreService _restoreService;
         private readonly IAppTimeZoneService _tz;
@@ -41,14 +40,12 @@ namespace BareProx.Controllers
         public RestoreController(
             ApplicationDbContext context,
             IBackupService backupService,
-            INetappService netappService,
             ProxmoxService proxmoxService,
             IRestoreService restoreService,
             IAppTimeZoneService tz)
         {
             _context = context;
             _backupService = backupService;
-            _netappService = netappService;
             _proxmoxService = proxmoxService;
             _restoreService = restoreService;
             _tz = tz;

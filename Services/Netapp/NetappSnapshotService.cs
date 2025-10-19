@@ -26,6 +26,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Net;
 using Polly;
 using Newtonsoft.Json;
+using BareProx.Services.Netapp;
 
 namespace BareProx.Services
 {
@@ -36,7 +37,6 @@ namespace BareProx.Services
         private readonly INetappAuthService _authService;
         private readonly ILogger<NetappSnapshotService> _logger;
         private readonly IAppTimeZoneService _tz;
-        private readonly INetappService _NetappService;
         private readonly INetappVolumeService _netappVolumeService;
 
         public NetappSnapshotService(
@@ -44,14 +44,12 @@ namespace BareProx.Services
             IAppTimeZoneService tz,
             INetappAuthService authService,
             ILogger<NetappSnapshotService> logger,
-            INetappService netappService,
             INetappVolumeService netappVolumeService)
         {
             _context = context;
             _tz = tz;
             _authService = authService;
             _logger = logger;
-            _NetappService = netappService;
             _netappVolumeService = netappVolumeService;
         }
         public async Task<SnapshotResult> CreateSnapshotAsync(

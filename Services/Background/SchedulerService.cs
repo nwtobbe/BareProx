@@ -22,6 +22,7 @@ using BareProx.Controllers;
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services.Backup;
+using BareProx.Services.Netapp;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using System.Globalization;
@@ -79,10 +80,9 @@ namespace BareProx.Services.Background
         {
             using var scope = _services.CreateScope();
             var _context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var _netappService = scope.ServiceProvider.GetRequiredService<INetappService>();
             var _proxmoxService = scope.ServiceProvider.GetRequiredService<ProxmoxService>();
             var _backupService = scope.ServiceProvider.GetRequiredService<IBackupService>();
-            var ctrlLogger = scope.ServiceProvider.GetRequiredService<ILogger<BackupController>>();
+            var _ctrlLogger = scope.ServiceProvider.GetRequiredService<ILogger<BackupController>>();
 
             var localtime = _tz.ConvertUtcToApp(DateTime.UtcNow);
 
@@ -107,7 +107,7 @@ namespace BareProx.Services.Background
 
                     if (controller == null || cluster == null)
                     {
-                        ctrlLogger.LogWarning("Missing controller or cluster for schedule {Id}", sched.Id);
+                        _ctrlLogger.LogWarning("Missing controller or cluster for schedule {Id}", sched.Id);
                         continue;
                     }
 
@@ -121,7 +121,7 @@ namespace BareProx.Services.Background
                             .ToArray();
                     }
 
-                    ctrlLogger.LogInformation("Starting background backup for storage {StorageName}", sched.StorageName);
+                    _ctrlLogger.LogInformation("Starting background backup for storage {StorageName}", sched.StorageName);
 
                     _queue.QueueBackgroundWorkItem(async token =>
                     {
@@ -155,7 +155,7 @@ namespace BareProx.Services.Background
                 }
                 catch (Exception ex)
                 {
-                    ctrlLogger.LogError(ex, "Backup failed for {StorageName}: {Message}", sched.StorageName, ex.Message);
+                    _ctrlLogger.LogError(ex, "Backup failed for {StorageName}: {Message}", sched.StorageName, ex.Message);
                 }
             }
 

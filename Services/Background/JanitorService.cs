@@ -20,6 +20,7 @@
 
 using BareProx.Data;
 using BareProx.Models;
+using BareProx.Services.Netapp;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
@@ -66,7 +67,7 @@ namespace BareProx.Services.Background
         {
             using var scope = _services.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var netapp = scope.ServiceProvider.GetRequiredService<INetappService>();
+            var netapp = scope.ServiceProvider.GetRequiredService<INetappFlexCloneService>();
             var netappSnapshotService = scope.ServiceProvider.GetRequiredService<INetappSnapshotService>();
             var now = DateTime.UtcNow;
 
@@ -169,7 +170,7 @@ namespace BareProx.Services.Background
         {
             using var scope = _services.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var netapp = scope.ServiceProvider.GetRequiredService<INetappService>();
+            var netapp = scope.ServiceProvider.GetRequiredService<INetappFlexCloneService>();
             var netappSnapshotService = scope.ServiceProvider.GetRequiredService<INetappSnapshotService>();
             var now = DateTime.UtcNow;
 

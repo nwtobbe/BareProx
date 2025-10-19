@@ -21,6 +21,7 @@
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services;
+using BareProx.Services.Netapp;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -29,20 +30,20 @@ namespace BareProx.Controllers
     public class CleanupController : Controller
     {
         private readonly ApplicationDbContext _context;
-        private readonly INetappService _netappService;
+        private readonly INetappFlexCloneService _netappFlexCloneService;
         private readonly ProxmoxService _proxmoxService;
         private readonly INetappVolumeService _netappVolumeService;
         private readonly INetappSnapshotService _netappSnapshotService;
 
         public CleanupController(
             ApplicationDbContext context,
-            INetappService netappService,
+            INetappFlexCloneService netappFlexCloneService,
             ProxmoxService proxmoxService,
             INetappVolumeService netappVolumeService,
             INetappSnapshotService netappSnapshotService)
         {
             _context = context;
-            _netappService = netappService;
+            _netappFlexCloneService = netappFlexCloneService;
             _proxmoxService = proxmoxService;
             _netappVolumeService = netappVolumeService;
             _netappSnapshotService = netappSnapshotService;
@@ -84,7 +85,7 @@ namespace BareProx.Controllers
                     var controllerId = controller.Id;
 
                     // Fetch FlexClones for this controller
-                    var allClones = await _netappService.ListFlexClonesAsync(controllerId, ct);
+                    var allClones = await _netappFlexCloneService.ListFlexClonesAsync(controllerId, ct);
 
                     // Fetch selected volumes from database
                     var selectedVolumes = await _context.Set<SelectedNetappVolume>()

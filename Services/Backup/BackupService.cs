@@ -31,7 +31,6 @@ namespace BareProx.Services.Backup
     {
         private readonly ApplicationDbContext _context;
         private readonly ProxmoxService _proxmoxService;
-        private readonly INetappService _netAppService;
         private readonly INetappSnapmirrorService _netAppSnapmirrorService;
         private readonly INetappSnapshotService _netAppSnapshotService;
         private readonly IBackupRepository _backupRepository;
@@ -44,7 +43,6 @@ namespace BareProx.Services.Backup
         public BackupService(
             ApplicationDbContext context,
             ProxmoxService proxmoxService,
-            INetappService netAppService,
             INetappSnapmirrorService netAppSnapmirrorService,
             INetappSnapshotService netAppSnapshotService,
             IBackupRepository backupRepository,
@@ -55,7 +53,6 @@ namespace BareProx.Services.Backup
         {
             _context = context;
             _proxmoxService = proxmoxService;
-            _netAppService = netAppService;
             _netAppSnapmirrorService = netAppSnapmirrorService;
             _netAppSnapshotService = netAppSnapshotService;
             _backupRepository = backupRepository;

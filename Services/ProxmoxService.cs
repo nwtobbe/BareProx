@@ -40,7 +40,6 @@ namespace BareProx.Services
     public class ProxmoxService
     {
         private readonly ApplicationDbContext _context;
-        private readonly INetappService _netappService;
         private readonly IEncryptionService _encryptionService;
         private readonly INetappVolumeService _netappVolumeService;
         private readonly ILogger<RestoreService> _logger;
@@ -50,7 +49,6 @@ namespace BareProx.Services
 
         public ProxmoxService(
              ApplicationDbContext context,
-            INetappService netappService,
             IEncryptionService encryptionService,
             INetappVolumeService netappVolumeService,
             ILogger<RestoreService> logger,
@@ -59,7 +57,6 @@ namespace BareProx.Services
             IProxmoxInventoryCache invCache)
         {
             _context = context;
-            _netappService = netappService;
             _encryptionService = encryptionService;
             _netappVolumeService = netappVolumeService;
             _logger = logger;

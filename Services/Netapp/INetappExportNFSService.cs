@@ -19,13 +19,17 @@
  */
 
 using BareProx.Models;
-using System.Net.Http.Headers;
 
 namespace BareProx.Services.Netapp
 {
-    public interface INetappAuthService
+
+    public interface INetappExportNFSService
     {
-        AuthenticationHeaderValue GetEncryptedAuthHeader(string username, string encryptedPassword);
-        HttpClient CreateAuthenticatedClient(NetappController controller, out string baseUrl);
-    }
+        Task<List<string>> GetNfsEnabledIpsAsync(int controllerId, string vserver, CancellationToken ct = default);
+        Task<bool> CopyExportPolicyAsync(string sourceVolumeName, string targetCloneName, int controllerId, CancellationToken ct = default);
+        Task<bool> SetExportPolicyAsync(string volumeName, string exportPolicyName, int controllerId, CancellationToken ct = default);
+        Task<bool> EnsureExportPolicyExistsOnSecondaryAsync(string exportPolicyName, int primaryControllerId, int secondaryControllerId, string svmName, CancellationToken ct = default);
+        Task<bool> SetVolumeExportPathAsync(string volumeUuid, string exportPath, int controllerId, CancellationToken ct = default);
+    } 
+
 }
