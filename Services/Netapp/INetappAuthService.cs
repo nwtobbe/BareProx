@@ -27,5 +27,7 @@ namespace BareProx.Services.Netapp
     {
         AuthenticationHeaderValue GetEncryptedAuthHeader(string username, string encryptedPassword);
         HttpClient CreateAuthenticatedClient(NetappController controller, out string baseUrl);
+        Task<bool> TryAuthenticateAsync(string hostOrIp,string username,string plainPassword,CancellationToken ct = default);
     }
 }
+

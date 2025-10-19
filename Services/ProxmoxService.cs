@@ -1068,7 +1068,6 @@ namespace BareProx.Services
         }
 
 
-
         /// Replace storage prefix and VMID tokens inside a single Proxmox value
         /// like "mystorage:111/vm-111-disk-0.qcow2,discard=on".
         string RemapStorageAndVmid(

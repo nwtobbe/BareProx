@@ -29,11 +29,16 @@ namespace BareProx.Services.Netapp
     {
         private readonly IHttpClientFactory _factory;
         private readonly IEncryptionService _enc;
+        private readonly ILogger<NetappAuthService> _logger;
 
-        public NetappAuthService(IHttpClientFactory factory, IEncryptionService enc)
+        public NetappAuthService(
+            IHttpClientFactory factory,
+            IEncryptionService enc,
+            ILogger<NetappAuthService> logger)
         {
             _factory = factory;
             _enc = enc;
+            _logger = logger;
         }
 
         public AuthenticationHeaderValue GetEncryptedAuthHeader(string username, string encryptedPassword)
@@ -51,6 +56,45 @@ namespace BareProx.Services.Netapp
 
             baseUrl = $"https://{controller.IpAddress}/api/";
             return client;
+        }
+
+        public async Task<bool> TryAuthenticateAsync(
+            string hostOrIp,
+            string username,
+            string plainPassword,
+            CancellationToken ct = default)
+        {
+            // Reuse the named client so cert policy/proxies/etc. are consistent.
+            var client = _factory.CreateClient("NetappClient");
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+                "Basic",
+                Convert.ToBase64String(Encoding.ASCII.GetBytes($"{username}:{plainPassword}"))
+            );
+
+            var baseUrl = $"https://{hostOrIp}/api/";
+            var url = $"{baseUrl}cluster?fields=version"; // cheap probe
+
+            try
+            {
+                using var resp = await client.GetAsync(url, ct);
+                if (resp.IsSuccessStatusCode)
+                    return true;
+
+                // 401/403 mean bad creds; others likely connectivity/cert/etc.
+                var body = await resp.Content.ReadAsStringAsync(ct);
+                _logger.LogWarning("NetApp auth probe failed {Status}: {Body}", (int)resp.StatusCode, body);
+                return false;
+            }
+            catch (TaskCanceledException) when (ct.IsCancellationRequested)
+            {
+                // cancelled by caller
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "NetApp auth probe threw.");
+                return false;
+            }
         }
     }
 }

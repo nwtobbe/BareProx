@@ -22,6 +22,7 @@ using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services;
 using BareProx.Services.Features;
+using BareProx.Services.Netapp;
 using BareProx.Services.Proxmox.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
@@ -47,6 +48,7 @@ namespace BareProx.Controllers
         private readonly IHostApplicationLifetime _appLifetime;
         private readonly INetappVolumeService _netappVolumeService;
         private readonly IProxmoxAuthenticator _proxmoxAuthenticator;
+        private readonly INetappAuthService _netappAuthService;
 
 
         public SettingsController(
@@ -57,7 +59,8 @@ namespace BareProx.Controllers
             SelfSignedCertificateService certService,
             IHostApplicationLifetime appLifetime,
             INetappVolumeService netappVolumeService,
-            IProxmoxAuthenticator proxmoxAuthenticator)
+            IProxmoxAuthenticator proxmoxAuthenticator,
+            INetappAuthService  netappAuthService)
         {
             _context = context;
             _features = features;
@@ -68,6 +71,7 @@ namespace BareProx.Controllers
             _appLifetime = appLifetime;
             _netappVolumeService = netappVolumeService;
             _proxmoxAuthenticator = proxmoxAuthenticator;
+            _netappAuthService = netappAuthService;
         }
 
         // ========================================================
@@ -559,6 +563,14 @@ namespace BareProx.Controllers
             [FromForm] string PasswordHash,
             CancellationToken ct)
         {
+
+            var ok = await _netappAuthService.TryAuthenticateAsync(IpAddress, Username, PasswordHash, ct);
+            if (!ok)
+            {
+                TempData["Message"] = "Authentication failed. Please verify IP/username/password.";
+                return RedirectToAction(nameof(NetappHub));
+            }
+
             var controller = new NetappController
             {
                 Hostname = Hostname,
@@ -589,6 +601,18 @@ namespace BareProx.Controllers
         {
             var existing = await _context.NetappControllers.FindAsync(id, ct);
             if (existing == null) return RedirectToAction(nameof(NetappHub));
+
+            if (!string.IsNullOrWhiteSpace(PasswordHash))
+            {
+                var okNew = await _netappAuthService.TryAuthenticateAsync(IpAddress, Username, PasswordHash, ct);
+                if (!okNew)
+                {
+                    TempData["Message"] = "Authentication failed with the new password. Changes were not saved.";
+                    return RedirectToAction(nameof(NetappHub), new { selectedId = id, tab = "edit" });
+                }
+
+                existing.PasswordHash = _encryptionService.Encrypt(PasswordHash);
+            }
 
             // Update unconditionally (you’re binding primitives)
             existing.Hostname = Hostname;

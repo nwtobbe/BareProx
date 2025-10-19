@@ -17,6 +17,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 	Rollback snapshot
 	VmState Warning for Rollback
 - Probably new bugs.
+- Account verification for Netapp Clusters on add/edit
 
 ### Changed
 - Settings / Proxmox
