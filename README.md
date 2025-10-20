@@ -149,7 +149,7 @@ Configuration files will appear under \`/var/bareprox/config\`, and the SQLite d
 
 ## Configuration
 
-Browse to \`http://<HOST>:<PORT>\` and log in with the default user **Overseer** and password **P@ssw0rd!**  
+Browse to **https://<HOST>** and log in with the default user **Overseer** and password **P@ssw0rd!**  
 Use the web UI to:
 
 - Configure DB and restart the application.  
@@ -193,7 +193,7 @@ And don’t forget to select datastores to use.
 
 ## Things Not Working / Known Issues
 
-- **TPM devices:** Proxmox does not allow snapshots of VMs with TPM devices.  
+- **TPM devices:** Proxmox does not allow snapshots of VMs with TPM devices. Proxmox may allow this soon.  
 - **Cloud-Init drives:** Delete and recreate them after restore. They are temporary devices.
 - **Exclude from backup** You can exclude vm:s from backup but.. there is no code currently that does the actual exclusion.
 
