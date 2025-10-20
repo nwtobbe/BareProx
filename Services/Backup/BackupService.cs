@@ -21,6 +21,8 @@
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Repositories;
+using BareProx.Services.Proxmox.Ops;
+using BareProx.Services.Proxmox.Snapshots;
 using Microsoft.EntityFrameworkCore;
 using System.Diagnostics;
 
@@ -31,8 +33,10 @@ namespace BareProx.Services.Backup
     {
         private readonly ApplicationDbContext _context;
         private readonly ProxmoxService _proxmoxService;
+        private readonly IProxmoxOpsService _proxmoxOps;
         private readonly INetappSnapmirrorService _netAppSnapmirrorService;
         private readonly INetappSnapshotService _netAppSnapshotService;
+        private readonly IProxmoxSnapshotsService _proxmoxSnapshotsService;
         private readonly IBackupRepository _backupRepository;
         private readonly ILogger<BackupService> _logger;
         private readonly TimeZoneInfo _timeZoneInfo;
@@ -43,8 +47,10 @@ namespace BareProx.Services.Backup
         public BackupService(
             ApplicationDbContext context,
             ProxmoxService proxmoxService,
+            IProxmoxOpsService proxmoxOps,
             INetappSnapmirrorService netAppSnapmirrorService,
             INetappSnapshotService netAppSnapshotService,
+            IProxmoxSnapshotsService proxmoxSnapshotsService,
             IBackupRepository backupRepository,
             ILogger<BackupService> logger,
             IConfiguration configuration,
@@ -53,8 +59,10 @@ namespace BareProx.Services.Backup
         {
             _context = context;
             _proxmoxService = proxmoxService;
+            _proxmoxOps = proxmoxOps;
             _netAppSnapmirrorService = netAppSnapmirrorService;
             _netAppSnapshotService = netAppSnapshotService;
+            _proxmoxSnapshotsService = proxmoxSnapshotsService;
             _backupRepository = backupRepository;
             _logger = logger;
             _timeZoneId = configuration["AppSettings:TimeZone"] ?? "UTC";
@@ -197,7 +205,7 @@ namespace BareProx.Services.Backup
                             continue;
                         }
 
-                        var upid = await _proxmoxService.CreateSnapshotAsync(
+                        var upid = await _proxmoxSnapshotsService.CreateSnapshotAsync(
                             cluster, vm.HostName, vm.HostAddress, vm.Id,
                             ProxMoxsnapshotName,
                             "Backup created via BareProx",
@@ -226,7 +234,7 @@ namespace BareProx.Services.Backup
                         return new
                         {
                             Vm = vm,
-                            Task = _proxmoxService.WaitForTaskCompletionAsync(
+                            Task = _proxmoxOps.WaitForTaskCompletionAsync(
                                 cluster, vm.HostName, vm.HostAddress, kv.Value,
                                 TimeSpan.FromMinutes(20),
                                 _logger, ct)
@@ -469,7 +477,7 @@ namespace BareProx.Services.Backup
                 {
                     try
                     {
-                        await _proxmoxService.DeleteSnapshotAsync(cluster, vm.HostName, vm.HostAddress, vm.Id, snap, ct);
+                        await _proxmoxSnapshotsService.DeleteSnapshotAsync(cluster, vm.HostName, vm.HostAddress, vm.Id, snap, ct);
                     }
                     catch { }
                 }

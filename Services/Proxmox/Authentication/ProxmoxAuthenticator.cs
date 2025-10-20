@@ -18,18 +18,20 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
-using System;
-using System.Collections.Generic;
-using System.Net.Http;
-using System.Net.Http.Headers;
-using System.Text.Json;
-using System.Threading;
-using System.Threading.Tasks;
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services.Proxmox.Helpers;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using System;
+using System.Collections.Generic;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace BareProx.Services.Proxmox.Authentication
 {
@@ -39,14 +41,14 @@ namespace BareProx.Services.Proxmox.Authentication
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IEncryptionService _encryptionService;
         private readonly ILogger<ProxmoxAuthenticator> _logger;
-        private readonly IProxmoxHelpers _proxmoxHelpers;
+        private readonly IProxmoxHelpersService _proxmoxHelpers;
 
         public ProxmoxAuthenticator(
             ApplicationDbContext context,
             IHttpClientFactory httpClientFactory,
             IEncryptionService encryptionService,
             ILogger<ProxmoxAuthenticator> logger,
-            IProxmoxHelpers proxmoxHelpers)
+            IProxmoxHelpersService proxmoxHelpers)
         {
             _context = context;
             _httpClientFactory = httpClientFactory;
@@ -127,5 +129,6 @@ namespace BareProx.Services.Proxmox.Authentication
 
             return client;
         }
-    }
+
+         }
 }

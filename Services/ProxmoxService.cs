@@ -34,6 +34,8 @@ using Renci.SshNet;
 using BareProx.Services.Proxmox.Authentication;
 using BareProx.Services.Proxmox.Helpers;
 using BareProx.Services.Restore;
+using BareProx.Services.Proxmox.Ops;
+using BareProx.Services.Proxmox.Snapshots;
 
 namespace BareProx.Services
 {
@@ -42,19 +44,23 @@ namespace BareProx.Services
         private readonly ApplicationDbContext _context;
         private readonly IEncryptionService _encryptionService;
         private readonly INetappVolumeService _netappVolumeService;
-        private readonly ILogger<RestoreService> _logger;
-        private readonly IProxmoxHelpers _proxmoxHelpers;
+        private readonly ILogger<ProxmoxService> _logger;
+        private readonly IProxmoxHelpersService _proxmoxHelpers;
         private readonly IProxmoxAuthenticator _proxmoxAuthenticator;
         private readonly IProxmoxInventoryCache _invCache;
+        private readonly IProxmoxOpsService _proxmoxOps;
+        private readonly IProxmoxSnapshotsService _proxmoxSnapshots;
 
         public ProxmoxService(
-             ApplicationDbContext context,
+            ApplicationDbContext context,
             IEncryptionService encryptionService,
             INetappVolumeService netappVolumeService,
-            ILogger<RestoreService> logger,
-            IProxmoxHelpers proxmoxHelpers,
+            ILogger<ProxmoxService> logger,
+            IProxmoxHelpersService proxmoxHelpers,
             IProxmoxAuthenticator proxmoxAuthenticator,
-            IProxmoxInventoryCache invCache)
+            IProxmoxInventoryCache invCache,
+            IProxmoxOpsService proxmoxOps,
+            IProxmoxSnapshotsService proxmoxSnapshots)
         {
             _context = context;
             _encryptionService = encryptionService;
@@ -63,99 +69,17 @@ namespace BareProx.Services
             _proxmoxHelpers = proxmoxHelpers;
             _proxmoxAuthenticator = proxmoxAuthenticator;
             _invCache = invCache;
+            _proxmoxOps = proxmoxOps;
+            _proxmoxSnapshots = proxmoxSnapshots;
         }
 
-        /// <summary>
-        /// Sends a request and retries once if a 401 is returned, refreshing the API token.
-        /// </summary>
-        private async Task<HttpResponseMessage> SendWithRefreshAsync(
-        ProxmoxCluster cluster,
-        HttpMethod method,
-        string url,
-        HttpContent content = null,
-        CancellationToken ct = default)
-        {
-            try
-            {
-                var client = await _proxmoxAuthenticator.GetAuthenticatedClientAsync(cluster, ct);
-
-                // Buffer the request content so we can log it
-                string requestBody = null;
-                if (content != null)
-                {
-                    requestBody = await content.ReadAsStringAsync(ct);
-                }
-
-                var request = new HttpRequestMessage(method, url)
-                {
-                    Content = content
-                };
-
-                _logger.LogDebug(
-                    "▶ Proxmox {Method} {Url}\nPayload:\n{Payload}",
-                    method, url, requestBody ?? "<no content>");
-
-                // first attempt
-                var response = await client.SendAsync(request, ct);
-
-                // capture the response body
-                var responseBody = await response.Content.ReadAsStringAsync(ct);
-                _logger.LogDebug(
-                    "◀ Proxmox {StatusCode} {ReasonPhrase}\nBody:\n{Body}",
-                    (int)response.StatusCode, response.ReasonPhrase, responseBody);
-
-                // retry on 401
-                if (response.StatusCode == HttpStatusCode.Unauthorized)
-                {
-                    _logger.LogInformation("Proxmox auth expired, re-authenticating…");
-                    var reauth = await _proxmoxAuthenticator.AuthenticateAndStoreTokenCAsync(cluster, ct);
-                    if (!reauth)
-                        throw new ServiceUnavailableException("Authentication failed: missing token or CSRF.");
-
-                    // reload fresh tokens
-                    await _context.Entry(cluster).ReloadAsync(ct);
-                    client = await _proxmoxAuthenticator.GetAuthenticatedClientAsync(cluster, ct);
-
-                    // rebuild request (and re-buffer)
-                    request = new HttpRequestMessage(method, url);
-                    if (requestBody != null)
-                        request.Content = new StringContent(requestBody, Encoding.UTF8, content.Headers.ContentType.MediaType);
-
-                    response = await client.SendAsync(request, ct);
-                    responseBody = await response.Content.ReadAsStringAsync(ct);
-                    _logger.LogDebug(
-                        "◀ (retry) Proxmox {StatusCode} {ReasonPhrase}\nBody:\n{Body}",
-                        (int)response.StatusCode, response.ReasonPhrase, responseBody);
-                }
-
-                response.EnsureSuccessStatusCode();
-                return response;
-            }
-            catch (HttpRequestException ex)
-            {
-                // socket/timeout/etc
-                var host = _proxmoxHelpers.GetQueryableHosts(cluster).FirstOrDefault()?.HostAddress ?? "unknown";
-                _ = _context.ProxmoxClusters
-                    .Where(c => c.Id == cluster.Id)
-                    .ExecuteUpdateAsync(b => b
-                        .SetProperty(c => c.LastStatus, _ => $"Unreachable: {ex.Message}")
-                        .SetProperty(c => c.LastChecked, _ => DateTime.UtcNow),
-                    ct);
-
-                throw new ServiceUnavailableException(
-                    $"Cannot reach Proxmox host at {host}:8006. {ex.Message}", ex);
-            }
-        }
-
-
-
-
+       
         public async Task<bool> CheckIfVmExistsAsync(ProxmoxCluster cluster, ProxmoxHost host, int vmId, CancellationToken ct = default)
         {
             var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/qemu/{vmId}/config";
             try
             {
-                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+                var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
                 return resp.IsSuccessStatusCode;
             }
             catch
@@ -199,7 +123,7 @@ namespace BareProx.Services
             foreach (var host in _proxmoxHelpers.GetQueryableHosts(cluster))
             {
                 var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/storage";
-                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+                var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
                 using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
                 foreach (var storage in doc.RootElement.GetProperty("data").EnumerateArray())
                 {
@@ -229,7 +153,7 @@ namespace BareProx.Services
             {
                 // a) list VMs
                 var vmListUrl = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/qemu";
-                var vmListResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, vmListUrl, null, ct);
+                var vmListResp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, vmListUrl, null, ct);
                 using var vmListDoc = JsonDocument.Parse(await vmListResp.Content.ReadAsStringAsync(ct));
                 var vmElems = vmListDoc.RootElement.GetProperty("data").EnumerateArray();
 
@@ -287,7 +211,7 @@ namespace BareProx.Services
             var hostAddress = _proxmoxHelpers.GetQueryableHosts(cluster).First(h => h.Hostname == host).HostAddress;
             var url = $"https://{hostAddress}:8006/api2/json/nodes/{host}/qemu/{vmId}/config";
 
-            var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+            var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
             return await resp.Content.ReadAsStringAsync(ct);
         }
 
@@ -398,7 +322,7 @@ namespace BareProx.Services
         {
             // Fetch current status
             var statusUrl = $"https://{hostaddress}:8006/api2/json/nodes/{host}/qemu/{vmId}/status/current";
-            var statusResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, statusUrl, null, ct);
+            var statusResp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, statusUrl, null, ct);
             var statusJson = await statusResp.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(statusJson);
             var current = doc.RootElement.GetProperty("data").GetProperty("status").GetString();
@@ -407,7 +331,7 @@ namespace BareProx.Services
             if (string.Equals(current, "running", StringComparison.OrdinalIgnoreCase))
             {
                 var url = $"https://{hostaddress}:8006/api2/json/nodes/{host}/qemu/{vmId}/status/suspend";
-                await SendWithRefreshAsync(cluster, HttpMethod.Post, url, null, ct);
+                await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Post, url, null, ct);
             }
         }
 
@@ -420,7 +344,7 @@ namespace BareProx.Services
         {
             // Fetch current status
             var statusUrl = $"https://{hostaddress}:8006/api2/json/nodes/{host}/qemu/{vmId}/status/current";
-            var statusResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, statusUrl, null, ct);
+            var statusResp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, statusUrl, null, ct);
             var statusJson = await statusResp.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(statusJson);
             var current = doc.RootElement.GetProperty("data").GetProperty("qmpstatus").GetString();
@@ -429,96 +353,11 @@ namespace BareProx.Services
             if (string.Equals(current, "paused", StringComparison.OrdinalIgnoreCase))
             {
                 var url = $"https://{hostaddress}:8006/api2/json/nodes/{host}/qemu/{vmId}/status/resume";
-                await SendWithRefreshAsync(cluster, HttpMethod.Post, url, null, ct);
+                await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Post, url, null, ct);
             }
         }
 
-        public async Task<string?> CreateSnapshotAsync(
-            ProxmoxCluster cluster,
-            string node,
-            string hostAddress,
-            int vmid,
-            string snapshotName,
-            string description,
-            bool withMemory,
-            bool dontTrySuspend,
-            CancellationToken ct = default)
-        {
-            var client = await _proxmoxAuthenticator.GetAuthenticatedClientAsync(cluster, ct);
-
-            var url = $"https://{hostAddress}:8006/api2/json/nodes/{node}/qemu/{vmid}/snapshot";
-
-            var data = new Dictionary<string, string>
-            {
-                ["snapname"] = snapshotName,
-                ["description"] = description,
-                ["vmstate"] = withMemory ? "1" : "0"
-            };
-
-            var content = new FormUrlEncodedContent(data);
-            var response = await client.PostAsync(url, content, ct);
-            response.EnsureSuccessStatusCode();
-
-            var json = await response.Content.ReadAsStringAsync(ct);
-            using var doc = JsonDocument.Parse(json);
-
-            var upid = doc.RootElement
-                          .GetProperty("data")
-                          .GetString();
-
-            return upid;
-        }
-
-        public async Task<bool> WaitForTaskCompletionAsync(
-     ProxmoxCluster cluster,
-     string node,
-     string hostAddress,
-     string upid,
-     TimeSpan timeout,
-     ILogger logger,
-     CancellationToken ct = default)
-        {
-            var url = $"https://{hostAddress}:8006/api2/json/nodes/{node}/tasks/{Uri.EscapeDataString(upid)}/status";
-            var start = DateTime.UtcNow;
-
-            while (DateTime.UtcNow - start < timeout)
-            {
-                try
-                {
-                    var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
-                    resp.EnsureSuccessStatusCode();
-
-                    var json = await resp.Content.ReadAsStringAsync(ct);
-                    using var doc = JsonDocument.Parse(json);
-                    var data = doc.RootElement.GetProperty("data");
-
-                    var status = data.GetProperty("status").GetString();
-                    if (status == "stopped")
-                    {
-                        var exit = data.GetProperty("exitstatus").GetString();
-                        if (exit == "OK")
-                        {
-                            logger.LogInformation("Snapshot task {Upid} completed successfully.", upid);
-                            return true;
-                        }
-
-                        logger.LogWarning("Snapshot task {Upid} failed with exitstatus: {Exit}", upid, exit);
-                        return false;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "Failed to check task status for UPID: {Upid}", upid);
-                }
-
-                await Task.Delay(TimeSpan.FromSeconds(5));
-            }
-
-            logger.LogWarning("Timeout waiting for snapshot task {Upid}", upid);
-            return false;
-        }
-
-        public async Task<string?> GetVmStatusAsync(ProxmoxCluster cluster, string node, string hostAddress, int vmid, CancellationToken ct = default)
+          public async Task<string?> GetVmStatusAsync(ProxmoxCluster cluster, string node, string hostAddress, int vmid, CancellationToken ct = default)
         {
             var client = await _proxmoxAuthenticator.GetAuthenticatedClientAsync(cluster, ct);
             var url = $"https://{hostAddress}:8006/api2/json/nodes/{node}/qemu/{vmid}/status/current";
@@ -532,81 +371,6 @@ namespace BareProx.Services
                       .GetProperty("data")
                       .GetProperty("status")
                       .GetString();
-        }
-
-        public async Task<List<ProxmoxSnapshotInfo>> GetSnapshotListAsync(
-            ProxmoxCluster cluster,
-            string node,
-            string hostAddress,
-            int vmid,
-            CancellationToken ct = default)
-        {
-            var client = await _proxmoxAuthenticator.GetAuthenticatedClientAsync(cluster, ct);
-            var url = $"https://{hostAddress}:8006/api2/json/nodes/{node}/qemu/{vmid}/snapshot";
-            var response = await client.GetAsync(url, ct);
-            response.EnsureSuccessStatusCode();
-
-            var json = await response.Content.ReadAsStringAsync(ct);
-            using var doc = JsonDocument.Parse(json);
-
-            if (!doc.RootElement.TryGetProperty("data", out var dataProp) ||
-                dataProp.ValueKind != JsonValueKind.Array)
-            {
-                return new List<ProxmoxSnapshotInfo>();
-            }
-
-            var list = new List<ProxmoxSnapshotInfo>();
-
-            foreach (var snapshot in dataProp.EnumerateArray())
-            {
-                var name = snapshot.GetProperty("name").GetString() ?? "";
-
-                int snaptime = 0;
-                if (snapshot.TryGetProperty("snaptime", out var snaptimeProp))
-                {
-                    if (snaptimeProp.ValueKind == JsonValueKind.Number)
-                        snaptime = snaptimeProp.GetInt32();
-                    else if (snaptimeProp.ValueKind == JsonValueKind.String &&
-                             int.TryParse(snaptimeProp.GetString(), out var parsedTime))
-                        snaptime = parsedTime;
-                }
-
-                int vmstate = 0;
-                if (snapshot.TryGetProperty("vmstate", out var vmstateProp) &&
-                    vmstateProp.ValueKind == JsonValueKind.Number)
-                {
-                    vmstate = vmstateProp.GetInt32();
-                }
-
-                string? desc = null;
-                if (snapshot.TryGetProperty("description", out var d) &&
-                    (d.ValueKind == JsonValueKind.String))
-                {
-                    desc = d.GetString();
-                }
-
-                list.Add(new ProxmoxSnapshotInfo
-                {
-                    Name = name,
-                    Snaptime = snaptime,
-                    Vmstate = vmstate,
-                    Description = desc
-                });
-            }
-
-            return list;
-        }
-
-        public async Task DeleteSnapshotAsync(
-            ProxmoxCluster cluster,
-            string host,
-            string hostaddress,
-            int vmId,
-            string snapshotName,
-            CancellationToken ct = default)
-        {
-            var url = $"https://{hostaddress}:8006/api2/json/nodes/{host}/qemu/{vmId}/snapshot/{snapshotName}";
-            await SendWithRefreshAsync(cluster, HttpMethod.Delete, url, null, ct);
         }
 
         public async Task<List<ProxmoxVM>> GetVmsOnNodeAsync(
@@ -623,7 +387,7 @@ namespace BareProx.Services
 
             // 2) List VMs on that node
             var listUrl = $"https://{hostAddress}:8006/api2/json/nodes/{nodeName}/qemu";
-            var listResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, listUrl, null, ct);
+            var listResp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, listUrl, null, ct);
             using var listDoc = JsonDocument.Parse(await listResp.Content.ReadAsStringAsync(ct));
             var vmArray = listDoc.RootElement.GetProperty("data").EnumerateArray();
 
@@ -639,7 +403,7 @@ namespace BareProx.Services
 
                 // 3) fetch its full config
                 var cfgUrl = $"https://{hostAddress}:8006/api2/json/nodes/{nodeName}/qemu/{vmid}/config";
-                var cfgResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, cfgUrl, null, ct);
+                var cfgResp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, cfgUrl, null, ct);
                 using var cfgDoc = JsonDocument.Parse(await cfgResp.Content.ReadAsStringAsync(ct));
                 var data = cfgDoc.RootElement.GetProperty("data");
 
@@ -697,7 +461,7 @@ namespace BareProx.Services
                 return false;
 
             var nextIdUrl = $"https://{hostAddress}:8006/api2/json/cluster/nextid";
-            var idResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, nextIdUrl, null, ct);
+            var idResp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, nextIdUrl, null, ct);
             using var idDoc = JsonDocument.Parse(await idResp.Content.ReadAsStringAsync(ct));
             var vmid = idDoc.RootElement.GetProperty("data").GetString();
             if (string.IsNullOrEmpty(vmid))
@@ -745,13 +509,13 @@ namespace BareProx.Services
                 }
             }
 
-            var oldVmid = ExtractOldVmidFromConfig(payload);
+            var oldVmid = _proxmoxHelpers.ExtractOldVmidFromConfig(payload);
             if (string.IsNullOrEmpty(oldVmid))
                 throw new InvalidOperationException("Failed to determine oldVmid from config.");
 
             await RenameVmDirectoryAndFilesAsync(nodeName, cloneStorageName, oldVmid, vmid);
 
-            UpdateDiskPathsInConfig(payload, oldVmid, vmid, cloneStorageName);
+            _proxmoxHelpers.UpdateDiskPathsInConfig(payload, oldVmid, vmid, cloneStorageName);
 
             // Global remap old → new storage in all values
             foreach (var key in payload.Keys.ToList())
@@ -847,7 +611,7 @@ namespace BareProx.Services
                     }
 
                     // Remap disk paths inside snapshot (keys like scsi0, virtio1, etc.)
-                    UpdateDiskPathsInConfig(snapDict, oldVmid, vmid, cloneStorageName);
+                    _proxmoxHelpers.UpdateDiskPathsInConfig(snapDict, oldVmid, vmid, cloneStorageName);
 
                     // Global remap for all snapshot values: old storage → new storage
                     foreach (var k in snapDict.Keys.ToList())
@@ -913,13 +677,13 @@ namespace BareProx.Services
             {
                 var vmidInt = int.Parse(vmid);
 
-                var snaps = await GetSnapshotListAsync(cluster, nodeName, hostAddress, vmidInt, ct);
+                var snaps = await _proxmoxSnapshots.GetSnapshotListAsync(cluster, nodeName, hostAddress, vmidInt, ct);
                 if (snaps == null || snaps.Count == 0)
                 {
                     _logger.LogInformation("No snapshots found on VMID {Vmid}. Nothing to repair or rollback.", vmidInt);
                     return false;
                 }
-
+                
                 // Newest BareProx snapshot (preferred target for rollback)
                 var bareproxSnap = snaps
                     .Where(s => !string.IsNullOrWhiteSpace(s.Name) &&
@@ -953,54 +717,45 @@ namespace BareProx.Services
                     if (targetSnap == null)
                     {
                         _logger.LogInformation("Rollback requested but no suitable snapshot found on VMID {Vmid}.", vmidInt);
-                        return false;
                     }
-
-                    var rollbackUrl =
-                        $"https://{hostAddress}:8006/api2/json/nodes/{nodeName}/qemu/{vmidInt}/snapshot/{Uri.EscapeDataString(targetSnap.Name)}/rollback";
-                    var form = new FormUrlEncodedContent(new Dictionary<string, string> { ["start"] = "0" });
-
-                    try
+                    else
                     {
-                        var rbResp = await SendWithRefreshAsync(cluster, HttpMethod.Post, rollbackUrl, form, ct);
-                        var rbJson = await rbResp.Content.ReadAsStringAsync(ct);
-                        using var rbDoc = JsonDocument.Parse(rbJson);
-                        var upid = rbDoc.RootElement.TryGetProperty("data", out var d) ? d.GetString() : null;
-
-                        if (!string.IsNullOrWhiteSpace(upid))
+                        try
                         {
-                            var ok = await WaitForTaskCompletionAsync(
-                                cluster, nodeName, hostAddress, upid!, TimeSpan.FromMinutes(20), _logger, ct);
+                            var ok = await _proxmoxSnapshots.RollbackSnapshotAsync(
+                                cluster, nodeName, hostAddress, vmidInt,
+                                snapshotName: targetSnap.Name,
+                                startAfterRollback: false,
+                                logger: _logger,
+                                ct: ct);
 
                             if (!ok)
                             {
-                                _logger.LogWarning("Rollback task for snapshot '{Snap}' on VMID {Vmid} did not complete OK.",
+                                _logger.LogWarning(
+                                    "Rollback task for snapshot '{Snap}' on VMID {Vmid} did not complete OK.",
                                     targetSnap.Name, vmidInt);
                             }
                         }
-                        else
+                        catch (Exception ex)
                         {
-                            _logger.LogWarning("Rollback API did not return a UPID for snapshot '{Snap}' on VMID {Vmid}.",
+                            _logger.LogWarning(
+                                ex,
+                                "Rollback call failed for snapshot '{Snap}' on VMID {Vmid}. Will still attempt delete.",
                                 targetSnap.Name, vmidInt);
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Rollback call failed for snapshot '{Snap}' on VMID {Vmid}. Will still attempt delete.",
-                            targetSnap.Name, vmidInt);
-                    }
 
-                    // Always attempt to delete the snapshot we rolled back from
-                    try
-                    {
-                        await DeleteSnapshotAsync(cluster, nodeName, hostAddress, vmidInt, targetSnap.Name, ct);
-                        _logger.LogInformation("Deleted snapshot '{Snap}' after rollback on VMID {Vmid}.",
-                            targetSnap.Name, vmidInt);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Failed to delete snapshot '{Snap}' after rollback on VMID {Vmid}.",
-                            targetSnap.Name, vmidInt);
+                        // Best-effort delete after rollback (unchanged behavior)
+                        try
+                        {
+                            await _proxmoxSnapshots.DeleteSnapshotAsync(cluster, nodeName, hostAddress, vmidInt, targetSnap.Name, ct);
+                            _logger.LogInformation("Deleted snapshot '{Snap}' after rollback on VMID {Vmid}.",
+                                targetSnap.Name, vmidInt);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Failed to delete snapshot '{Snap}' after rollback on VMID {Vmid}.",
+                                targetSnap.Name, vmidInt);
+                        }
                     }
                 }
             }
@@ -1111,132 +866,7 @@ namespace BareProx.Services
             return updated;
         }
 
-        /// Try to extract the "old" VMID from disk-style values in the config.
-        /// Looks first for ".../<vmid>/vm-<vmid>-...", then falls back to "vm-<vmid>-" anywhere.
-        /// If nothing is found, also checks 'vmstate'. Throws if it cannot determine.
-        private string ExtractOldVmidFromConfig(Dictionary<string, string> payload)
-        {
-            if (payload == null || payload.Count == 0)
-                throw new Exception("Empty payload.");
-
-            var diskKeyRx = new Regex(@"^(scsi|virtio|ide|sata|efidisk|tpmstate)\d+$", RegexOptions.IgnoreCase);
-            string? candidate = null;
-
-            // helper to try extract from a single value (the part after "storage:")
-            string? TryExtract(string value)
-            {
-                if (string.IsNullOrWhiteSpace(value))
-                    return null;
-
-                var v = value.Trim();
-
-                // If it contains a storage prefix, analyze only the path part after the first ':'
-                var parts = v.Split(new[] { ':' }, 2);
-                var rhs = parts.Length == 2 ? parts[1] : v;
-
-                // Strip options after comma
-                var core = rhs.Split(new[] { ',' }, 2)[0].Trim();
-
-                // Prefer a strong pattern ".../<vmid>/vm-<vmid>-..."
-                var m1 = Regex.Match(core, @"(?:^|/)(\d+)/vm-(\d+)-");
-                if (m1.Success)
-                {
-                    // We prefer the vmid from the filename (group 2). If they differ, group 2 is usually authoritative.
-                    var vmFromFile = m1.Groups[2].Value;
-                    if (!string.IsNullOrEmpty(vmFromFile))
-                        return vmFromFile;
-                }
-
-                // Fallback: any "vm-<id>-" token
-                var m2 = Regex.Match(core, @"vm-(\d+)-");
-                if (m2.Success)
-                {
-                    var vm = m2.Groups[1].Value;
-                    if (!string.IsNullOrEmpty(vm))
-                        return vm;
-                }
-
-                return null;
-            }
-
-            // 1) Try disk-like entries first
-            foreach (var kv in payload)
-            {
-                if (!diskKeyRx.IsMatch(kv.Key))
-                    continue;
-
-                var vm = TryExtract(kv.Value);
-                if (!string.IsNullOrEmpty(vm))
-                    return vm;
-            }
-
-            // 2) Try vmstate if present
-            if (payload.TryGetValue("vmstate", out var vmstateVal))
-            {
-                var vm = TryExtract(vmstateVal);
-                if (!string.IsNullOrEmpty(vm))
-                    return vm;
-            }
-
-            throw new Exception("Could not determine old VMID from disk configuration.");
-        }
-
-        /// Update disk-like values in the payload to point to the new storage & VMID.
-        /// Skips pure CD-ROM lines (unless they are cloud-init).
-        private void UpdateDiskPathsInConfig(
-            Dictionary<string, string> payload,
-            string oldVmid,
-            string newVmid,
-            string cloneStorageName)
-        {
-            if (payload == null || payload.Count == 0)
-                return;
-
-            var diskKeyRx = new Regex(@"^(scsi|virtio|sata|ide|efidisk|tpmstate)\d+$", RegexOptions.IgnoreCase);
-
-            var keys = payload.Keys.Where(k => diskKeyRx.IsMatch(k)).ToList();
-            foreach (var key in keys)
-            {
-                var raw = payload[key];
-                if (string.IsNullOrWhiteSpace(raw))
-                    continue;
-
-                if (!raw.Contains(":"))
-                    continue; // not a volid form; leave as-is
-
-                var parts = raw.Split(new[] { ':' }, 2);
-                if (parts.Length < 2)
-                    continue;
-
-                var rhs = parts[1];
-                var sub = rhs.Split(new[] { ',' }, 2);
-                var pathWithFilename = sub[0].Trim();           // e.g. "101/vm-101-disk-0.qcow2" or "pool/vm-101-disk-0"
-                var options = sub.Length > 1 ? ("," + sub[1]) : string.Empty;
-
-                // Skip pure CD-ROM (keep cloud-init)
-                if (options.IndexOf("media=cdrom", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                    options.IndexOf("cloudinit", StringComparison.OrdinalIgnoreCase) < 0)
-                {
-                    continue;
-                }
-
-                // Replace VMID occurrences:
-                // - directory segment ".../<oldVmid>/..."
-                // - filename token "vm-<oldVmid>-"
-                var newPath = pathWithFilename
-                    .Replace($"{oldVmid}/", $"{newVmid}/", StringComparison.Ordinal) // path segment
-                    .Replace($"vm-{oldVmid}-", $"vm-{newVmid}-", StringComparison.OrdinalIgnoreCase); // filename token
-
-                // If there was no directory part but filename contained vm-<old>-,
-                // the replace above already fixed it. We don't force-add "<newVmid>/"
-                // because not all storages use the subdir form (e.g., rbd/zfs).
-
-                payload[key] = $"{cloneStorageName}:{newPath}{options}";
-            }
-        }
-
-
-        public async Task<bool> RestoreVmFromConfigWithOriginalIdAsync(
+       public async Task<bool> RestoreVmFromConfigWithOriginalIdAsync(
             RestoreFormViewModel model,
             string hostAddress,
             string cloneStorageName,
@@ -1471,7 +1101,7 @@ namespace BareProx.Services
             {
                 var vmidInt = int.Parse(vmid);
 
-                var snaps = await GetSnapshotListAsync(cluster, nodeName, hostAddress, vmidInt, ct);
+                var snaps = await _proxmoxSnapshots.GetSnapshotListAsync(cluster, nodeName, hostAddress, vmidInt, ct);
                 if (snaps == null || snaps.Count == 0)
                 {
                     _logger.LogInformation("No snapshots found on VMID {Vmid}. Nothing to repair or rollback.", vmidInt);
@@ -1511,54 +1141,45 @@ namespace BareProx.Services
                     if (targetSnap == null)
                     {
                         _logger.LogInformation("Rollback requested but no suitable snapshot found on VMID {Vmid}.", vmidInt);
-                        return false;
                     }
-
-                    var rollbackUrl =
-                        $"https://{hostAddress}:8006/api2/json/nodes/{nodeName}/qemu/{vmidInt}/snapshot/{Uri.EscapeDataString(targetSnap.Name)}/rollback";
-                    var form = new FormUrlEncodedContent(new Dictionary<string, string> { ["start"] = "0" });
-
-                    try
+                    else
                     {
-                        var rbResp = await SendWithRefreshAsync(cluster, HttpMethod.Post, rollbackUrl, form, ct);
-                        var rbJson = await rbResp.Content.ReadAsStringAsync(ct);
-                        using var rbDoc = JsonDocument.Parse(rbJson);
-                        var upid = rbDoc.RootElement.TryGetProperty("data", out var d) ? d.GetString() : null;
-
-                        if (!string.IsNullOrWhiteSpace(upid))
+                        try
                         {
-                            var ok = await WaitForTaskCompletionAsync(
-                                cluster, nodeName, hostAddress, upid!, TimeSpan.FromMinutes(20), _logger, ct);
+                            var ok = await _proxmoxSnapshots.RollbackSnapshotAsync(
+                                cluster, nodeName, hostAddress, vmidInt,
+                                snapshotName: targetSnap.Name,
+                                startAfterRollback: false,
+                                logger: _logger,
+                                ct: ct);
 
                             if (!ok)
                             {
-                                _logger.LogWarning("Rollback task for snapshot '{Snap}' on VMID {Vmid} did not complete OK.",
+                                _logger.LogWarning(
+                                    "Rollback task for snapshot '{Snap}' on VMID {Vmid} did not complete OK.",
                                     targetSnap.Name, vmidInt);
                             }
                         }
-                        else
+                        catch (Exception ex)
                         {
-                            _logger.LogWarning("Rollback API did not return a UPID for snapshot '{Snap}' on VMID {Vmid}.",
+                            _logger.LogWarning(
+                                ex,
+                                "Rollback call failed for snapshot '{Snap}' on VMID {Vmid}. Will still attempt delete.",
                                 targetSnap.Name, vmidInt);
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Rollback call failed for snapshot '{Snap}' on VMID {Vmid}. Will still attempt delete.",
-                            targetSnap.Name, vmidInt);
-                    }
 
-                    // Always attempt to delete the snapshot we rolled back from
-                    try
-                    {
-                        await DeleteSnapshotAsync(cluster, nodeName, hostAddress, vmidInt, targetSnap.Name, ct);
-                        _logger.LogInformation("Deleted snapshot '{Snap}' after rollback on VMID {Vmid}.",
-                            targetSnap.Name, vmidInt);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Failed to delete snapshot '{Snap}' after rollback on VMID {Vmid}.",
-                            targetSnap.Name, vmidInt);
+                        // Best-effort delete after rollback (unchanged behavior)
+                        try
+                        {
+                            await _proxmoxSnapshots.DeleteSnapshotAsync(cluster, nodeName, hostAddress, vmidInt, targetSnap.Name, ct);
+                            _logger.LogInformation("Deleted snapshot '{Snap}' after rollback on VMID {Vmid}.",
+                                targetSnap.Name, vmidInt);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Failed to delete snapshot '{Snap}' after rollback on VMID {Vmid}.",
+                                targetSnap.Name, vmidInt);
+                        }
                     }
                 }
             }
@@ -1572,15 +1193,15 @@ namespace BareProx.Services
 
 
         public async Task<bool> MountNfsStorageViaApiAsync(
-     ProxmoxCluster cluster,
-     string node,
-     string storageName,
-     string serverIp,
-     string exportPath,
-     bool snapshotChainActive = false,
-     string content = "images,backup,iso,vztmpl",
-     string options = "vers=3",
-     CancellationToken ct = default)
+            ProxmoxCluster cluster,
+            string node,
+            string storageName,
+            string serverIp,
+            string exportPath,
+            bool snapshotChainActive = false,
+            string content = "images,backup,iso,vztmpl",
+            string options = "vers=3",
+            CancellationToken ct = default)
         {
             var nodeHost = _proxmoxHelpers
                 .GetQueryableHosts(cluster)
@@ -1607,7 +1228,7 @@ namespace BareProx.Services
             // 1) Try to create (cluster-wide). If it already exists, we'll still verify mount status below.
             try
             {
-                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Post, createUrl, body, ct);
+                var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Post, createUrl, body, ct);
                 // Don't early-return here; we want to verify mount state even if creation failed because it exists.
                 // Some returns may be 409/500 "already defined" but the storage is fine to use.
                 // We'll rely on verification below for the true/false result.
@@ -1636,7 +1257,7 @@ namespace BareProx.Services
             {
                 try
                 {
-                    var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, statusUrl, null, ct);
+                    var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, statusUrl, null, ct);
                     if (resp.IsSuccessStatusCode)
                     {
                         var json = await resp.Content.ReadAsStringAsync(ct);
@@ -1644,8 +1265,8 @@ namespace BareProx.Services
                         if (doc.RootElement.TryGetProperty("data", out var data))
                         {
                             // active: 1/0 or true/false; total: bytes (long); state: "available"/"unknown"/etc.
-                            bool active = TryGetTruthy(data, "active");
-                            long total = TryGetInt64(data, "total");
+                            bool active = _proxmoxHelpers.TryGetTruthy(data, "active");
+                            long total = _proxmoxHelpers.TryGetInt64(data, "total");
                             string state = TryGetString(data, "state") ?? string.Empty;
                             // Some backends report no 'state', so key off active && total > 0 primarily.
                             if (active && total > 0 && (string.IsNullOrEmpty(state) || state.Equals("available", StringComparison.OrdinalIgnoreCase)))
@@ -1653,7 +1274,7 @@ namespace BareProx.Services
                                 // Final quick sanity check: can we list content?
                                 var contentUrl =
                                     $"https://{nodeHost}:8006/api2/json/nodes/{Uri.EscapeDataString(node)}/storage/{Uri.EscapeDataString(storageName)}/content";
-                                var listResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, contentUrl, null, ct);
+                                var listResp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, contentUrl, null, ct);
                                 if (listResp.IsSuccessStatusCode)
                                     return true; // Mounted and accessible
                             }
@@ -1671,35 +1292,6 @@ namespace BareProx.Services
             return false;
         }
 
-        private static bool TryGetTruthy(JsonElement parent, string name)
-        {
-            if (!parent.TryGetProperty(name, out var v)) return false;
-            return v.ValueKind switch
-            {
-                JsonValueKind.True => true,
-                JsonValueKind.False => false,
-                JsonValueKind.Number => v.TryGetInt32(out var i) && i != 0,
-                JsonValueKind.String => int.TryParse(v.GetString(), out var si) ? si != 0 :
-                                        bool.TryParse(v.GetString(), out var sb) && sb,
-                _ => false
-            };
-        }
-
-        private static long TryGetInt64(JsonElement parent, string name)
-        {
-            if (!parent.TryGetProperty(name, out var v)) return 0L;
-            try
-            {
-                return v.ValueKind switch
-                {
-                    JsonValueKind.Number => v.GetInt64(),
-                    JsonValueKind.String => long.TryParse(v.GetString(), out var l) ? l : 0L,
-                    _ => 0L
-                };
-            }
-            catch { return 0L; }
-        }
-
         private static string? TryGetString(JsonElement parent, string name)
         {
             return parent.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
@@ -1714,7 +1306,7 @@ namespace BareProx.Services
 
             // 1) Get current VM status
             var statusUrl = $"{baseApiUrl}/status/current";
-            var statusResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, statusUrl, null, ct);
+            var statusResp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, statusUrl, null, ct);
             var statusJson = await statusResp.Content.ReadAsStringAsync(ct);
             using var statusDoc = JsonDocument.Parse(statusJson);
             var status = statusDoc.RootElement.GetProperty("data").GetProperty("status").GetString();
@@ -1723,13 +1315,13 @@ namespace BareProx.Services
             if (string.Equals(status, "running", StringComparison.OrdinalIgnoreCase))
             {
                 var shutdownUrl = $"{baseApiUrl}/status/stop";
-                await SendWithRefreshAsync(cluster, HttpMethod.Post, shutdownUrl, null, ct);
+                await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Post, shutdownUrl, null, ct);
 
                 var sw = Stopwatch.StartNew();
                 var maxWait = TimeSpan.FromMinutes(5);
                 while (sw.Elapsed < maxWait)
                 {
-                    var pollResp = await SendWithRefreshAsync(cluster, HttpMethod.Get, statusUrl, null, ct);
+                    var pollResp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, statusUrl, null, ct);
                     var pollJson = await pollResp.Content.ReadAsStringAsync(ct);
                     using var pollDoc = JsonDocument.Parse(pollJson);
                     var s = pollDoc.RootElement.GetProperty("data").GetProperty("status").GetString();
@@ -1743,7 +1335,7 @@ namespace BareProx.Services
 
             // 3) Delete VM
             var deleteUrl = $"{baseApiUrl}?purge=1";
-            await SendWithRefreshAsync(cluster, HttpMethod.Delete, deleteUrl, null, ct);
+            await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Delete, deleteUrl, null, ct);
         }
 
         /// <summary>
@@ -1764,7 +1356,7 @@ namespace BareProx.Services
             try
             {
                 // Send the DELETE. SendWithRefreshAsync will retry once on 401.
-                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Delete, url, null, ct);
+                var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Delete, url, null, ct);
                 return resp.IsSuccessStatusCode;
             }
             catch
@@ -1783,7 +1375,7 @@ namespace BareProx.Services
             // 1) Delete the storage via the Proxmox API
             var primaryHost = cluster.Hosts.First();
             var deleteUrl = $"https://{primaryHost.HostAddress}:8006/api2/json/storage/{storageName}";
-            var apiResp = await SendWithRefreshAsync(cluster, HttpMethod.Delete, deleteUrl, null, ct);
+            var apiResp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Delete, deleteUrl, null, ct);
             if (!apiResp.IsSuccessStatusCode)
                 return false;
 
@@ -1855,7 +1447,7 @@ namespace BareProx.Services
 
                 try
                 {
-                    var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+                    var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
                     var json = await resp.Content.ReadAsStringAsync(ct);
                     using var doc = JsonDocument.Parse(json);
 
@@ -1910,7 +1502,7 @@ namespace BareProx.Services
                 try
                 {
                     var url = $"https://{host.HostAddress}:8006/api2/json/cluster/status";
-                    var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+                    var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
 
                     if (!resp.IsSuccessStatusCode)
                     {
@@ -2041,7 +1633,7 @@ namespace BareProx.Services
 
             try
             {
-                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+                var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
                 var json = await resp.Content.ReadAsStringAsync(ct);
                 using var doc = JsonDocument.Parse(json);
 
@@ -2084,7 +1676,7 @@ namespace BareProx.Services
 
             try
             {
-                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+                var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
                 var json = await resp.Content.ReadAsStringAsync(ct);
                 using var doc = JsonDocument.Parse(json);
 
@@ -2132,7 +1724,7 @@ namespace BareProx.Services
 
             try
             {
-                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+                var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
                 var json = await resp.Content.ReadAsStringAsync(ct);
                 using var doc = JsonDocument.Parse(json);
 
@@ -2185,7 +1777,7 @@ namespace BareProx.Services
 
             try
             {
-                var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+                var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
                 var json = await resp.Content.ReadAsStringAsync(ct);
                 using var doc = JsonDocument.Parse(json);
 
@@ -2235,7 +1827,7 @@ namespace BareProx.Services
         {
             var (cluster, host, _, _) = await GetSshTargetAsync(ct);
             var url = $"https://{host.HostAddress}:8006/api2/json/cluster/resources?type=vm";
-            var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+            var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
             var json = await resp.Content.ReadAsStringAsync(ct);
 
             using var doc = JsonDocument.Parse(json);
@@ -2253,7 +1845,7 @@ namespace BareProx.Services
             var (_, host, sshUser, sshPass) = await GetSshTargetAsync(ct);
             using var ssh = new Renci.SshNet.SshClient(host.HostAddress, sshUser, sshPass);
             ssh.Connect();
-            var cmd = ssh.CreateCommand($"mkdir -p -- {ProxmoxHelpers.EscapeBash(absPath)}");
+            var cmd = ssh.CreateCommand($"mkdir -p -- {_proxmoxHelpers.EscapeBash(absPath)}");
             var _ = cmd.Execute();
             if (cmd.ExitStatus != 0) throw new ProxmoxSshException(cmd.CommandText, cmd.ExitStatus, cmd.Error);
             ssh.Disconnect();
@@ -2264,7 +1856,7 @@ namespace BareProx.Services
             var (_, host, sshUser, sshPass) = await GetSshTargetAsync(ct);
             using var ssh = new Renci.SshNet.SshClient(host.HostAddress, sshUser, sshPass);
             ssh.Connect();
-            using var cmd = ssh.CreateCommand($"test -e {ProxmoxHelpers.EscapeBash(absPath)} && echo OK || echo NO");
+            using var cmd = ssh.CreateCommand($"test -e {_proxmoxHelpers.EscapeBash(absPath)} && echo OK || echo NO");
             var result = cmd.Execute();
             ssh.Disconnect();
             return result.Trim().Equals("OK", StringComparison.OrdinalIgnoreCase);
@@ -2274,7 +1866,7 @@ namespace BareProx.Services
             var (_, host, sshUser, sshPass) = await GetSshTargetAsync(ct);
             using var ssh = new Renci.SshNet.SshClient(host.HostAddress, sshUser, sshPass);
             ssh.Connect();
-            using var cmd = ssh.CreateCommand($"cat -- {ProxmoxHelpers.EscapeBash(absPath)}");
+            using var cmd = ssh.CreateCommand($"cat -- {_proxmoxHelpers.EscapeBash(absPath)}");
             var text = cmd.Execute();
             ssh.Disconnect();
             return text ?? string.Empty;
@@ -2283,8 +1875,8 @@ namespace BareProx.Services
         {
             var (_, host, sshUser, sshPass) = await GetSshTargetAsync(ct);
 
-            absPath = ProxmoxHelpers.ToPosix(absPath);
-            var dir = ProxmoxHelpers.GetDirPosix(absPath);
+            absPath = _proxmoxHelpers.ToPosix(absPath);
+            var dir = _proxmoxHelpers.GetDirPosix(absPath);
 
             var conn = new PasswordConnectionInfo(host.HostAddress, sshUser, sshPass)
             {
@@ -2299,7 +1891,7 @@ namespace BareProx.Services
             ssh.Connect();
 
             // ensure target dir & truncate file
-            ExecOrThrow(ssh, $"mkdir -p -- {ProxmoxHelpers.EscapeBash(dir)} && : > {ProxmoxHelpers.EscapeBash(absPath)}");
+            ExecOrThrow(ssh, $"mkdir -p -- {_proxmoxHelpers.EscapeBash(dir)} && : > {_proxmoxHelpers.EscapeBash(absPath)}");
 
             // stream as base64 in small chunks to avoid channel aborts
             var b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(content ?? string.Empty));
@@ -2308,7 +1900,7 @@ namespace BareProx.Services
             {
                 ct.ThrowIfCancellationRequested();
                 var chunk = b64.Substring(i, Math.Min(chunkSize, b64.Length - i));
-                ExecOrThrow(ssh, $"printf %s {ProxmoxHelpers.EscapeBash(chunk)} | base64 -d >> {ProxmoxHelpers.EscapeBash(absPath)}");
+                ExecOrThrow(ssh, $"printf %s {_proxmoxHelpers.EscapeBash(chunk)} | base64 -d >> {_proxmoxHelpers.EscapeBash(absPath)}");
             }
 
             // best-effort flush
@@ -2335,7 +1927,7 @@ namespace BareProx.Services
             // Use API: change CDROM (ide2) – qm set --cdrom
             var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/qemu/{vmid}/config";
             var form = new FormUrlEncodedContent(new Dictionary<string, string> { ["cdrom"] = volid });
-            await SendWithRefreshAsync(cluster, HttpMethod.Post, url, form, ct);
+            await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Post, url, form, ct);
         }
         public class ProxmoxSshException : Exception
         {
@@ -2357,7 +1949,7 @@ namespace BareProx.Services
             // qm set {vmid} --virtio{slot} {storage}:{sizeGiB}
             // Example: qm set 119 --virtio5 vm_migration:1
             var (_, host, sshUser, sshPass) = await GetSshTargetAsync(ct);
-            var cmdText = $"qm set {vmid} --virtio{slot} {ProxmoxHelpers.EscapeBash($"{storage}:{sizeGiB}")}";
+            var cmdText = $"qm set {vmid} --virtio{slot} {_proxmoxHelpers.EscapeBash($"{storage}:{sizeGiB}")}";
 
             using var ssh = new Renci.SshNet.SshClient(host.HostAddress, sshUser, sshPass);
             ssh.Connect();
@@ -2395,7 +1987,7 @@ namespace BareProx.Services
             // Example: qm set 118 --efidisk0 vm_migration:0
             var (_, host, sshUser, sshPass) = await GetSshTargetAsync(ct);
             var target = $"{storage}:0";
-            var cmdText = $"qm set {vmid} --efidisk0 {ProxmoxHelpers.EscapeBash(target)}";
+            var cmdText = $"qm set {vmid} --efidisk0 {_proxmoxHelpers.EscapeBash(target)}";
 
             using var ssh = new Renci.SshNet.SshClient(host.HostAddress, sshUser, sshPass);
             ssh.Connect();
@@ -2431,9 +2023,9 @@ namespace BareProx.Services
             var sshPass = _encryptionService.Decrypt(cluster.PasswordHash);
 
             // Pre-quote for bash
-            var qStorage = ProxmoxHelpers.EscapeBash(storageName);
-            var qOld = ProxmoxHelpers.EscapeBash(oldVmid);
-            var qNew = ProxmoxHelpers.EscapeBash(newVmid);
+            var qStorage = _proxmoxHelpers.EscapeBash(storageName);
+            var qOld = _proxmoxHelpers.EscapeBash(oldVmid);
+            var qNew = _proxmoxHelpers.EscapeBash(newVmid);
 
             var sb = new StringBuilder();
             sb.AppendLine("set -euo pipefail");
@@ -2552,7 +2144,7 @@ namespace BareProx.Services
 
             var url = $"https://{host.HostAddress}:8006/api2/json/storage/{Uri.EscapeDataString(storageName)}";
 
-            var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+            var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
             var body = await resp.Content.ReadAsStringAsync(ct);
 
             using var doc = JsonDocument.Parse(body);
@@ -2744,36 +2336,6 @@ namespace BareProx.Services
                 _logger.LogError(ex, "Snapshot chain repair failed on node {Node}", nodeName);
                 return false;
             }
-        }
-
-
-
-        public async Task<bool> RollbackSnapshotAsync(
-            ProxmoxCluster cluster,
-            string node,
-            string hostAddress,
-            int vmid,
-            string snapshotName,
-            bool startAfterRollback,
-            ILogger logger,
-            CancellationToken ct = default)
-        {
-            var url = $"https://{hostAddress}:8006/api2/json/nodes/{node}/qemu/{vmid}/snapshot/{Uri.EscapeDataString(snapshotName)}/rollback";
-            var form = new FormUrlEncodedContent(new Dictionary<string, string>
-            {
-                ["start"] = startAfterRollback ? "1" : "0"
-            });
-
-            var resp = await SendWithRefreshAsync(cluster, HttpMethod.Post, url, form, ct);
-            var json = await resp.Content.ReadAsStringAsync(ct);
-            using var doc = JsonDocument.Parse(json);
-
-            // similar to CreateSnapshotAsync: data contains UPID
-            var upid = doc.RootElement.TryGetProperty("data", out var d) ? d.GetString() : null;
-            if (string.IsNullOrWhiteSpace(upid)) return false;
-
-            // Wait for task to complete
-            return await WaitForTaskCompletionAsync(cluster, node, hostAddress, upid!, TimeSpan.FromMinutes(20), logger, ct);
         }
 
 

@@ -28,6 +28,8 @@ using BareProx.Services.Interceptors;
 using BareProx.Services.Migration;
 using BareProx.Services.Proxmox.Authentication;
 using BareProx.Services.Proxmox.Helpers;
+using BareProx.Services.Proxmox.Ops;
+using BareProx.Services.Proxmox.Snapshots;
 using BareProx.Services.Restore;
 using BareProx.Services.Netapp;
 using Microsoft.AspNetCore.Authorization;
@@ -48,6 +50,8 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 // Alias for clarity
 using DbConfigModel = BareProx.Models.DatabaseConfigModels;
+using BareProx.Services.Proxmox.Ops;
+using BareProx.Services.Proxmox.Snapshots;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -310,12 +314,13 @@ if (isConfigured)
     builder.Services.AddScoped<INetappSnapshotService, NetappSnapshotService>();
     builder.Services.AddScoped<ProxmoxService>();
     builder.Services.AddScoped<IProxmoxAuthenticator, ProxmoxAuthenticator>();
-    builder.Services.AddScoped<IProxmoxHelpers, ProxmoxHelpers>();
+    builder.Services.AddScoped<IProxmoxHelpersService, ProxmoxHelpersService>();
     builder.Services.AddScoped<IRestoreService, RestoreService>();
     builder.Services.AddScoped<IProxmoxFileScanner, ProxmoxFileScanner>();
     builder.Services.AddSingleton<IMigrationQueueRunner, MigrationQueueRunner>();
     builder.Services.AddScoped<IMigrationExecutor, ProxmoxMigrationExecutor>();
-    builder.Services.AddScoped<IStorageSnapshotCoordinator, StorageSnapshotCoordinator>();
+    builder.Services.AddScoped<IProxmoxOpsService, ProxmoxOpsService>();
+    builder.Services.AddScoped<IProxmoxSnapshotsService, ProxmoxSnapshotsService>();
 
     // --- Remote API Client -----------------------------------------------------
     builder.Services.AddSingleton<IRemoteApiClient, RemoteApiClient>();

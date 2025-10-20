@@ -44,5 +44,7 @@ namespace BareProx.Services.Proxmox.Authentication
         /// <param name="ct">Cancellation token.</param>
         /// <returns>Authenticated HttpClient.</returns>
         Task<HttpClient> GetAuthenticatedClientAsync(ProxmoxCluster cluster, CancellationToken ct = default);
-    }
+
+      
+        }
 }

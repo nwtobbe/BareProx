@@ -23,10 +23,24 @@ using System.Text.Json;
 
 namespace BareProx.Services.Proxmox.Helpers
 {
-    public interface IProxmoxHelpers
+    public interface IProxmoxHelpersService
     {
         IEnumerable<ProxmoxHost> GetQueryableHosts(ProxmoxCluster cluster);
         ProxmoxHost GetHostByNodeName(ProxmoxCluster cluster, string nodeName);
+
+        // Config parsing / rewriting
         public Dictionary<string, string> FlattenConfig(JsonElement config);
+        string ExtractOldVmidFromConfig(Dictionary<string, string> payload);
+        void UpdateDiskPathsInConfig(Dictionary<string, string> payload, string oldVmid, string newVmid, string cloneStorageName);
+
+        // JSON helpers
+        bool TryGetTruthy(JsonElement parent, string name);
+        long TryGetInt64(JsonElement parent, string name);
+        
+        // Path & quoting helpers
+        string ToPosix(string path);
+        string GetDirPosix(string path);
+        string EscapeBash(string value);
+
     }
 }
