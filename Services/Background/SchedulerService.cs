@@ -132,7 +132,7 @@ namespace BareProx.Services.Background
                         await scopedBackupService.StartBackupAsync(
                             storageName: sched.StorageName,
                             isApplicationAware: sched.IsApplicationAware,
-                            label: sched.Name,                 // human label
+                            label: sched.Schedule.ToLower(),                 // human label
                             clusterId: sched.ClusterId,
                             netappControllerId: sched.ControllerId,
                             retentionCount: sched.RetentionCount,

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),  
 and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.2510.2014] - 2025-10-20
+
+### Added
+-
+
+### Changed
+-
+
+### Fixed
+- Snapshots not getting the correct labels Manual/hourly/daily/weekly
+
+
+
 ## [1.0.2510.2013] – 2025-10-20
 
 ### Added
@@ -28,6 +41,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Job cleanup after 30 days (failed/cancelled/stuck)
+- Snapshots not getting the correct labels Manual/hourly/daily/weekly
 - VMID duplication issue when creating new VMs
 - Excluded VMs in jobs are now gettings excluded from proxmox options
 - Security updates, including CVE-2025-55315
