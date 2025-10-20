@@ -22,15 +22,15 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 - Settings / Proxmox
 - Settings / Netapp
-- Backup Create Schedules
-- Backup Edit Schedules
+- Backup / Create Schedules
+- Backup / Edit Schedules
 
 ### Fixed
 
 - Job cleanup after 30 days (failed/cancelled/stuck)
 - VMID duplication issue when creating new VMs
 - Excluded VMs in jobs are now gettings excluded from proxmox options
-- Security updates
+- Security updates, including CVE-2025-55315
 - Performance improvements
 
 
