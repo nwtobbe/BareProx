@@ -50,8 +50,6 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 // Alias for clarity
 using DbConfigModel = BareProx.Models.DatabaseConfigModels;
-using BareProx.Services.Proxmox.Ops;
-using BareProx.Services.Proxmox.Snapshots;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -119,7 +117,7 @@ Log.Logger = new LoggerConfiguration()
     // Optional: also roll if a file gets big
     fileSizeLimitBytes: 50 * 1024 * 1024, // 50 MB
     rollOnFileSizeLimit: true,
-    retainedFileCountLimit: 60,            // keep last 30 rolled files (compressed)
+    retainedFileCountLimit: 60,            // keep last 60 rolled files (compressed)
     retainedFileTimeLimit: TimeSpan.FromDays(30), // or time-based retention
     shared: false,
     hooks: new ArchiveHooks(CompressionLevel.Optimal, logFolder),      // <- auto-compress on roll
@@ -231,7 +229,6 @@ if (string.IsNullOrWhiteSpace(existingKey))
 
     // update in-memory
     encSection["Key"] = newKey;
-    Console.WriteLine($"[Init] Generated encryption key: {newKey}");
 
     // persist to appsettings.json
     var path = Path.Combine(persistentPath, "appsettings.json");
@@ -252,10 +249,11 @@ builder.Services.AddSingleton<IEncryptionService, EncryptionService>();
 
 if (isConfigured)
 {
-    // Register the interceptor as a singleton
+    // Interceptor used by both pooled registrations
     builder.Services.AddSingleton<WalOnOpenConnectionInterceptor>();
 
-    builder.Services.AddDbContext<ApplicationDbContext>((sp, opts) =>
+    // 1) Scoped, pooled DbContext (used by controllers/Identity/seeding)
+    builder.Services.AddDbContextPool<ApplicationDbContext>((sp, opts) =>
     {
         var cfg = sp.GetRequiredService<IOptionsMonitor<DbConfigModel>>().CurrentValue;
         var encSvc = sp.GetRequiredService<IEncryptionService>();
@@ -264,29 +262,60 @@ if (isConfigured)
         {
             var dbPath = Path.Combine(dataPath, $"{cfg.DbName}.db");
             var connStr = $"Data Source={dbPath};Mode=ReadWriteCreate;Cache=Shared";
-
             opts.UseSqlite(connStr, sqliteOpts =>
             {
-                // Optional: only needed if migrations live in a different assembly
                 sqliteOpts.MigrationsAssembly(typeof(ApplicationDbContext).Assembly.FullName);
             });
             opts.AddInterceptors(sp.GetRequiredService<WalOnOpenConnectionInterceptor>());
         }
         else
         {
-            var pwd = encSvc.Decrypt(cfg.DbPassword);
             var csb = new SqlConnectionStringBuilder
             {
                 DataSource = cfg.DbServer,
                 InitialCatalog = cfg.DbName,
                 UserID = cfg.DbUser,
-                Password = pwd,
+                Password = encSvc.Decrypt(cfg.DbPassword),
                 MultipleActiveResultSets = true,
                 TrustServerCertificate = true
             };
             opts.UseSqlServer(csb.ConnectionString);
         }
     });
+
+    // 2) Pooled factory (used by background services / your DbFactory wrapper)
+    builder.Services.AddPooledDbContextFactory<ApplicationDbContext>((sp, opts) =>
+    {
+        var cfg = sp.GetRequiredService<IOptionsMonitor<DbConfigModel>>().CurrentValue;
+        var encSvc = sp.GetRequiredService<IEncryptionService>();
+
+        if (cfg.DbType?.Equals("Sqlite", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            var dbPath = Path.Combine(dataPath, $"{cfg.DbName}.db");
+            var connStr = $"Data Source={dbPath};Mode=ReadWriteCreate;Cache=Shared";
+            opts.UseSqlite(connStr, sqliteOpts =>
+            {
+                sqliteOpts.MigrationsAssembly(typeof(ApplicationDbContext).Assembly.FullName);
+            });
+            opts.AddInterceptors(sp.GetRequiredService<WalOnOpenConnectionInterceptor>());
+        }
+        else
+        {
+            var csb = new SqlConnectionStringBuilder
+            {
+                DataSource = cfg.DbServer,
+                InitialCatalog = cfg.DbName,
+                UserID = cfg.DbUser,
+                Password = encSvc.Decrypt(cfg.DbPassword),
+                MultipleActiveResultSets = true,
+                TrustServerCertificate = true
+            };
+            opts.UseSqlServer(csb.ConnectionString);
+        }
+    });
+
+    // 3) Wrapper for convenience (requires: using BareProx.Services.Data;)
+    builder.Services.AddSingleton<IDbFactory, DbFactory>();
 
 
     builder.Services.AddDatabaseDeveloperPageExceptionFilter();

@@ -5,13 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),  
 and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
+
+
+## [1.0.2510.2015] - 2025-10-25
+
+### Added
+-
+
+### Changed
+- About Page
+
+### Fixed
+- Security updates, including CVE-2025-55315, for real this time.
+- Performance improvements
+- DB improvements
+
+
+
 ## [1.0.2510.2014] - 2025-10-20
 
 ### Added
 -
 
 ### Changed
--
+- Security updates
 
 ### Fixed
 - Snapshots not getting the correct labels Manual/hourly/daily/weekly

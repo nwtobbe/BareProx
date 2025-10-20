@@ -269,7 +269,7 @@ namespace BareProx.Services.Backup
                 if (!snapshotResult.Success)
                     return await FailJobAsync(job, snapshotResult.ErrorMessage, ct);
 
-                job.Status = "Snapshot created";
+                job.Status = "Netapp Snapshot Created";
                 await _context.SaveChangesAsync(ct);
 
                 // 5b) Persist BackupRecord(s)

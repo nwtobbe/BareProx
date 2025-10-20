@@ -34,12 +34,11 @@ namespace BareProx.Models
     public class ProxmoxCluster
     {
         public int Id { get; set; }
-        public string Name { get; set; }
-        public string Username { get; set; }
-        public string PasswordHash { get; set; } // or encrypted string
-        public string? ApiToken { get; set; }
-        public string? CsrfToken { get; set; }
-        public DateTime? TokenExpiry { get; set; }
+        public string Name { get; set; } = default!;
+        public string Username { get; set; } = default!;        // include realm, e.g. "root@pam"
+        public string PasswordHash { get; set; } = default!;    // encrypted
+
+        // Diagnostics
         public string? LastStatus { get; set; }
         public DateTime? LastChecked { get; set; }
         public bool? HasQuorum { get; set; }
@@ -67,6 +66,10 @@ namespace BareProx.Models
         public string? LastStatusMessage { get; set; } // Any error or status description
         public DateTime? LastChecked { get; set; }
         public ProxmoxCluster Cluster { get; set; }
+        // NEW: Host-scoped auth
+        public string? TicketEnc { get; set; }     // encrypted PVEAuthCookie (ticket)
+        public string? CsrfEnc { get; set; }       // encrypted CSRF
+        public DateTime? TicketIssuedUtc { get; set; }
     }
     public class ProxSelectedStorage
     {

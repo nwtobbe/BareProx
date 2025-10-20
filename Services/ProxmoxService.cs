@@ -357,20 +357,23 @@ namespace BareProx.Services
             }
         }
 
-          public async Task<string?> GetVmStatusAsync(ProxmoxCluster cluster, string node, string hostAddress, int vmid, CancellationToken ct = default)
+        public async Task<string?> GetVmStatusAsync(
+            ProxmoxCluster cluster,
+            string node,
+            string hostAddress,
+            int vmid,
+            CancellationToken ct = default)
         {
-            var client = await _proxmoxAuthenticator.GetAuthenticatedClientAsync(cluster, ct);
             var url = $"https://{hostAddress}:8006/api2/json/nodes/{node}/qemu/{vmid}/status/current";
 
-            var response = await client.GetAsync(url, ct);
-            response.EnsureSuccessStatusCode();
+            // Host-aware send + retry-once (401/403) with ticket refresh
+            var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
 
-            var json = await response.Content.ReadAsStringAsync(ct);
+            var json = await resp.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(json);
-            return doc.RootElement
-                      .GetProperty("data")
-                      .GetProperty("status")
-                      .GetString();
+
+            // "running" | "stopped" | "paused" etc.
+            return doc.RootElement.GetProperty("data").GetProperty("status").GetString();
         }
 
         public async Task<List<ProxmoxVM>> GetVmsOnNodeAsync(

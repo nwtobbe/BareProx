@@ -39,6 +39,7 @@ namespace BareProx.Services.Background
     public class ScheduledBackupService : BackgroundService
     {
         private readonly IServiceProvider _services;
+        private readonly IDbFactory _dbf;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly ILogger<ScheduledBackupService> _logger;
         private const int IntervalSeconds = 30;
@@ -47,12 +48,14 @@ namespace BareProx.Services.Background
 
         public ScheduledBackupService(
             IServiceProvider services,
+            IDbFactory dbf,
             IHttpClientFactory httpClientFactory,
             ILogger<ScheduledBackupService> logger,
             IAppTimeZoneService tz,
             IBackgroundServiceQueue queue)
         {
             _services = services;
+            _dbf = dbf;
             _httpClientFactory = httpClientFactory;
             _logger = logger;
             _tz = tz;
@@ -79,7 +82,8 @@ namespace BareProx.Services.Background
         private async Task DispatchScheduledBackupsAsync(CancellationToken ct)
         {
             using var scope = _services.CreateScope();
-            var _context = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            // DbContext via factory (pooled, safe for singleton)
+            await using var db = await _dbf.CreateAsync(ct);
             var _proxmoxService = scope.ServiceProvider.GetRequiredService<ProxmoxService>();
             var _backupService = scope.ServiceProvider.GetRequiredService<IBackupService>();
             var _ctrlLogger = scope.ServiceProvider.GetRequiredService<ILogger<BackupController>>();
@@ -87,7 +91,7 @@ namespace BareProx.Services.Background
             var localtime = _tz.ConvertUtcToApp(DateTime.UtcNow);
 
             // Pull only enabled schedules (already filtered) but keep a cheap safety check below.
-            var schedules = await _context.BackupSchedules
+            var schedules = await db.BackupSchedules
                                           .Where(s => s.IsEnabled)
                                           .ToListAsync(ct);
 
@@ -98,10 +102,10 @@ namespace BareProx.Services.Background
 
                 try
                 {
-                    var controller = await _context.NetappControllers
+                    var controller = await db.NetappControllers
                         .FindAsync(new object[] { sched.ControllerId }, ct);
 
-                    var cluster = await _context.ProxmoxClusters
+                    var cluster = await db.ProxmoxClusters
                         .Include(c => c.Hosts)
                         .FirstOrDefaultAsync(c => c.Id == sched.ClusterId, ct);
 
@@ -164,7 +168,7 @@ namespace BareProx.Services.Background
             {
                 try
                 {
-                    await _context.SaveChangesAsync(ct);
+                    await db.SaveChangesAsync(ct);
                     break;
                 }
                 catch (DbUpdateException ey) when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
@@ -174,7 +178,6 @@ namespace BareProx.Services.Background
                 }
             }
         }
-
 
 
         private bool IsDue(BackupSchedule sched, DateTime now)

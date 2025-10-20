@@ -35,16 +35,11 @@ namespace BareProx.Services.Proxmox.Authentication
         /// <param name="ct">Cancellation token.</param>
         /// <returns>True if authentication succeeded or tokens were already valid; false otherwise.</returns>
         Task<bool> AuthenticateAndStoreTokenCidAsync(int clusterId, CancellationToken ct = default);
-        Task<bool> AuthenticateAndStoreTokenCAsync(ProxmoxCluster cluster, CancellationToken ct = default);
-        /// <summary>
-        /// Builds an HttpClient pre-configured with the PVEAuthCookie and CSRFPreventionToken headers.
-        /// Ensures tokens are refreshed before returning.
-        /// </summary>
-        /// <param name="clusterId">Database ID of the Proxmox cluster record.</param>
-        /// <param name="ct">Cancellation token.</param>
-        /// <returns>Authenticated HttpClient.</returns>
-        Task<HttpClient> GetAuthenticatedClientAsync(ProxmoxCluster cluster, CancellationToken ct = default);
 
-      
-        }
+        // NEW: host-aware client based on the URL's host (IP/DNS)
+        Task<HttpClient> GetAuthenticatedClientForUrlAsync(
+            ProxmoxCluster cluster,
+            string url,
+            CancellationToken ct = default);
+    }
 }

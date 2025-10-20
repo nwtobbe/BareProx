@@ -33,11 +33,13 @@ using Microsoft.Extensions.Logging;
 
 public sealed class CollectionService : BackgroundService
 {
+    private readonly IDbFactory _dbf;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<CollectionService> _logger;
 
-    public CollectionService(IServiceScopeFactory scopeFactory, ILogger<CollectionService> logger)
+    public CollectionService(IDbFactory dbf, IServiceScopeFactory scopeFactory, ILogger<CollectionService> logger)
     {
+        _dbf = dbf;
         _scopeFactory = scopeFactory;
         _logger = logger;
     }
@@ -94,7 +96,7 @@ public sealed class CollectionService : BackgroundService
     private async Task EnsureSnapMirrorPoliciesAsync(CancellationToken ct)
     {
         using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        await using var db = await _dbf.CreateAsync(ct);
         var netappSnapmirrorService = scope.ServiceProvider.GetRequiredService<INetappSnapmirrorService>();
 
         // Step 1: Find all PolicyUuids in use
@@ -169,8 +171,9 @@ public sealed class CollectionService : BackgroundService
 
     private async Task CheckProxmoxClusterAndHostsStatusAsync(CancellationToken ct)
     {
+        await using var db = await _dbf.CreateAsync(ct);
+
         using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var proxmoxService = scope.ServiceProvider.GetRequiredService<ProxmoxService>();
 
         var clusters = await db.ProxmoxClusters

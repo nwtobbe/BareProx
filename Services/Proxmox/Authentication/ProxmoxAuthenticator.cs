@@ -1,37 +1,11 @@
-﻿/*
- * BareProx - Backup and Restore Automation for Proxmox using NetApp
- *
- * Copyright (C) 2025 Tobias Modig
- *
- * This file is part of BareProx.
- *
- * BareProx is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, version 3.
- *
- * BareProx is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
- */
-
-using BareProx.Data;
+﻿using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services.Proxmox.Helpers;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
-using System;
-using System.Collections.Generic;
 using System.Net;
-using System.Net.Http;
 using System.Net.Http.Headers;
-using System.Text;
 using System.Text.Json;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace BareProx.Services.Proxmox.Authentication
 {
@@ -56,79 +30,174 @@ namespace BareProx.Services.Proxmox.Authentication
             _logger = logger;
             _proxmoxHelpers = proxmoxHelpers;
         }
-        public async Task<bool> AuthenticateAndStoreTokenCidAsync(int clusterId, CancellationToken ct)
+
+        private static readonly TimeSpan MaxTicketAge = TimeSpan.FromMinutes(90);
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Public: keep existing controller call-sites working
+        // ─────────────────────────────────────────────────────────────────────
+
+        public async Task<bool> AuthenticateAndStoreTokenCidAsync(int clusterId, CancellationToken ct = default)
         {
             var cluster = await _context.ProxmoxClusters
                 .Include(c => c.Hosts)
                 .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
 
-            if (cluster == null || !_proxmoxHelpers.GetQueryableHosts(cluster).Any())
-                return false;
+            if (cluster == null) return false;
 
-            return await AuthenticateAndStoreTokenCAsync(cluster, ct);
+            // Choose a host (prefer online)
+            var host = _proxmoxHelpers.GetQueryableHosts(cluster).FirstOrDefault();
+            if (host == null) return false;
+
+            return await AuthenticateAndStoreTicketForHostAsync(cluster, host, ct);
         }
 
-        public async Task<bool> AuthenticateAndStoreTokenCAsync(ProxmoxCluster cluster, CancellationToken ct)
+        /// <summary>
+        /// When callers have an absolute or relative URL, this resolves the host
+        /// and returns a client with that host’s ticket+CSRF attached.
+        /// </summary>
+        public async Task<HttpClient> GetAuthenticatedClientForUrlAsync(ProxmoxCluster cluster, string url, CancellationToken ct = default)
         {
-            var host = _proxmoxHelpers.GetQueryableHosts(cluster).First();
-            var url = $"https://{host.HostAddress}:8006/api2/json/access/ticket";
+            var host = ResolveHostForUrl(cluster, url)
+                       ?? _proxmoxHelpers.GetQueryableHosts(cluster).First()
+                       ?? cluster.Hosts.First();
 
+            return await GetAuthenticatedClientForHostAsync(cluster, host, ct);
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Internals: host-scoped ticket+CSRF
+        // ─────────────────────────────────────────────────────────────────────
+
+        private async Task<HttpClient> GetAuthenticatedClientForHostAsync(
+            ProxmoxCluster cluster,
+            ProxmoxHost host,
+            CancellationToken ct)
+        {
+            var needsRefresh =
+                string.IsNullOrWhiteSpace(host.TicketEnc) ||
+                string.IsNullOrWhiteSpace(host.CsrfEnc) ||
+                host.TicketIssuedUtc == null ||                                    // NEW: null => refresh
+                (host.TicketIssuedUtc != null &&                                   // NEW: age-based proactive refresh
+                 DateTime.UtcNow - host.TicketIssuedUtc.Value > MaxTicketAge);
+
+            if (needsRefresh)
+            {
+                var ok = await AuthenticateAndStoreTicketForHostAsync(cluster, host, ct);
+                if (!ok) throw new Exception($"Auth failed for host {host.HostAddress}");
+            }
+            else
+            {
+                // probe; if 401/403 -> refresh once
+                var probeClient = MakeBareClient();
+                ApplyHostTicketHeaders(probeClient, host);
+                var baseUrl = $"https://{host.HostAddress}:8006";
+                if (!await ProbeAsync(probeClient, baseUrl, ct))
+                {
+                    var ok = await AuthenticateAndStoreTicketForHostAsync(cluster, host, ct);
+                    if (!ok) throw new Exception($"Auth refresh failed for host {host.HostAddress}");
+                }
+            }
+
+            var client = MakeBareClient();
+            ApplyHostTicketHeaders(client, host);
+            return client;
+        }
+
+
+        /// <summary>
+        /// Login to a specific host (by IP/hostname) and persist that host's ticket+CSRF.
+        /// </summary>
+        private async Task<bool> AuthenticateAndStoreTicketForHostAsync(ProxmoxCluster cluster, ProxmoxHost host, CancellationToken ct)
+        {
+            var http = MakeBareClient();
+            var url = $"https://{host.HostAddress}:8006/api2/json/access/ticket";
             var form = new Dictionary<string, string>
             {
-                { "username", cluster.Username },
-                { "password", _encryptionService.Decrypt(cluster.PasswordHash) }
+                ["username"] = cluster.Username, // include realm (e.g., root@pam)
+                ["password"] = _encryptionService.Decrypt(cluster.PasswordHash)
             };
-
-            var content = new FormUrlEncodedContent(form);
-            var httpClient = _httpClientFactory.CreateClient("ProxmoxClient");
 
             try
             {
-                var response = await httpClient.PostAsync(url, content, ct);
-                if (!response.IsSuccessStatusCode) return false;
+                using var content = new FormUrlEncodedContent(form);
+                using var res = await http.PostAsync(url, content, ct);
+                if (!res.IsSuccessStatusCode)
+                {
+                    host.LastStatus = $"Error: ticket {res.StatusCode}";
+                    host.LastChecked = DateTime.UtcNow;
+                    await _context.SaveChangesAsync(ct);
+                    return false;
+                }
 
-                var body = await response.Content.ReadAsStringAsync(ct);
-                using var doc = JsonDocument.Parse(body);
+                var json = await res.Content.ReadAsStringAsync(ct);
+                using var doc = JsonDocument.Parse(json);
                 var data = doc.RootElement.GetProperty("data");
 
-                cluster.ApiToken = _encryptionService.Encrypt(data.GetProperty("ticket").GetString());
-                cluster.CsrfToken = _encryptionService.Encrypt(data.GetProperty("CSRFPreventionToken").GetString());
-                cluster.LastChecked = DateTime.UtcNow;
-                cluster.LastStatus = "Working";
+                var ticket = data.GetProperty("ticket").GetString()!;
+                var csrf = data.GetProperty("CSRFPreventionToken").GetString()!;
+
+                host.TicketEnc = _encryptionService.Encrypt(ticket);
+                host.CsrfEnc = _encryptionService.Encrypt(csrf);
+                host.TicketIssuedUtc = DateTime.UtcNow;
+                host.LastStatus = "Working (ticket)";
+                host.LastChecked = DateTime.UtcNow;
 
                 await _context.SaveChangesAsync(ct);
                 return true;
             }
             catch (Exception ex)
             {
-                cluster.LastStatus = $"Error: {ex.Message}";
-                cluster.LastChecked = DateTime.UtcNow;
+                host.LastStatus = $"Error: {ex.Message}";
+                host.LastChecked = DateTime.UtcNow;
                 await _context.SaveChangesAsync(ct);
+                _logger.LogError(ex, "Ticket auth failed for host {Host} (cluster {ClusterId})", host.HostAddress, cluster.Id);
                 return false;
             }
         }
 
-        public async Task<HttpClient> GetAuthenticatedClientAsync(ProxmoxCluster cluster, CancellationToken ct)
+        private void ApplyHostTicketHeaders(HttpClient client, ProxmoxHost host)
         {
-            if (string.IsNullOrEmpty(cluster.ApiToken) || string.IsNullOrEmpty(cluster.CsrfToken))
-            {
-                var ok = await AuthenticateAndStoreTokenCAsync(cluster, ct);
-                if (!ok)
-                    throw new Exception("Authentication failed: missing token or CSRF.");
+            if (string.IsNullOrWhiteSpace(host.TicketEnc) || string.IsNullOrWhiteSpace(host.CsrfEnc))
+                throw new InvalidOperationException("Missing ticket/CSRF for host.");
 
-                // reload tokens
-                await _context.Entry(cluster).ReloadAsync(ct);
-            }
+            var ticket = _encryptionService.Decrypt(host.TicketEnc);
+            var csrf = _encryptionService.Decrypt(host.CsrfEnc);
 
-            var client = _httpClientFactory.CreateClient("ProxmoxClient");
-            client.DefaultRequestHeaders.Authorization =
-                new AuthenticationHeaderValue("PVEAuthCookie", _encryptionService.Decrypt(cluster.ApiToken));
-
+            client.DefaultRequestHeaders.Authorization = null;
+            client.DefaultRequestHeaders.Remove("Cookie");
             client.DefaultRequestHeaders.Remove("CSRFPreventionToken");
-            client.DefaultRequestHeaders.Add("CSRFPreventionToken", _encryptionService.Decrypt(cluster.CsrfToken));
-
-            return client;
+            client.DefaultRequestHeaders.TryAddWithoutValidation("Cookie", $"PVEAuthCookie={ticket}");
+            client.DefaultRequestHeaders.TryAddWithoutValidation("CSRFPreventionToken", csrf);
         }
 
-         }
+        private static async Task<bool> ProbeAsync(HttpClient client, string baseUrl, CancellationToken ct)
+        {
+            try
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/api2/json/version");
+                using var resp = await client.SendAsync(req, ct);
+                if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                    return false;
+                return resp.IsSuccessStatusCode;
+            }
+            catch { return false; }
+        }
+
+        private HttpClient MakeBareClient() => _httpClientFactory.CreateClient("ProxmoxClient");
+
+        private static ProxmoxHost? ResolveHostForUrl(ProxmoxCluster cluster, string urlOrPath)
+        {
+            if (Uri.TryCreate(urlOrPath, UriKind.Absolute, out var abs))
+            {
+                var hostName = abs.Host; // IP or DNS
+                return cluster.Hosts.FirstOrDefault(h =>
+                    string.Equals(h.HostAddress, hostName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(h.Hostname, hostName, StringComparison.OrdinalIgnoreCase));
+            }
+            return null; // relative; let caller pick default
+        }
+
+
+    }
 }
