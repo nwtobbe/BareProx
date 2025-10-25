@@ -28,12 +28,14 @@ namespace BareProx.Services.Background
 {
     public class JanitorService : BackgroundService
     {
+        private readonly IDbFactory _dbf;
         private readonly IServiceProvider _services;
         private readonly TimeSpan _interval = TimeSpan.FromMinutes(5);
         private readonly ILogger<JanitorService> _logger;
 
-        public JanitorService(IServiceProvider services, ILogger<JanitorService> logger)
+        public JanitorService(IDbFactory dbf, IServiceProvider services, ILogger<JanitorService> logger)
         {
+            _dbf = dbf;
             _services = services;
             _logger = logger;
         }
@@ -66,7 +68,7 @@ namespace BareProx.Services.Background
         private async Task CleanupExpired(CancellationToken ct)
         {
             using var scope = _services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            await using var db = await _dbf.CreateAsync(ct);
             var netapp = scope.ServiceProvider.GetRequiredService<INetappFlexCloneService>();
             var netappSnapshotService = scope.ServiceProvider.GetRequiredService<INetappSnapshotService>();
             var now = DateTime.UtcNow;
@@ -171,7 +173,7 @@ namespace BareProx.Services.Background
         private async Task TrackNetappSnapshots(CancellationToken ct)
         {
             using var scope = _services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            await using var db = await _dbf.CreateAsync(ct);
             var netappSnapshotService = scope.ServiceProvider.GetRequiredService<INetappSnapshotService>();
             var now = DateTime.UtcNow;
 
@@ -391,7 +393,7 @@ namespace BareProx.Services.Background
         private async Task PruneOldOrStuckJobs(CancellationToken ct)
         {
             using var scope = _services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            await using var db = await _dbf.CreateAsync(ct);
             var now = DateTime.UtcNow;
             var cutoff = now.AddDays(-30);
 
@@ -468,14 +470,14 @@ namespace BareProx.Services.Background
                 SnapshotName = snapshotName;
             }
 
-            public override bool Equals(object? obj)
+public override bool Equals(object? obj)
             {
                 if (obj is not JobSnapKey other) return false;
                 return JobId == other.JobId
                     && string.Equals(SnapshotName, other.SnapshotName, StringComparison.OrdinalIgnoreCase);
             }
 
-            public override int GetHashCode()
+public override int GetHashCode()
                 => HashCode.Combine(JobId, SnapshotName?.ToLowerInvariant());
         }
 

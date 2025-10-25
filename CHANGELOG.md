@@ -6,16 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
-## [1.0.2510.2015] - 2025-10-20
+
+## [1.0.2510.2015] - 2025-10-25
 
 ### Added
 -
 
 ### Changed
--
+- About Page
 
 ### Fixed
 - Snapshots on secondary not getting reflected correctly in the UI
+- Performance improvements
+- DB improvements
 
 
 
@@ -25,7 +28,8 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 -
 
 ### Changed
--
+- Security updates
+- 
 
 ### Fixed
 - Snapshots not getting the correct labels Manual/hourly/daily/weekly

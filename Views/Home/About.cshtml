@@ -6,25 +6,89 @@
 <div class="container mt-5">
     <div class="card shadow rounded-3">
         <div class="card-body">
-            <h2 class="card-title">About BareProx</h2>
-            <p class="card-text">
-                This application manages backups and restores for Proxmox using NetApp integration.
+            <!-- Header -->
+            <div class="d-flex align-items-center gap-3 mb-3">
+                <img src="~/Pics/BareProx.svg"
+                     alt="BareProx robotic cat logo"
+                     style="height:48px;width:auto;" />
+                <h2 class="card-title m-0">About BareProx</h2>
+            </div>
+
+            <!-- Tagline -->
+            <p class="lead mb-3">
+                <strong>BareProx</strong> – for people who trust backups more than licenses.
             </p>
+
+            <!-- Story / What it is -->
+            <p class="card-text">
+                <strong>BareProx</strong> started as a small personal project to tap into
+                <em>NetApp ONTAP</em>’s native capabilities (snapshots, SnapMirror, FlexClone)
+                for <em>Proxmox VE</em> backups over <em>NFS</em>. After countless tests,
+                crashes, and slightly too much coffee, it became a practical platform for
+                backup, restore, and a simple <strong>VMware → Proxmox</strong> migration path –
+                minus the licensing drama. Completely <strong>open source</strong>, so you get
+                to see all the good parts… and all the questionable decisions too.
+            </p>
+
+            <!-- Key capabilities -->
+            <h5 class="mt-4">What it does</h5>
+            <ul class="mb-3">
+                <li><strong>Proxmox + NetApp NFS</strong>: purpose-built for this combo.</li>
+                <li><strong>Backups & Snapshots</strong>: schedule, label, and retain storage-level snapshots.</li>
+                <li><strong>Restores</strong>: fast FlexClone-based workflows with export-policy handling.</li>
+                <li><strong>Migration</strong>: straightforward VMware-to-Proxmox transfers.</li>
+                <li><strong>Runs in Docker</strong>: built with ASP.NET Core (C#), ships as a web app.</li>
+            </ul>
+
+            <!-- Gentle disclaimer / CTA -->
+            <div class="alert alert-secondary small" role="note">
+                I’m not a professional developer — just a curious engineer.
+                Please <a href="https://github.com/nwtobbe/BareProx/issues" target="_blank" rel="noopener noreferrer">report bugs</a>,
+                suggest improvements, and help make it better — one snapshot at a time.<br />
+                ☕ <strong>No warranty included. No subscription needed. Just a lot of hope that BareProx survives out in the wild.</strong>
+            </div>
 
             <hr />
 
-            <div class="text-muted mb-2">
-                <strong>Application Version:</strong>
-                <span class="badge bg-info text-dark">@version</span>
+            <!-- Badges / Meta -->
+            <div class="row gy-2">
+                <div class="col-md-6">
+                    <div class="text-muted mb-2">
+                        <strong>Application Version:</strong>
+                        <span class="badge bg-info text-dark">@version</span>
+                    </div>
+                    <div class="text-muted">
+                        <strong>License:</strong>
+                        <span class="badge bg-success text-light">GPLv3</span><br />
+                        Licensed under the
+                        <a href="https://www.gnu.org/licenses/gpl-3.0.en.html" target="_blank" rel="noopener noreferrer">
+                            GNU General Public License v3.0
+                        </a>.
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="text-muted">
+                        <strong>Links:</strong><br />
+                        <a href="https://github.com/nwtobbe/BareProx" target="_blank" rel="noopener noreferrer">
+                            GitHub Repository
+                        </a><br />
+                        <a href="https://github.com/nwtobbe/BareProx/issues" target="_blank" rel="noopener noreferrer">
+                            Report an Issue
+                        </a><br />
+                        <a href="https://www.proxmox.com/" target="_blank" rel="noopener noreferrer">Proxmox VE</a> ·
+                        <a href="https://www.netapp.com/" target="_blank" rel="noopener noreferrer">NetApp ONTAP</a>
+                    </div>
+                </div>
             </div>
 
-            <div class="text-muted">
-                <strong>License:</strong>
-                <span class="badge bg-success text-light">GPLv3</span><br />
-                This software is licensed under the
-                <a href="https://www.gnu.org/licenses/gpl-3.0.en.html" target="_blank" rel="noopener noreferrer">
-                    GNU General Public License v3.0
-                </a>.
+            <!-- Tech pills -->
+            <div class="mt-3">
+                <span class="badge bg-dark">ASP.NET Core (C#)</span>
+                <span class="badge bg-dark">Docker</span>
+                <span class="badge bg-dark">Proxmox VE</span>
+                <span class="badge bg-dark">NetApp ONTAP</span>
+                <span class="badge bg-dark">NFS</span>
+                <span class="badge bg-dark">Open Source</span>
             </div>
         </div>
     </div>
