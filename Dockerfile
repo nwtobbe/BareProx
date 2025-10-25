@@ -1,7 +1,7 @@
 ﻿# syntax=docker/dockerfile:1.4
 
 ### 1) Build stage using .NET SDK
-FROM mcr.microsoft.com/dotnet/sdk:8.0.121 AS build
+FROM mcr.microsoft.com/dotnet/sdk:8.0.21 AS build
 WORKDIR /src
 
 # Copy solution and project files
