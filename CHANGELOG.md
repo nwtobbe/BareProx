@@ -16,7 +16,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 - About Page
 
 ### Fixed
-- Snapshots on secondary not getting reflected correctly in the UI
+- Security updates, including CVE-2025-55315, for real this time.
 - Performance improvements
 - DB improvements
 
@@ -29,7 +29,6 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - Security updates
-- 
 
 ### Fixed
 - Snapshots not getting the correct labels Manual/hourly/daily/weekly
