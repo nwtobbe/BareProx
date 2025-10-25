@@ -66,28 +66,28 @@ namespace BareProx.Services.Proxmox.Snapshots
         }
 
         public async Task<List<ProxmoxSnapshotInfo>> GetSnapshotListAsync(
-            ProxmoxCluster cluster,
-            string node,
-            string hostAddress,
-            int vmid,
-            CancellationToken ct = default)
+     ProxmoxCluster cluster,
+     string node,
+     string hostAddress,
+     int vmid,
+     CancellationToken ct = default)
         {
-            var client = await _auth.GetAuthenticatedClientAsync(cluster, ct);
             var url = $"https://{hostAddress}:8006/api2/json/nodes/{node}/qemu/{vmid}/snapshot";
-            var response = await client.GetAsync(url, ct);
-            response.EnsureSuccessStatusCode();
 
-            var json = await response.Content.ReadAsStringAsync(ct);
+            // Host-aware send + one retry on 401/403 with ticket refresh
+            var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+
+            // Optional: tolerate 404 (VM not found / moved)
+            // if (resp.StatusCode == HttpStatusCode.NotFound) return new List<ProxmoxSnapshotInfo>();
+
+            var json = await resp.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(json);
 
             if (!doc.RootElement.TryGetProperty("data", out var dataProp) ||
                 dataProp.ValueKind != JsonValueKind.Array)
-            {
                 return new List<ProxmoxSnapshotInfo>();
-            }
 
-            var list = new List<ProxmoxSnapshotInfo>();
-
+            var list = new List<ProxmoxSnapshotInfo>(capacity: 8);
             foreach (var snapshot in dataProp.EnumerateArray())
             {
                 var name = snapshot.GetProperty("name").GetString() ?? "";
@@ -98,23 +98,18 @@ namespace BareProx.Services.Proxmox.Snapshots
                     if (snaptimeProp.ValueKind == JsonValueKind.Number)
                         snaptime = snaptimeProp.GetInt32();
                     else if (snaptimeProp.ValueKind == JsonValueKind.String &&
-                             int.TryParse(snaptimeProp.GetString(), out var parsedTime))
-                        snaptime = parsedTime;
+                             int.TryParse(snaptimeProp.GetString(), out var parsed))
+                        snaptime = parsed;
                 }
 
                 int vmstate = 0;
                 if (snapshot.TryGetProperty("vmstate", out var vmstateProp) &&
                     vmstateProp.ValueKind == JsonValueKind.Number)
-                {
                     vmstate = vmstateProp.GetInt32();
-                }
 
                 string? desc = null;
-                if (snapshot.TryGetProperty("description", out var d) &&
-                    (d.ValueKind == JsonValueKind.String))
-                {
+                if (snapshot.TryGetProperty("description", out var d) && d.ValueKind == JsonValueKind.String)
                     desc = d.GetString();
-                }
 
                 list.Add(new ProxmoxSnapshotInfo
                 {
@@ -128,6 +123,7 @@ namespace BareProx.Services.Proxmox.Snapshots
             return list;
         }
 
+
         public async Task<string?> CreateSnapshotAsync(
             ProxmoxCluster cluster,
             string node,
@@ -139,8 +135,6 @@ namespace BareProx.Services.Proxmox.Snapshots
             bool dontTrySuspend,
             CancellationToken ct = default)
         {
-            var client = await _auth.GetAuthenticatedClientAsync(cluster, ct);
-
             var url = $"https://{hostAddress}:8006/api2/json/nodes/{node}/qemu/{vmid}/snapshot";
 
             var data = new Dictionary<string, string>
@@ -148,21 +142,19 @@ namespace BareProx.Services.Proxmox.Snapshots
                 ["snapname"] = snapshotName,
                 ["description"] = description,
                 ["vmstate"] = withMemory ? "1" : "0"
+                // add other flags you use, e.g. ["skiplock"] = dontTrySuspend ? "1" : "0"
             };
 
-            var content = new FormUrlEncodedContent(data);
-            var response = await client.PostAsync(url, content, ct);
-            response.EnsureSuccessStatusCode();
+            using var form = new FormUrlEncodedContent(data);
 
-            var json = await response.Content.ReadAsStringAsync(ct);
+            // Host-aware, retries once on 401/403 and refreshes ticket for *this* host
+            var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Post, url, form, ct);
+
+            var json = await resp.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(json);
-
-            var upid = doc.RootElement
-                          .GetProperty("data")
-                          .GetString();
-
-            return upid;
+            return doc.RootElement.GetProperty("data").GetString();
         }
+
 
         public async Task DeleteSnapshotAsync(
             ProxmoxCluster cluster,

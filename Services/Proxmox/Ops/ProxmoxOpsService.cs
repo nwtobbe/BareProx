@@ -40,80 +40,86 @@ namespace BareProx.Services.Proxmox.Ops
         /// Sends a request and retries once if a 401 is returned, refreshing auth.
         /// Accepts absolute or relative URLs (your callers currently pass absolute).
         /// </summary>
-        public async Task<HttpResponseMessage> SendWithRefreshAsync(
-            ProxmoxCluster cluster,
-            HttpMethod method,
-            string url,
-            HttpContent? content = null,
-            CancellationToken ct = default)
+       public async Task<HttpResponseMessage> SendWithRefreshAsync(
+    ProxmoxCluster cluster,
+    HttpMethod method,
+    string url,
+    HttpContent? content = null,
+    CancellationToken ct = default)
+{
+    // Resolve absolute URL and which host we’re talking to
+    var absoluteUrl = await ResolveAbsoluteUrlAsync(cluster, url, ct);
+
+    // Buffer content so we can resend safely
+    string? requestBody = null;
+    string? mediaType = null;
+    if (content != null)
+    {
+        requestBody = await content.ReadAsStringAsync(ct);
+        mediaType = content.Headers?.ContentType?.MediaType
+                    ?? (content is FormUrlEncodedContent ? "application/x-www-form-urlencoded" : "application/json");
+    }
+
+    // First attempt — host-based CSRF client
+    var client1 = await _auth.GetAuthenticatedClientForUrlAsync(cluster, absoluteUrl, ct);
+    using (var req1 = new HttpRequestMessage(method, absoluteUrl)
+    {
+        Content = requestBody is null ? null : new StringContent(requestBody, Encoding.UTF8, mediaType)
+    })
+    {
+        _logger.LogDebug("▶ Proxmox {Method} {Url}\nPayload:\n{Payload}", method, absoluteUrl, requestBody ?? "<no content>");
+        var resp1 = await client1.SendAsync(req1, ct);
+
+        // If success or non-auth error, return (throw on non-success as before)
+        if (resp1.IsSuccessStatusCode)
         {
-            try
-            {
-                var client = await _auth.GetAuthenticatedClientAsync(cluster, ct);
+            _logger.LogDebug("◀ Proxmox {Code} {Reason}", (int)resp1.StatusCode, resp1.ReasonPhrase);
+            return resp1;
+        }
 
-                // Buffer for logging and possible retry
-                string? requestBody = null;
-                string? mediaType = null;
-                if (content != null)
-                {
-                    requestBody = await content.ReadAsStringAsync(ct);
-                    mediaType = content.Headers?.ContentType?.MediaType
-                                ?? (content is FormUrlEncodedContent ? "application/x-www-form-urlencoded" : "application/json");
-                }
+        if (resp1.StatusCode is not HttpStatusCode.Unauthorized and not HttpStatusCode.Forbidden)
+        {
+            var body = await resp1.Content.ReadAsStringAsync(ct);
+            _logger.LogDebug("◀ Proxmox {Code} {Reason}\nBody:\n{Body}", (int)resp1.StatusCode, resp1.ReasonPhrase, body);
+            resp1.EnsureSuccessStatusCode(); // preserve your current behavior
+            return resp1; // unreachable
+        }
 
-                // First attempt
-                using (var request = new HttpRequestMessage(method, url) { Content = content })
-                {
-                    _logger.LogDebug("▶ Proxmox {Method} {Url}\nPayload:\n{Payload}", method, url, requestBody ?? "<no content>");
-                    var response = await client.SendAsync(request, ct);
+        // 401/403 → retry once with a freshly ensured ticket for THIS host
+        var body1 = await resp1.Content.ReadAsStringAsync(ct);
+        _logger.LogInformation("Auth issue ({Code}) on {Url}. Will re-auth host-scoped and retry once.\nBody:\n{Body}",
+            (int)resp1.StatusCode, absoluteUrl, body1);
+        resp1.Dispose();
+    }
 
-                    var responseBody = await response.Content.ReadAsStringAsync(ct);
-                    _logger.LogDebug("◀ Proxmox {Code} {Reason}\nBody:\n{Body}", (int)response.StatusCode, response.ReasonPhrase, responseBody);
+    // Second attempt — the authenticator will probe & refresh per host
+    var client2 = await _auth.GetAuthenticatedClientForUrlAsync(cluster, absoluteUrl, ct);
+    using (var req2 = new HttpRequestMessage(method, absoluteUrl)
+    {
+        Content = requestBody is null ? null : new StringContent(requestBody, Encoding.UTF8, mediaType)
+    })
+    {
+        var resp2 = await client2.SendAsync(req2, ct);
+        var body2 = await resp2.Content.ReadAsStringAsync(ct);
+        _logger.LogDebug("◀ (retry) Proxmox {Code} {Reason}\nBody:\n{Body}", (int)resp2.StatusCode, resp2.ReasonPhrase, body2);
 
-                    if (response.StatusCode != HttpStatusCode.Unauthorized)
-                    {
-                        response.EnsureSuccessStatusCode();
-                        return response;
-                    }
+        resp2.EnsureSuccessStatusCode();
+        return resp2;
+    }
+}
 
-                    // Retry once on 401
-                    response.Dispose();
-                }
+        private Task<string> ResolveAbsoluteUrlAsync(ProxmoxCluster cluster, string url, CancellationToken ct)
+        {
+            if (Uri.TryCreate(url, UriKind.Absolute, out var abs))
+                return Task.FromResult(abs.ToString());
 
-                _logger.LogInformation("Proxmox auth expired, re-authenticating…");
-                var reauth = await _auth.AuthenticateAndStoreTokenCAsync(cluster, ct);
-                if (!reauth)
-                    throw new ServiceUnavailableException("Authentication failed: missing token or CSRF.");
+            // Require hosts to be present; prefer “queryable” (online) then fallback
+            var host = _proxmoxHelpers.GetQueryableHosts(cluster).FirstOrDefault()
+                       ?? cluster.Hosts.FirstOrDefault()
+                       ?? throw new ServiceUnavailableException("No Proxmox hosts available for this cluster.");
 
-                await _context.Entry(cluster).ReloadAsync(ct);
-                var retryClient = await _auth.GetAuthenticatedClientAsync(cluster, ct);
-
-                using (var retry = new HttpRequestMessage(method, url))
-                {
-                    if (requestBody != null)
-                        retry.Content = new StringContent(requestBody, Encoding.UTF8, mediaType ?? "application/octet-stream");
-
-                    var retryResp = await retryClient.SendAsync(retry, ct);
-                    var retryBody = await retryResp.Content.ReadAsStringAsync(ct);
-                    _logger.LogDebug("◀ (retry) Proxmox {Code} {Reason}\nBody:\n{Body}",
-                        (int)retryResp.StatusCode, retryResp.ReasonPhrase, retryBody);
-
-                    retryResp.EnsureSuccessStatusCode();
-                    return retryResp;
-                }
-            }
-            catch (HttpRequestException ex)
-            {
-                var host = _proxmoxHelpers.GetQueryableHosts(cluster).FirstOrDefault()?.HostAddress ?? "unknown";
-
-                await _context.ProxmoxClusters
-                    .Where(c => c.Id == cluster.Id)
-                    .ExecuteUpdateAsync(b => b
-                        .SetProperty(c => c.LastStatus, _ => $"Unreachable: {ex.Message}")
-                        .SetProperty(c => c.LastChecked, _ => DateTime.UtcNow), ct);
-
-                throw new ServiceUnavailableException($"Cannot reach Proxmox host at {host}:8006. {ex.Message}", ex);
-            }
+            var absolute = $"https://{host.HostAddress}:8006/{url.TrimStart('/')}";
+            return Task.FromResult(absolute);
         }
 
         public async Task<bool> WaitForTaskCompletionAsync(
