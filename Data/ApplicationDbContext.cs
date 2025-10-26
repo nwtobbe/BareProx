@@ -37,6 +37,8 @@ namespace BareProx.Data
         public DbSet<BackupSchedule> BackupSchedules { get; set; }
         public DbSet<BackupRecord> BackupRecords { get; set; }
         public DbSet<Job> Jobs { get; set; }
+        public DbSet<JobVmResult> JobVmResults => Set<JobVmResult>();
+        public DbSet<JobVmLog> JobVmLogs => Set<JobVmLog>();
         public DbSet<ProxSelectedStorage> SelectedStorages { get; set; }
         public DbSet<SelectedNetappVolume> SelectedNetappVolumes { get; set; }
         public DbSet<NetappSnapshot> NetappSnapshots { get; set; } = null!;

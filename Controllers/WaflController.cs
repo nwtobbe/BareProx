@@ -145,17 +145,28 @@ namespace BareProx.Controllers
                                                .ToListAsync(ct);
 
             // 2) Build lookups
-            var policyByUuid = policies.ToDictionary(p => p.Uuid, p => p);
+            var policyByUuid = policies
+                .Where(p => !string.IsNullOrEmpty(p.Uuid))
+                .ToDictionary(p => p.Uuid!, p => p, StringComparer.OrdinalIgnoreCase);
             var retentionsByPolicyId = retentions
                 .GroupBy(r => r.SnapMirrorPolicyId)
                 .ToDictionary(g => g.Key, g => g.ToList());
+
+            var controllerNames = await _context.NetappControllers
+                .AsNoTracking()
+                .ToDictionaryAsync(c => c.Id, c => string.IsNullOrWhiteSpace(c.Hostname) ? $"#{c.Id}" : c.Hostname, ct);
 
             var relations = new List<SnapMirrorRelationGraphDto>();
 
             foreach (var rel in relationsRaw)
             {
-                // 3) Try to get the matching policy
-                policyByUuid.TryGetValue(rel.PolicyUuid, out var policy);
+                // 3) Try to get the matching policy (null-safe)
+                SnapMirrorPolicy? policy = null;
+                if (!string.IsNullOrEmpty(rel.PolicyUuid) &&
+                    policyByUuid.TryGetValue(rel.PolicyUuid, out var p))
+                {
+                    policy = p;
+                }
                 int policyId = policy?.Id ?? 0;
 
                 // 4) Gather any retention entries for that policy
@@ -171,8 +182,8 @@ namespace BareProx.Controllers
 
                 var dto = new SnapMirrorRelationGraphDto
                 {
-                    SourceController = rel.SourceClusterName,
-                    DestinationController = rel.DestinationClusterName,
+                    SourceController = controllerNames.GetValueOrDefault(rel.SourceControllerId, $"#{rel.SourceControllerId}"),
+                    DestinationController = controllerNames.GetValueOrDefault(rel.DestinationControllerId, $"#{rel.DestinationControllerId}"),
                     SourceVolume = rel.SourceVolume,
                     DestinationVolume = rel.DestinationVolume,
                     SourceControllerId = rel.SourceControllerId,
@@ -292,7 +303,6 @@ namespace BareProx.Controllers
                     int primaryControllerId;
                     string primaryVolumeName;
                     string exportPolicyName;
-                    bool snapshotLocking;
 
                     if (snapshotRecord != null)
                     {
@@ -326,8 +336,6 @@ namespace BareProx.Controllers
                             ?? throw new Exception(
                                 $"ExportPolicyName not found for primary volume '{primaryVolumeName}'");
 
-                        // we don’t know locking, assume false (or fetch live if you prefer)
-                        snapshotLocking = false;
                     }
 
                     //if (snapshotRecord == null)
@@ -453,29 +461,18 @@ namespace BareProx.Controllers
                 return Json(new { success = false, message = ex.Message });
             }
         }
-
-        public static string FormatIso8601Duration(string isoDuration)
+        public static string FormatIso8601Duration(string? isoDuration)
         {
-            if (string.IsNullOrEmpty(isoDuration))
-                return "";
-
-            // Match patterns like "P1DT1H30M13S" or "PT53M59S"
-            var regex = new Regex(
-                @"^P((?<days>\d+)D)?(T((?<hours>\d+)H)?((?<minutes>\d+)M)?((?<seconds>\d+)S)?)?$");
+            if (string.IsNullOrEmpty(isoDuration)) return "";
+            var regex = new Regex(@"^P((?<days>\d+)D)?(T((?<hours>\d+)H)?((?<minutes>\d+)M)?((?<seconds>\d+)S)?)?$");
             var match = regex.Match(isoDuration);
-            if (!match.Success)
-                return isoDuration; // fallback if format is unexpected
+            if (!match.Success) return isoDuration;
 
-            var parts = new List<string>();
-            if (int.TryParse(match.Groups["days"].Value, out var days) && days > 0)
-                parts.Add($"{days}d");
-            if (int.TryParse(match.Groups["hours"].Value, out var hours) && hours > 0)
-                parts.Add($"{hours}h");
-            if (int.TryParse(match.Groups["minutes"].Value, out var minutes) && minutes > 0)
-                parts.Add($"{minutes}m");
-            if (int.TryParse(match.Groups["seconds"].Value, out var seconds) && seconds > 0)
-                parts.Add($"{seconds}s");
-
+            var parts = new List<string>(4);
+            if (int.TryParse(match.Groups["days"].Value, out var d) && d > 0) parts.Add($"{d}d");
+            if (int.TryParse(match.Groups["hours"].Value, out var h) && h > 0) parts.Add($"{h}h");
+            if (int.TryParse(match.Groups["minutes"].Value, out var m) && m > 0) parts.Add($"{m}m");
+            if (int.TryParse(match.Groups["seconds"].Value, out var s) && s > 0) parts.Add($"{s}s");
             return string.Join(" ", parts);
         }
     }

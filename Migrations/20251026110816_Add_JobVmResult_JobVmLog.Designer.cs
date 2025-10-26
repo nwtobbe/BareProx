@@ -3,6 +3,7 @@ using System;
 using BareProx.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace BareProx.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251026110816_Add_JobVmResult_JobVmLog")]
+    partial class Add_JobVmResult_JobVmLog
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.10");
@@ -219,106 +222,6 @@ namespace BareProx.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("Jobs");
-                });
-
-            modelBuilder.Entity("BareProx.Models.JobVmLog", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("JobVmResultId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("Level")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("Message")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateTime>("TimestampUtc")
-                        .HasColumnType("TEXT");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("JobVmResultId");
-
-                    b.ToTable("JobVmLogs");
-                });
-
-            modelBuilder.Entity("BareProx.Models.JobVmResult", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int?>("BackupRecordId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<DateTime?>("CompletedAtUtc")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("ErrorMessage")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("HostName")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<bool>("IoFreezeAttempted")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<bool>("IoFreezeSucceeded")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("JobId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("ProxmoxSnapshotName")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("Reason")
-                        .HasColumnType("TEXT");
-
-                    b.Property<bool>("SnapshotRequested")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<bool>("SnapshotTaken")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("SnapshotUpid")
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateTime>("StartedAtUtc")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("StorageName")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("VMID")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("VmName")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<bool>("WasRunning")
-                        .HasColumnType("INTEGER");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("BackupRecordId");
-
-                    b.HasIndex("JobId");
-
-                    b.ToTable("JobVmResults");
                 });
 
             modelBuilder.Entity("BareProx.Models.MigrationQueueItem", b =>
@@ -1052,34 +955,6 @@ namespace BareProx.Migrations
                     b.Navigation("Job");
                 });
 
-            modelBuilder.Entity("BareProx.Models.JobVmLog", b =>
-                {
-                    b.HasOne("BareProx.Models.JobVmResult", "JobVmResult")
-                        .WithMany("Logs")
-                        .HasForeignKey("JobVmResultId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("JobVmResult");
-                });
-
-            modelBuilder.Entity("BareProx.Models.JobVmResult", b =>
-                {
-                    b.HasOne("BareProx.Models.BackupRecord", "BackupRecord")
-                        .WithMany()
-                        .HasForeignKey("BackupRecordId");
-
-                    b.HasOne("BareProx.Models.Job", "Job")
-                        .WithMany()
-                        .HasForeignKey("JobId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("BackupRecord");
-
-                    b.Navigation("Job");
-                });
-
             modelBuilder.Entity("BareProx.Models.ProxmoxHost", b =>
                 {
                     b.HasOne("BareProx.Models.ProxmoxCluster", "Cluster")
@@ -1151,11 +1026,6 @@ namespace BareProx.Migrations
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
-                });
-
-            modelBuilder.Entity("BareProx.Models.JobVmResult", b =>
-                {
-                    b.Navigation("Logs");
                 });
 
             modelBuilder.Entity("BareProx.Models.ProxmoxCluster", b =>

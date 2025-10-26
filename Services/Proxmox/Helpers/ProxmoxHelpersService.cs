@@ -87,7 +87,6 @@ namespace BareProx.Services.Proxmox.Helpers
                 throw new Exception("Empty payload.");
 
             var diskKeyRx = new Regex(@"^(scsi|virtio|ide|sata|efidisk|tpmstate)\d+$", RegexOptions.IgnoreCase);
-            string? candidate = null;
 
             // helper to try extract from a single value (the part after "storage:")
             string? TryExtract(string value)

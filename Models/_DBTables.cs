@@ -229,6 +229,58 @@ namespace BareProx.Models
         public string? PayloadJson { get; set; }
     }
 
+    public class JobVmResult
+    {
+        public int Id { get; set; }
+
+        // FK to Jobs
+        public int JobId { get; set; }
+        public Job Job { get; set; } = null!;
+
+        // VM identity
+        public int VMID { get; set; }
+        public string VmName { get; set; } = string.Empty;
+        public string HostName { get; set; } = string.Empty;
+        public string StorageName { get; set; } = string.Empty;
+
+        // Outcome
+        // Suggested values: Success | Skipped | Warning | Failed
+        public string Status { get; set; } = "Pending";
+        public string? Reason { get; set; }   // e.g. "Excluded", "Stopped", "Snapshot timeout", etc.
+        public string? ErrorMessage { get; set; }
+
+        // Snapshot info
+        public bool WasRunning { get; set; }
+        public bool IoFreezeAttempted { get; set; }
+        public bool IoFreezeSucceeded { get; set; }
+        public bool SnapshotRequested { get; set; }
+        public bool SnapshotTaken { get; set; }
+        public string? ProxmoxSnapshotName { get; set; }
+        public string? SnapshotUpid { get; set; }
+
+        // Timing
+        public DateTime StartedAtUtc { get; set; } = DateTime.UtcNow;
+        public DateTime? CompletedAtUtc { get; set; }
+
+        // Optional tie-back to your BackupRecord row (once created)
+        public int? BackupRecordId { get; set; }
+        public BackupRecord? BackupRecord { get; set; }
+
+        public ICollection<JobVmLog> Logs { get; set; } = new List<JobVmLog>();
+    }
+
+    public class JobVmLog
+    {
+        public int Id { get; set; }
+        public int JobVmResultId { get; set; }
+        public JobVmResult JobVmResult { get; set; } = null!;
+        public DateTime TimestampUtc { get; set; } = DateTime.UtcNow;
+
+        // Info | Warning | Error
+        public string Level { get; set; } = "Info";
+        public string Message { get; set; } = string.Empty;
+    }
+
     public class SnapMirrorPolicy
     {
         public int Id { get; set; }

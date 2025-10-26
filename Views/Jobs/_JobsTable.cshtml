@@ -7,56 +7,88 @@
         "Failed" => "table-danger",
         "Cancelled" => "table-warning",
         "Running" => "table-info",
+        "Warning" => "table-warning",  
         _ => ""
+    };
+
+    string GetStatusBadge(string status) => status switch
+    {
+        "Completed" => "success",
+        "Failed" => "danger",
+        "Cancelled" => "warning",
+        "Running" => "info",
+        "Warning" => "warning", 
+        _ => "secondary"
     };
 }
 
-<table class="table table-striped" id="jobs-table">
-    <thead>
-        <tr>
-            <th data-column="Type">Type</th>
-            <th data-column="RelatedVm">VM</th>
-            <th data-column="Status">Status</th>
-            <th data-column="StartedAt">Started</th>
-            <th data-column="CompletedAt">Completed</th>
-            <th>Error</th>
-            <th>Actions</th>
-        </tr>
-    </thead>
-    <tbody>
-        @foreach (var job in Model)
-        {
-            <tr class="@GetRowClass(job.Status)">
-                <td>@job.Type</td>
-                <td>@job.RelatedVm</td>
-                <td>@job.Status</td>
-                <td>@job.StartedAtLocal.ToString("yyyy-MM-dd HH:mm")</td>
-                <td>
-                    @(job.CompletedAtLocal.HasValue
-                        ? job.CompletedAtLocal.Value.ToString("yyyy-MM-dd HH:mm")
-                        : "-")
-                </td>
-                <td>
-                    @(string.IsNullOrEmpty(job.ErrorMessage)
-                        ? "-"
-                        : job.ErrorMessage)
-                </td>
-                <td>
-                    @if (job.Status == "Running")
-                    {
-                        <a asp-controller="Jobs"
-                           asp-action="Cancel"
-                           asp-route-id="@job.Id"
-                           class="btn btn-sm btn-danger">
-                            Cancel
-                        </a>
-                    }
-                    else
-                    {
-                        <span class="text-muted">-</span>
-                    }
-                </td>
+@if (Model == null || Model.Count == 0)
+{
+    <div class="alert alert-light border text-muted mb-0">
+        No jobs found for the current filters.
+    </div>
+}
+else
+{
+    <table class="table table-striped align-middle" id="jobs-table">
+        <thead>
+            <tr>
+                <th role="button" data-column="Type" aria-sort="none">Type</th>
+                <th role="button" data-column="RelatedVm" aria-sort="none">VM/Storage</th>
+                <th role="button" data-column="Status" aria-sort="none">Status</th>
+                <th role="button" data-column="StartedAt" aria-sort="none">Started</th>
+                <th role="button" data-column="CompletedAt" aria-sort="none">Completed</th>
+                <th>Error</th>
+                <th class="text-end">Actions</th>
             </tr>
-        }
-    </tbody>
-</table>
+        </thead>
+        <tbody>
+            @foreach (var job in Model)
+            {
+                var badge = GetStatusBadge(job.Status);
+                <tr class="@GetRowClass(job.Status)">
+                    <td class="text-nowrap">@job.Type</td>
+                    <td class="text-truncate" title="@job.RelatedVm">@job.RelatedVm</td>
+                    <td>
+                        <span class="badge bg-@badge align-middle">@job.Status</span>
+                        @if (job.Status == "Running")
+                        {
+                            <span class="spinner-border spinner-border-sm ms-2 align-middle" role="status" aria-hidden="true"></span>
+                            <span class="visually-hidden">In progress</span>
+                        }
+                </td>
+                <td class="text-nowrap">@job.StartedAtLocal.ToString("yyyy-MM-dd HH:mm")</td>
+                <td class="text-nowrap">
+                    @(job.CompletedAtLocal.HasValue
+                                    ? job.CompletedAtLocal.Value.ToString("yyyy-MM-dd HH:mm")
+                                    : "-")
+            </td>
+            <td class="text-truncate" title="@(job.ErrorMessage ?? "-")">
+                @(string.IsNullOrEmpty(job.ErrorMessage) ? "-" : job.ErrorMessage)
+            </td>
+            <td class="text-end">
+                <div class="btn-group btn-group-sm" role="group" aria-label="Job actions">
+                    <button type="button"
+                            class="btn btn-outline-primary js-job-details"
+                            data-job-id="@job.Id">
+                        Details
+                    </button>
+
+                    @if (job.Status == "Running")
+                            {
+                                <form asp-controller="Jobs"
+                                      asp-action="Cancel"
+                                      asp-route-id="@job.Id"
+                                      method="post"
+                                      class="d-inline">
+                                    @Html.AntiForgeryToken()
+                                    <button type="submit" class="btn btn-outline-danger">Cancel</button>
+                                </form>
+                            }
+                        </div>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}

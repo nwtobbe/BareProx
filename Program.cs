@@ -25,13 +25,14 @@ using BareProx.Services;
 using BareProx.Services.Background;
 using BareProx.Services.Backup;
 using BareProx.Services.Interceptors;
+using BareProx.Services.Jobs;
 using BareProx.Services.Migration;
+using BareProx.Services.Netapp;
 using BareProx.Services.Proxmox.Authentication;
 using BareProx.Services.Proxmox.Helpers;
 using BareProx.Services.Proxmox.Ops;
 using BareProx.Services.Proxmox.Snapshots;
 using BareProx.Services.Restore;
-using BareProx.Services.Netapp;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
@@ -109,6 +110,7 @@ CompressStaleLogs(logFolder);
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Override("Microsoft", LogEventLevel.Information)
     .MinimumLevel.Override("Default", LogEventLevel.Debug)
+    .MinimumLevel.Override("Microsoft.EntityFrameworkCore.Database.Command", LogEventLevel.Warning)
     .Enrich.FromLogContext()
     .WriteTo.Console()
     .WriteTo.File(
@@ -142,7 +144,10 @@ if (!File.Exists(appSettingsPath))
       "Logging": {
         "LogLevel": {
           "Default": "Information",
-          "Microsoft.AspNetCore": "Warning"
+          "Microsoft": "Information",
+          "Microsoft.EntityFrameworkCore": "Warning",
+          "Microsoft.AspNetCore": "Warning",
+          "Microsoft.EntityFrameworkCore.Database.Command": "Warning"
         }
       },
           "ConfigSettings": {
@@ -335,6 +340,7 @@ if (isConfigured)
     builder.Services.AddScoped<BareProx.Services.Features.IFeatureService, BareProx.Services.Features.FeatureService>();
     builder.Services.AddScoped<IBackupRepository, BackupRepository>();
     builder.Services.AddScoped<IBackupService, BackupService>();
+    builder.Services.AddScoped<IJobService, JobService>();
     builder.Services.AddScoped<INetappAuthService, NetappAuthService>();
     builder.Services.AddScoped<INetappFlexCloneService, NetappFlexCloneService>();
     builder.Services.AddScoped<INetappExportNFSService, NetappExportNFSService>();

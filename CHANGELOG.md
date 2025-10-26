@@ -14,12 +14,15 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - About Page
+- Job Page
+- Logging
+- Netapp volume clone delete now skipping recovery queue
 
 ### Fixed
-- Security updates, including CVE-2025-55315, for real this time.
+- Security updates
 - Performance improvements
 - DB improvements
-
+- Snaplock not reading the compliance clock for reference
 
 
 ## [1.0.2510.2014] - 2025-10-20
