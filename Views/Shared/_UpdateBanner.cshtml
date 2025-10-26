@@ -1,0 +1,46 @@
+﻿@model BareProx.Services.Updates.UpdateInfo
+
+@if (Model?.IsUpdateAvailable == true)
+{
+    <div class="alert alert-info d-flex align-items-center justify-content-between shadow-sm" role="alert">
+        <div>
+            <strong>Update available:</strong>
+            <span class="badge bg-primary">v@Model.LatestVersion</span>
+            @if (!string.IsNullOrWhiteSpace(Model.LatestDate))
+            {
+                <small class="text-muted ms-2">(@Model.LatestDate)</small>
+            }
+            <span class="ms-2">You’re on <code>@Model.CurrentVersion</code>.</span>
+        </div>
+        <div class="ms-3">
+            <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#whatsNewModal">
+                What’s new
+            </button>
+            <a class="btn btn-sm btn-success ms-2"
+               href="https://github.com/nwtobbe/BareProx/releases" target="_blank" rel="noopener">
+                Get update
+            </a>
+        </div>
+    </div>
+
+    <div class="modal fade" id="whatsNewModal" tabindex="-1" aria-labelledby="whatsNewLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="whatsNewLabel">What’s new in v@Model.LatestVersion</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    @if (!string.IsNullOrWhiteSpace(Model.WhatsNewHtml))
+                    {
+                        @Html.Raw(Model.WhatsNewHtml)
+                    }
+                    else
+                    {
+                        <p>No changelog entries found.</p>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+}

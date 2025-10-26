@@ -42,5 +42,13 @@ namespace BareProx.Services.Proxmox.Helpers
         string GetDirPosix(string path);
         string EscapeBash(string value);
 
+        // NEW:
+        Task<List<ProxmoxCluster>> LoadAllClustersAsync(CancellationToken ct = default);
+
+        // NEW: resolve (cluster,host) from a preloaded set
+        (ProxmoxCluster Cluster, ProxmoxHost Host)? ResolveClusterAndHostFromLoaded(
+            IEnumerable<ProxmoxCluster> clusters,
+            string nodeOrAddress);
+
     }
 }

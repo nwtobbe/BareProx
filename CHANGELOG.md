@@ -6,26 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [1.0.2510.3113] - 2025-10-31
+
+### Added
+- Basic email notification
+- Update notifications
+
+### Changed
+- Page. Settings/System
+- Page. Cleanup. Now only one click at a time.
+- Page. Proxmox. Added search and expand
+
+### Fixed
+- Page. Jobs. Truncated error messages
+
+
 
 ## [1.0.2510.2015] - 2025-10-25
 
-### Added
--
-
 ### Changed
 - About Page
+- Job Page
+- Logging
+- Netapp volume clone delete now skipping recovery queue
 
 ### Fixed
-- Security updates, including CVE-2025-55315, for real this time.
+- Security updates
 - Performance improvements
 - DB improvements
-
+- Snaplock not reading the compliance clock for reference
 
 
 ## [1.0.2510.2014] - 2025-10-20
-
-### Added
--
 
 ### Changed
 - Security updates
@@ -35,7 +47,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
 
-## [1.0.2510.2013] – 2025-10-20
+## [1.0.2510.2013] - 2025-10-20
 
 ### Added
 - Support for Snapshots as volume chains
@@ -66,7 +78,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
 
-## [1.0.2510.0914] – 2025-10-09
+## [1.0.2510.0914] - 2025-10-09
 
 ### Fixed
 
@@ -82,7 +94,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
 
-## [1.0.2509.0420] – 2025-09-04
+## [1.0.2509.0420] - 2025-09-04
 
 ### Fixed
 
@@ -91,7 +103,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
 
-## [1.0.2506.1614] – 2025-06-16
+## [1.0.2506.1614] - 2025-06-16
 
 ### Added
 
@@ -108,7 +120,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
 
-## [1.0.2506.1708] – 2025-06-17
+## [1.0.2506.1708] - 2025-06-17
 
 ### Added
 

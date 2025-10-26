@@ -158,106 +158,129 @@
 }
 
 @section Scripts {
+    <style>
+        body.cleanup-busy {
+            cursor: progress !important;
+        }
+    </style>
     <script>
-        // Delete handler for “Orphaned Clones → Cleanup”
+        // Global busy guard — blocks concurrent deletes across the page
+        let cleanupUiBusy = false;
+
+        function setBusy(on, activeBtn = null) {
+          cleanupUiBusy = on;
+          document.body.classList.toggle('cleanup-busy', on);
+
+          const btns = document.querySelectorAll('.cleanup-btn, .snapshot-delete-btn');
+          btns.forEach(btn => {
+            if (!btn.dataset.originalText) btn.dataset.originalText = btn.textContent;
+            btn.disabled = on;
+            btn.setAttribute('aria-disabled', on ? 'true' : 'false');
+            if (on && btn === activeBtn) btn.textContent = "⏳ Working...";
+            if (!on) btn.textContent = btn.dataset.originalText;
+          });
+        }
+
+        async function postForm(url, token, data) {
+          return fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'RequestVerificationToken': token
+            },
+            body: new URLSearchParams(data)
+          });
+        }
+
+        // Orphaned Clones → Cleanup
         document.querySelectorAll(".cleanup-btn").forEach(button => {
-            button.addEventListener("click", async () => {
-                const row       = button.closest("tr");
-                const volume    = row.dataset.volume;
-                const mountIp   = row.dataset.ip;
-                const controllerId = row.dataset.controllerId; // ← added
-                const clusterId    = row.dataset.clusterId;    // ← added
-                const section   = row.closest("section[id^='cluster-']");
-                const token     = section.querySelector("form input[name='__RequestVerificationToken']").value;
+          button.addEventListener("click", async () => {
+            if (cleanupUiBusy) return;
 
-                button.disabled    = true;
-                button.textContent = "⏳ Working...";
+            const row          = button.closest("tr");
+            const volume       = row.dataset.volume;
+            const mountIp      = row.dataset.ip;
+            const controllerId = row.dataset.controllerId;
+            const clusterId    = row.dataset.clusterId;
+            const section      = row.closest("section[id^='cluster-']");
+            const tokenEl      = section.querySelector("form input[name='__RequestVerificationToken']");
+            const token        = tokenEl ? tokenEl.value : '';
 
-                const response = await fetch('@Url.Action("Cleanup", "Cleanup")', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        'RequestVerificationToken': token
-                    },
-                    body: new URLSearchParams({
-                        volumeName: volume,
-                        mountIp:    mountIp,
-                        controllerId: controllerId, // ← added
-                        clusterId:    clusterId     // ← added
-                    })
-                }).catch(err => {
-                    alert("Network error: " + err.message);
-                    button.disabled    = false;
-                    button.textContent = "💣 Delete";
-                });
+            setBusy(true, button);
+            try {
+              const response = await postForm('@Url.Action("Cleanup", "Cleanup")', token, {
+                volumeName: volume,
+                mountIp: mountIp,
+                controllerId: controllerId,
+                clusterId: clusterId
+              });
 
-                if (response && response.ok) {
-                    row.remove();
-                    // If that was the last row in this table:
-                    const table = section.querySelector("#orphaned-table-" + section.id.replace("cluster-", ""));
-                    if (!table.querySelectorAll("tbody tr").length) {
-                        table.remove();
-                        const marker = document.createElement("p");
-                        marker.id        = "no-orphans-" + section.id.replace("cluster-", "");
-                        marker.innerHTML = "<em>None.</em>";
-                        section.querySelector("hr").insertAdjacentElement("afterend", marker);
-                    }
-                } else {
-                    button.disabled    = false;
-                    button.textContent = "💣 Delete";
-                    const error = await response.text();
-                    alert("Failed to delete clone.\n\n" + error);
-                }
-            });
+              if (!response.ok) {
+                const error = await response.text();
+                alert("Failed to delete clone.\n\n" + (error || response.statusText));
+                return;
+              }
+
+              // Success: remove the row; if empty, show "None."
+              row.remove();
+              const table = section.querySelector("#orphaned-table-" + section.id.replace("cluster-", ""));
+              if (table && !table.querySelectorAll("tbody tr").length) {
+                table.remove();
+                const marker = document.createElement("p");
+                marker.id = "no-orphans-" + section.id.replace("cluster-", "");
+                marker.innerHTML = "<em>None.</em>";
+                section.querySelector("hr").insertAdjacentElement("afterend", marker);
+              }
+            } catch (err) {
+              alert("Network error: " + (err?.message || err));
+            } finally {
+              setBusy(false);
+            }
+          });
         });
 
-        // Delete handler for “Orphaned Snapshots → CleanupSnapshot”
+        // Orphaned Snapshots → CleanupSnapshot
         document.querySelectorAll(".snapshot-delete-btn").forEach(button => {
-            button.addEventListener("click", async () => {
-                const row          = button.closest("tr");
-                const snapshotName = row.dataset.snapshot;
-                const volumeName   = row.dataset.volume;
-                const escapedVol   = encodeURIComponent(volumeName);
-                const section      = row.closest("section[id^='volume-']");
-                const token        = section.querySelector("form input[name='__RequestVerificationToken']").value;
+          button.addEventListener("click", async () => {
+            if (cleanupUiBusy) return;
 
-                button.disabled    = true;
-                button.textContent = "⏳ Working...";
+            const row          = button.closest("tr");
+            const snapshotName = row.dataset.snapshot;
+            const volumeName   = row.dataset.volume;
+            const escapedVol   = encodeURIComponent(volumeName);
+            const section      = row.closest("section[id^='volume-']");
+            const tokenEl      = section.querySelector("form input[name='__RequestVerificationToken']");
+            const token        = tokenEl ? tokenEl.value : '';
 
-                const response = await fetch('@Url.Action("CleanupSnapshot", "Cleanup")', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        'RequestVerificationToken': token
-                    },
-                    body: new URLSearchParams({
-                        volumeName:   volumeName,
-                        snapshotName: snapshotName
-                    })
-                }).catch(err => {
-                    alert("Network error: " + err.message);
-                    button.disabled    = false;
-                    button.textContent = "🗑 Delete";
-                });
+            setBusy(true, button);
+            try {
+              const response = await postForm('@Url.Action("CleanupSnapshot", "Cleanup")', token, {
+                volumeName: volumeName,
+                snapshotName: snapshotName
+              });
 
-                if (response && response.ok) {
-                    row.remove();
-                    // If that was the last row in this snapshot table:
-                    const table = section.querySelector("#snapshot-table-" + escapedVol);
-                    if (!table.querySelectorAll("tbody tr").length) {
-                        table.remove();
-                        const marker = document.createElement("p");
-                        marker.id        = "no-snapshots-" + escapedVol;
-                        marker.innerHTML = "<em>None.</em>";
-                        section.insertAdjacentElement("beforeend", marker);
-                    }
-                } else {
-                    button.disabled    = false;
-                    button.textContent = "🗑 Delete";
-                    const error = await response.text();
-                    alert("Failed to delete snapshot.\n\n" + error);
-                }
-            });
+              if (!response.ok) {
+                const error = await response.text();
+                alert("Failed to delete snapshot.\n\n" + (error || response.statusText));
+                return;
+              }
+
+              // Success: remove the row; if table empty, show "None."
+              row.remove();
+              const table = section.querySelector("#snapshot-table-" + escapedVol);
+              if (table && !table.querySelectorAll("tbody tr").length) {
+                table.remove();
+                const marker = document.createElement("p");
+                marker.id = "no-snapshots-" + escapedVol;
+                marker.innerHTML = "<em>None.</em>";
+                section.insertAdjacentElement("beforeend", marker);
+              }
+            } catch (err) {
+              alert("Network error: " + (err?.message || err));
+            } finally {
+              setBusy(false);
+            }
+          });
         });
     </script>
 }

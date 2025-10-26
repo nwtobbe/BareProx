@@ -20,6 +20,7 @@
 
 using System.Collections.Concurrent;
 using BareProx.Models;
+using BareProx.Services.Proxmox;
 using Microsoft.Extensions.Caching.Memory;
 
 namespace BareProx.Services;

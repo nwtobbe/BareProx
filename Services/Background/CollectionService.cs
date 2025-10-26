@@ -20,11 +20,15 @@
 
 using System;
 using System.Linq;
+using System.Net.Http;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services;
+using BareProx.Services.Proxmox;
+using BareProx.Services.Proxmox.Ops;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -175,6 +179,7 @@ public sealed class CollectionService : BackgroundService
 
         using var scope = _scopeFactory.CreateScope();
         var proxmoxService = scope.ServiceProvider.GetRequiredService<ProxmoxService>();
+        var proxOps = scope.ServiceProvider.GetRequiredService<IProxmoxOpsService>();
 
         var clusters = await db.ProxmoxClusters
             .Include(c => c.Hosts)
@@ -184,27 +189,129 @@ public sealed class CollectionService : BackgroundService
         {
             try
             {
+                // 1) Cluster-wide (quorum & basic host reachability)
                 var (quorate, onlineCount, totalCount, hostStates, summary) =
                     await proxmoxService.GetClusterStatusAsync(cluster, ct);
 
                 cluster.HasQuorum = quorate;
                 cluster.OnlineHostCount = onlineCount;
                 cluster.TotalHostCount = totalCount;
-                cluster.LastStatus = summary;
-                cluster.LastStatusMessage = summary;
-                cluster.LastChecked = DateTime.UtcNow;
+
+                // 2) Per-node deeper health (API reachability + node status + storage state)
+                //    We keep this best-effort and squeeze results into LastStatusMessage fields to avoid schema changes.
+                var perNodeSnippets = new System.Collections.Generic.List<string>();
 
                 foreach (var host in cluster.Hosts)
                 {
+                    var node = string.IsNullOrWhiteSpace(host.Hostname) ? host.HostAddress : host.Hostname!;
                     var key = host.Hostname ?? host.HostAddress;
-                    if (hostStates.TryGetValue(key, out var isOnline))
+
+                    var isOnline = hostStates.TryGetValue(key, out var up) && up;
+
+                    // Defaults
+                    string nodeSummary = $"node={node}: offline";
+                    host.IsOnline = isOnline;
+                    host.LastChecked = DateTime.UtcNow;
+                    host.LastStatus = isOnline ? "online" : "offline";
+
+                    if (!isOnline)
                     {
-                        host.IsOnline = isOnline;
-                        host.LastStatus = isOnline ? "online" : "offline";
-                        host.LastStatusMessage = summary;
-                        host.LastChecked = DateTime.UtcNow;
+                        host.LastStatusMessage = "API offline/unreachable";
+                        perNodeSnippets.Add($"{node}: ❌ offline");
+                        continue;
                     }
+
+                    // Small per-node timeout so one slow box doesn't block the sweep
+                    using var nodeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    nodeCts.CancelAfter(TimeSpan.FromSeconds(8));
+
+                    // 2a) /nodes/{node}/status
+                    double? cpuPct = null;
+                    double? memPct = null;
+                    long? uptime = null;
+
+                    try
+                    {
+                        var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{Uri.EscapeDataString(node)}/status";
+                        var resp = await proxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, nodeCts.Token);
+                        var json = await resp.Content.ReadAsStringAsync(nodeCts.Token);
+
+                        using var doc = JsonDocument.Parse(json);
+                        if (doc.RootElement.TryGetProperty("data", out var data))
+                        {
+                            // cpu is fraction (0..1); mem has total/free/used; uptime seconds
+                            if (data.TryGetProperty("cpu", out var cpu) && cpu.ValueKind == JsonValueKind.Number)
+                                cpuPct = Math.Round(cpu.GetDouble() * 100.0, 1);
+
+                            if (data.TryGetProperty("memory", out var mem) && mem.ValueKind == JsonValueKind.Object)
+                            {
+                                long tot = mem.TryGetProperty("total", out var t) && t.ValueKind == JsonValueKind.Number ? t.GetInt64() : 0;
+                                long used = mem.TryGetProperty("used", out var u) && u.ValueKind == JsonValueKind.Number ? u.GetInt64() : 0;
+                                if (tot > 0) memPct = Math.Round(used * 100.0 / tot, 1);
+                            }
+
+                            if (data.TryGetProperty("uptime", out var upSecs) && upSecs.ValueKind == JsonValueKind.Number)
+                                uptime = upSecs.GetInt64();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Node status fetch failed for {Node}", node);
+                    }
+
+                    // 2b) /nodes/{node}/storage — count active vs total
+                    int storTotal = 0, storActive = 0, storDisabled = 0, storErrorish = 0;
+                    try
+                    {
+                        var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{Uri.EscapeDataString(node)}/storage";
+                        var resp = await proxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, nodeCts.Token);
+                        var json = await resp.Content.ReadAsStringAsync(nodeCts.Token);
+
+                        using var doc = JsonDocument.Parse(json);
+                        if (doc.RootElement.TryGetProperty("data", out var arr) && arr.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var s in arr.EnumerateArray())
+                            {
+                                storTotal++;
+                                bool active = s.TryGetProperty("active", out var a) && a.ValueKind == JsonValueKind.True;
+                                bool enabled = !(s.TryGetProperty("enabled", out var e) && e.ValueKind == JsonValueKind.False);
+                                if (active) storActive++;
+                                if (!enabled) storDisabled++;
+                                // Some storages expose "state" or "status"; treat non-"available/active/ok" as issue-ish
+                                if (s.TryGetProperty("state", out var st) && st.ValueKind == JsonValueKind.String)
+                                {
+                                    var sv = st.GetString() ?? "";
+                                    if (!sv.Equals("available", StringComparison.OrdinalIgnoreCase) &&
+                                        !sv.Equals("active", StringComparison.OrdinalIgnoreCase) &&
+                                        !sv.Equals("ok", StringComparison.OrdinalIgnoreCase))
+                                        storErrorish++;
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Node storage list failed for {Node}", node);
+                    }
+
+                    // Build per-node snippet
+                    string cpuS = cpuPct.HasValue ? $"{cpuPct:0.0}%" : "n/a";
+                    string memS = memPct.HasValue ? $"{memPct:0.0}%" : "n/a";
+                    string upS = uptime.HasValue ? $"{TimeSpan.FromSeconds(uptime.Value):d\\.hh\\:mm}" : "n/a";
+                    string storS = storTotal > 0 ? $"{storActive}/{storTotal} active" : "n/a";
+                    string storWarn = (storDisabled > 0 || storErrorish > 0) ? $" (disabled:{storDisabled}, issues:{storErrorish})" : "";
+
+                    nodeSummary = $"cpu {cpuS}, mem {memS}, up {upS}, storage {storS}{storWarn}";
+                    host.LastStatusMessage = nodeSummary;
+
+                    perNodeSnippets.Add($"{node}: ✅ {nodeSummary}");
                 }
+
+                // 3) Persist summaries
+                var header = $"quorum={(quorate ? "yes" : "no")}, hosts={onlineCount}/{totalCount}";
+                cluster.LastStatus = header;
+                cluster.LastStatusMessage = $"{header}; " + string.Join(" | ", perNodeSnippets);
+                cluster.LastChecked = DateTime.UtcNow;
 
                 // Save with SQLite retry (db is scoped)
                 for (int i = 0; i < 3; i++)
@@ -214,8 +321,7 @@ public sealed class CollectionService : BackgroundService
                         await db.SaveChangesAsync(ct);
                         break;
                     }
-                    catch (DbUpdateException ex)
-                        when (ex.InnerException is SqliteException se && se.SqliteErrorCode == 5) // SQLITE_BUSY
+                    catch (DbUpdateException ex) when (ex.InnerException is SqliteException se && se.SqliteErrorCode == 5) // SQLITE_BUSY
                     {
                         if (i == 2) throw;
                         await Task.Delay(500, ct);
@@ -237,8 +343,7 @@ public sealed class CollectionService : BackgroundService
                         await db.SaveChangesAsync(ct);
                         break;
                     }
-                    catch (DbUpdateException ey)
-                        when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
+                    catch (DbUpdateException ey) when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
                     {
                         if (i == 2) throw;
                         await Task.Delay(500, ct);

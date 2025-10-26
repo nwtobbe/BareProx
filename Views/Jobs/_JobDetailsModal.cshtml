@@ -1,0 +1,169 @@
+﻿@model BareProx.Models.JobDetailsViewModel
+
+@{
+    var total = Model.VmResults?.Count ?? 0;
+    var ok = Model.VmResults?.Count(x => x.Status == "Success") ?? 0;
+    var skipped = Model.VmResults?.Count(x => x.Status == "Skipped") ?? 0;
+    var failed = Model.VmResults?.Count(x => x.Status == "Failed") ?? 0;
+
+    string Badge(string s) => s switch
+    {
+        "Completed" => "success",
+        "Success" => "success",
+        "Failed" => "danger",
+        "Cancelled" => "warning",
+        "Skipped" => "warning",
+        "Running" => "info",
+        _ => "secondary"
+    };
+}
+
+<!-- Provide a title hook for JS -->
+<div class="d-none" data-job-title="Job #@Model.JobId — @Model.Type (@Model.Status)"></div>
+
+<div class="p-3 border-bottom">
+    <div class="d-flex flex-wrap gap-3 align-items-center">
+        <div><strong>Job:</strong> #@Model.JobId (@Model.Type)</div>
+        <div><strong>Scope:</strong> @Model.RelatedVm</div>
+        <div>
+            <strong>Status:</strong>
+            <span class="badge bg-@Badge(Model.Status)">@Model.Status</span>
+        </div>
+        <div class="ms-auto d-flex gap-2">
+            <span class="badge bg-secondary">Total @total</span>
+            <span class="badge bg-success">Success @ok</span>
+            <span class="badge bg-warning text-dark">Skipped @skipped</span>
+            <span class="badge bg-danger">Failed @failed</span>
+        </div>
+    </div>
+    <div class="text-muted mt-1 small">
+        Started: @Model.StartedAtLocal.ToString("yyyy-MM-dd HH:mm")
+        @if (Model.CompletedAtLocal.HasValue)
+        {
+            <span class="ms-3">Completed: @Model.CompletedAtLocal.Value.ToString("yyyy-MM-dd HH:mm")</span>
+        }
+        @if (!string.IsNullOrWhiteSpace(Model.ErrorMessage))
+        {
+            <div class="text-danger mt-1">Error: @Model.ErrorMessage</div>
+        }
+    </div>
+
+    @if (total > 0)
+    {
+        <div class="mt-3">
+            <button type="button"
+                    class="btn btn-sm btn-outline-primary"
+                    data-bs-toggle="collapse"
+                    data-bs-target=".vm-log-row"
+                    aria-expanded="false"
+                    aria-controls="all-vm-logs">
+                Toggle all logs
+            </button>
+        </div>
+    }
+</div>
+
+<div class="p-3">
+    @if (total == 0)
+    {
+        <div class="alert alert-light border text-muted mb-0">
+            No VM results recorded for this job.
+        </div>
+    }
+    else
+    {
+        <div class="table-responsive">
+            <table class="table table-sm align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width: 80px;">VMID</th>
+                        <th>Name</th>
+                        <th style="width: 180px;">Host</th>
+                        <th style="width: 110px;">Status</th>
+                        <th>Reason / Error</th>
+                        <th style="width: 160px;">Snapshot</th>
+                        <th style="width: 160px;">IO Freeze</th>
+                        <th style="width: 80px;"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var v in Model.VmResults)
+                    {
+                        var badge = Badge(v.Status);
+                        var targetId = $"vm_{v.Id}_logs";
+
+                        <tr>
+                            <td class="text-nowrap">@v.VMID</td>
+                            <td class="text-truncate" title="@v.VmName">@v.VmName</td>
+                            <td class="text-truncate" title="@v.HostName">@v.HostName</td>
+                            <td><span class="badge bg-@badge">@v.Status</span></td>
+                            <td>
+                                @if (!string.IsNullOrWhiteSpace(v.ErrorMessage))
+                                {
+                                    <span class="text-danger">@v.ErrorMessage</span>
+                                }
+                                else if (!string.IsNullOrWhiteSpace(v.Reason))
+                                {
+                                    <span class="text-muted">@v.Reason</span>
+                                }
+                                else
+                                {
+                                    <span class="text-muted">—</span>
+                                }
+                            </td>
+                            <td class="text-nowrap">
+                                <span class="badge bg-@(v.SnapshotTaken ? "success" : "secondary")">
+                                    snapshot @(v.SnapshotTaken ? "yes" : "no")
+                                </span>
+                            </td>
+                            <td>
+                                <small class="text-muted">attempted: @(v.IoFreezeAttempted ? "yes" : "no")</small><br />
+                                <small class="text-muted">succeeded: @(v.IoFreezeSucceeded ? "yes" : "no")</small>
+                            </td>
+                            <td class="text-end">
+                                <button class="btn btn-link btn-sm"
+                                        type="button"
+                                        data-bs-toggle="collapse"
+                                        data-bs-target="#@targetId"
+                                        aria-expanded="false"
+                                        aria-controls="@targetId">
+                                    logs
+                                </button>
+                            </td>
+                        </tr>
+                        <tr id="@targetId" class="collapse vm-log-row">
+                            <td colspan="8">
+                                <div class="p-2 border rounded">
+                                    <div class="small">
+                                        <strong>Timeline:</strong>
+                                        @v.StartedAtLocal.ToString("yyyy-MM-dd HH:mm:ss")
+                                        →
+                                        @(v.CompletedAtLocal?.ToString("yyyy-MM-dd HH:mm:ss") ?? "-")
+                                    </div>
+                                    @if (v.Logs?.Any() == true)
+                                    {
+                                        <ul class="mb-0 mt-2 small" style="font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;">
+                                            @foreach (var log in v.Logs.OrderBy(l => l.TimestampLocal))
+                                            {
+                                                var cls = log.Level == "Error" ? "text-danger"
+                                                : log.Level == "Warning" ? "text-warning"
+                                                : "text-muted";
+                                                <li class="@cls">
+                                                    [@log.TimestampLocal.ToString("yyyy-MM-dd HH:mm:ss")] (@log.Level) @log.Message
+                                                </li>
+                                            }
+                                        </ul>
+                                    }
+                                    else
+                                    {
+                                        <small class="text-muted">No logs.</small>
+                                    }
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>

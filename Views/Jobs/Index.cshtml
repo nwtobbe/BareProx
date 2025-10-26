@@ -6,62 +6,153 @@
 <h2>Running & Recent Jobs</h2>
 
 <div class="row mb-3">
-  <div class="col-auto">
-    <select id="statusFilter" class="form-select form-select-sm">
-      <option value="">All Statuses</option>
-      <option>Running</option>
-      <option>Completed</option>
-      <option>Failed</option>
-      <option>Cancelled</option>
-    </select>
-  </div>
-  <div class="col-auto">
-    <input id="searchBox"
-           type="text"
-           class="form-control form-control-sm"
-           placeholder="Search type or VM…" />
-  </div>
+    <div class="col-auto">
+        <select id="statusFilter" class="form-select form-select-sm">
+            <option value="">All Statuses</option>
+            <option>Running</option>
+            <option>Completed</option>
+            <option>Failed</option>
+            <option>Cancelled</option>
+        </select>
+    </div>
+    <div class="col-auto">
+        <input id="searchBox"
+               type="text"
+               class="form-control form-control-sm"
+               placeholder="Search type or VM…" />
+    </div>
 </div>
 
 <div id="jobsContainer">
-  @await Html.PartialAsync("_JobsTable", Model)
+    @await Html.PartialAsync("_JobsTable", Model)
+</div>
+
+<!-- Modal shell (once per page) -->
+<div class="modal fade" id="jobDetailsModal" tabindex="-1" aria-labelledby="jobDetailsLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="jobDetailsLabel">Job details</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-0" aria-live="polite"><!-- loaded via AJAX --></div>
+        </div>
+    </div>
 </div>
 
 @section Scripts {
-  <script src="~/lib/jquery/dist/jquery.min.js"></script>
-  <script>
-    (function() {
-      let currentSort = { col: 'StartedAt', asc: false };
+    <script src="~/lib/jquery/dist/jquery.min.js"></script>
+    <script>
+        (function () {
+          let currentSort = { col: 'StartedAt', asc: false };
+          let refreshTimer = null;
+          let debounceT = null;
+          let requestSeq = 0;   // ignore stale AJAX responses
 
-      function loadTable() {
-        $.get('@Url.Action("Table")', {
-            status: $('#statusFilter').val(),
-            search: $('#searchBox').val().trim(),
-            sortColumn: currentSort.col,
-            asc: currentSort.asc
-          },
-          html => { $('#jobsContainer').html(html); }
-        );
-      }
+          function debounce(fn, wait) {
+            clearTimeout(debounceT);
+            debounceT = setTimeout(fn, wait);
+          }
 
-      // Filter & search
-      $('#statusFilter, #searchBox').on('change keyup', loadTable);
+          async function loadTable() {
+            const seq = ++requestSeq;
+            const params = $.param({
+              status: $('#statusFilter').val(),
+              search: $('#searchBox').val().trim(),
+              sortColumn: currentSort.col,
+              asc: currentSort.asc
+            });
 
-      // Sorting by header click
-      $('#jobsContainer').on('click', 'th[data-column]', function() {
-        const col = $(this).data('column');
-        currentSort.asc = (currentSort.col === col) ? !currentSort.asc : true;
-        currentSort.col = col;
-        loadTable();
-      });
+            try {
+              const html = await $.get('@Url.Action("Table")' + '?' + params);
+              if (seq !== requestSeq) return; // a newer request finished first
+              $('#jobsContainer').html(html);
+            } catch (e) {
+              // optional: surface an inline error; keeping silent for now
+            }
+          }
 
-      // Auto-refresh every 15 seconds
-      setInterval(loadTable, 15000);
+          // Filter & search (debounced)
+          $('#statusFilter').on('change', loadTable);
+          $('#searchBox').on('input', function () { debounce(loadTable, 250); });
+          $('#searchBox').on('keypress', function (e) { if (e.key === 'Enter') loadTable(); });
 
-      // Initial load
-      loadTable();
-    })();
-  </script>
+          // Sorting by header click (delegated)
+          $('#jobsContainer').on('click', 'th[data-column]', function () {
+            const col = $(this).data('column');
+            currentSort.asc = (currentSort.col === col) ? !currentSort.asc : true;
+            currentSort.col = col;
+            loadTable();
+          });
+
+          // Details modal loader (delegated)
+          $('#jobsContainer').on('click', '.js-job-details', async function (e) {
+            const btn = e.currentTarget;
+            const jobId = btn.getAttribute('data-job-id');
+            const modalEl = document.getElementById('jobDetailsModal');
+            const modalBody = modalEl.querySelector('.modal-body');
+
+            btn.disabled = true;
+            modalBody.innerHTML = '<div class="p-4 text-muted">Loading…</div>';
+
+            try {
+              const url = '@Url.Action("DetailsModal", "Jobs")' + '?id=' + encodeURIComponent(jobId);
+              const res = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+              if (!res.ok) throw new Error('Failed to load details.');
+
+              const html = await res.text();
+              modalBody.innerHTML = html;
+
+              // Optional: set modal title from partial hook
+              const titleHook = modalBody.querySelector('[data-job-title]');
+              if (titleHook) {
+                document.getElementById('jobDetailsLabel').textContent = titleHook.getAttribute('data-job-title');
+              }
+
+              bootstrap.Modal.getOrCreateInstance(modalEl).show();
+            } catch (err) {
+              modalBody.innerHTML = `<div class="p-4 text-danger">Could not load details. ${err.message}</div>`;
+              bootstrap.Modal.getOrCreateInstance(modalEl).show();
+            } finally {
+              btn.disabled = false;
+            }
+          });
+
+          // Copy UPID from the modal (delegated to the whole document)
+          document.addEventListener('click', e => {
+            const btn = e.target.closest('.copy-upid');
+            if (!btn) return;
+            const val = btn.getAttribute('data-clip');
+            navigator.clipboard.writeText(val).then(() => {
+              const old = btn.textContent;
+              btn.textContent = 'copied';
+              setTimeout(() => btn.textContent = old || 'copy', 1200);
+            });
+          });
+
+          // Pause auto-refresh while details modal is open (so the DOM doesn't jump)
+          const detailsModalEl = document.getElementById('jobDetailsModal');
+          detailsModalEl.addEventListener('show.bs.modal', () => stopAutoRefresh());
+          detailsModalEl.addEventListener('hidden.bs.modal', () => startAutoRefresh());
+
+          // Also pause when the tab is hidden (saves cycles)
+          document.addEventListener('visibilitychange', () => {
+            if (document.hidden) stopAutoRefresh(); else startAutoRefresh();
+          });
+
+          function startAutoRefresh() {
+            if (refreshTimer) return;
+            refreshTimer = setInterval(loadTable, 15000);
+          }
+          function stopAutoRefresh() {
+            if (!refreshTimer) return;
+            clearInterval(refreshTimer);
+            refreshTimer = null;
+          }
+
+          // Initial load + start auto refresh
+          loadTable();
+          startAutoRefresh();
+        })();
+    </script>
 }
-
-

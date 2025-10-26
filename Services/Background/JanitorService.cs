@@ -23,19 +23,18 @@ using BareProx.Models;
 using BareProx.Services.Netapp;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Org.BouncyCastle.Pqc.Crypto.Lms;
 
 namespace BareProx.Services.Background
 {
     public class JanitorService : BackgroundService
     {
-        private readonly IDbFactory _dbf;
         private readonly IServiceProvider _services;
         private readonly TimeSpan _interval = TimeSpan.FromMinutes(5);
         private readonly ILogger<JanitorService> _logger;
 
-        public JanitorService(IDbFactory dbf, IServiceProvider services, ILogger<JanitorService> logger)
+        public JanitorService(IServiceProvider services, ILogger<JanitorService> logger)
         {
-            _dbf = dbf;
             _services = services;
             _logger = logger;
         }
@@ -68,8 +67,7 @@ namespace BareProx.Services.Background
         private async Task CleanupExpired(CancellationToken ct)
         {
             using var scope = _services.CreateScope();
-            await using var db = await _dbf.CreateAsync(ct);
-            var netapp = scope.ServiceProvider.GetRequiredService<INetappFlexCloneService>();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var netappSnapshotService = scope.ServiceProvider.GetRequiredService<INetappSnapshotService>();
             var now = DateTime.UtcNow;
 
@@ -118,6 +116,7 @@ namespace BareProx.Services.Background
                         continue;
                     }
 
+                    // If replicated, keep DB rows and update flags
                     if (relLookup.TryGetValue((ex.ControllerId, ex.StorageName), out var rel))
                     {
                         var secondarySnapshots = await netappSnapshotService.GetSnapshotsAsync(rel.DestinationControllerId, rel.DestinationVolume, ct);
@@ -146,10 +145,30 @@ namespace BareProx.Services.Background
                         }
                     }
 
-                    // Remove related records if no secondary exists
-                    db.NetappSnapshots.RemoveRange(db.NetappSnapshots.Where(s => s.JobId == ex.JobId && s.SnapshotName == ex.SnapshotName));
+                    // ---- No secondary copy: remove related DB rows ----------------------
+
+                    // Gather VM-result IDs for this job to delete logs by JobVmResultId
+                    var vmResultIds = await db.JobVmResults
+                        .Where(r => r.JobId == ex.JobId)
+                        .Select(r => r.Id)
+                        .ToListAsync(ct);
+
+                    if (vmResultIds.Count > 0)
+                    {
+                        db.JobVmLogs.RemoveRange(
+                            db.JobVmLogs.Where(l => vmResultIds.Contains(l.JobVmResultId)));
+                    }
+
+                    db.JobVmResults.RemoveRange(
+                        db.JobVmResults.Where(r => r.JobId == ex.JobId));
+
+                    db.NetappSnapshots.RemoveRange(
+                        db.NetappSnapshots.Where(s => s.JobId == ex.JobId && s.SnapshotName == ex.SnapshotName));
+
                     db.BackupRecords.RemoveRange(grp);
-                    db.Jobs.Remove(ex.Job);
+
+                    if (ex.Job != null)
+                        db.Jobs.Remove(ex.Job);
 
                     await db.SaveChangesAsync(ct);
                     await transaction.CommitAsync(ct);
@@ -164,215 +183,118 @@ namespace BareProx.Services.Background
             }
         }
 
-
         /// <summary>
-        /// Refresh ExistsOnPrimary/Secondary flags and LastChecked for each tracked NetappSnapshot,
-        /// upsert rows when a snapshot is found on primary or secondary (only if a matching BackupRecord exists),
-        /// and REMOVE rows that are gone from BOTH primary and secondary (manual delete / never created).
+        /// 2) Refresh ExistsOnPrimary/Secondary flags and LastChecked for each tracked NetappSnapshot.
         /// </summary>
         private async Task TrackNetappSnapshots(CancellationToken ct)
         {
             using var scope = _services.CreateScope();
-            await using var db = await _dbf.CreateAsync(ct);
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var netappSnapshotService = scope.ServiceProvider.GetRequiredService<INetappSnapshotService>();
             var now = DateTime.UtcNow;
 
-            // ---- Load base data ------------------------------------------------------
-            var validControllerIds = await db.NetappControllers.Select(n => n.Id).ToListAsync(ct);
-            var valid = new HashSet<int>(validControllerIds);
+            // 0) Preload all valid NetappController IDs
+            var validControllerIds = await db.NetappControllers
+                .Select(n => n.Id)
+                .ToListAsync(ct);
+            var validSet = new HashSet<int>(validControllerIds);
 
-            var relations = await db.SnapMirrorRelations.AsNoTracking().ToListAsync(ct);
+            // 1) Load all SnapMirror relations up‐front
+            var relations = await db.SnapMirrorRelations.ToListAsync(ct);
 
-            // All tracked rows (to update/remove). Key by lower-case snapshot name to avoid custom comparers.
-            var tracked = await db.NetappSnapshots.AsTracking().ToListAsync(ct);
-            var trackedByKey = tracked.ToDictionary(
-                s => (s.JobId, (s.SnapshotName ?? string.Empty).ToLowerInvariant()),
-                s => s
-            );
-
-            // Map (source volume, snapshot name) -> JobId from existing BackupRecords (no guessing).
-            var volumesOfInterest = relations
-                .Select(r => r.SourceVolume)
-                .Where(v => !string.IsNullOrWhiteSpace(v))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            var backupRecords = await db.BackupRecords
-                .Where(r => volumesOfInterest.Contains(r.StorageName))
-                .Select(r => new { r.JobId, r.StorageName, r.SnapshotName })
+            // 2) Load every snapshot row you’re currently tracking
+            var trackedSnaps = await db.NetappSnapshots
+                .AsTracking()
                 .ToListAsync(ct);
 
-            var jobByVolumeSnap = backupRecords
-                .GroupBy(x => (Vol: (x.StorageName ?? "").ToLowerInvariant(),
-                               Snap: (x.SnapshotName ?? "").ToLowerInvariant()))
+            // Build a lookup keyed by (JobId, SnapshotName)
+            var trackedLookup = trackedSnaps
                 .ToDictionary(
-                    g => (g.Key.Vol, g.Key.Snap),
-                    g => g.Select(x => x.JobId).First()
+                    s => new JobSnapKey(s.JobId, s.SnapshotName),
+                    s => s,
+                    new JobSnapKeyComparer()
                 );
 
-            // For cleanup: quick lookup for relation by (srcControllerId, srcVolume lower-cased)
-            var relBySrc = relations.ToDictionary(
-                r => (r.SourceControllerId, (r.SourceVolume ?? "").ToLowerInvariant()),
-                r => r
-            );
-
-            // Store discovered sets per relation so we can use them again during cleanup
-            var primarySets = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-            var secondarySets = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-
-            // ---- Upsert/update based on what actually exists now ---------------------
+            // 3) For each SnapMirror relation (primary→secondary):
             foreach (var rel in relations)
             {
-                if (!valid.Contains(rel.SourceControllerId) || !valid.Contains(rel.DestinationControllerId))
+                if (!validSet.Contains(rel.SourceControllerId)
+                    || !validSet.Contains(rel.DestinationControllerId))
                 {
-                    _logger.LogWarning("TrackSnapshots: Skip relation {Uuid} due to invalid controllers ({Src}->{Dst})",
-                        rel.Uuid, rel.SourceControllerId, rel.DestinationControllerId);
+                    _logger.LogWarning(
+                        "Skipping relation {Uuid} because source or destination controller is invalid ({src} → {dst})",
+                        rel.Uuid,
+                        rel.SourceControllerId,
+                        rel.DestinationControllerId
+                    );
                     continue;
                 }
 
-                // Query once per relation (primary + secondary)
-                var primList = await netappSnapshotService.GetSnapshotsAsync(rel.SourceControllerId, rel.SourceVolume, ct);
-                var secList = await netappSnapshotService.GetSnapshotsAsync(rel.DestinationControllerId, rel.DestinationVolume, ct);
+                // Secondary and primary snapshot listings
+                var secList = await netappSnapshotService.GetSnapshotsAsync(
+                    rel.DestinationControllerId,
+                    rel.DestinationVolume, ct);
 
-                var primSet = new HashSet<string>(primList, StringComparer.OrdinalIgnoreCase);
-                var secSet = new HashSet<string>(secList, StringComparer.OrdinalIgnoreCase);
+                var primaryList = await netappSnapshotService.GetSnapshotsAsync(
+                    rel.SourceControllerId,
+                    rel.SourceVolume, ct);
 
-                primarySets[$"{rel.SourceControllerId}|{rel.SourceVolume}"] = primSet;
-                secondarySets[$"{rel.DestinationControllerId}|{rel.DestinationVolume}"] = secSet;
-
-                // ---- Upsert for SECONDARY: ensure we track snapshots that exist on secondary
-                foreach (var snap in secSet)
+                foreach (var snapName in secList)
                 {
-                    var keyVol = (rel.SourceVolume ?? "").ToLowerInvariant();
-                    var keySnap = (snap ?? "").ToLowerInvariant();
+                    // Look up the JobId by BackupRecords (StorageName+SnapshotName)
+                    var matchingJobId = await db.BackupRecords
+                        .Where(r => r.StorageName == rel.SourceVolume && r.SnapshotName == snapName)
+                        .Select(r => r.JobId)
+                        .FirstOrDefaultAsync(ct);
 
-                    if (!jobByVolumeSnap.TryGetValue((keyVol, keySnap), out var jobId))
-                        continue; // no matching BackupRecord → skip
+                    if (matchingJobId == 0)
+                        continue;
 
-                    if (trackedByKey.TryGetValue((jobId, keySnap), out var row))
+                    var key = new JobSnapKey(matchingJobId, snapName);
+
+                    if (trackedLookup.TryGetValue(key, out var existingSnap))
                     {
-                        row.ExistsOnSecondary = true;
-                        row.ExistsOnPrimary = primSet.Contains(snap);
-                        row.IsReplicated = true;
-                        row.SecondaryControllerId = rel.DestinationControllerId;
-                        row.SecondaryVolume = rel.DestinationVolume;
-                        row.PrimaryControllerId = rel.SourceControllerId;
-                        row.PrimaryVolume = rel.SourceVolume;
-                        row.LastChecked = now;
+                        existingSnap.ExistsOnSecondary = true;
+                        existingSnap.LastChecked = now;
+                        existingSnap.ExistsOnPrimary = primaryList
+                            .Any(x => x.Equals(snapName, StringComparison.OrdinalIgnoreCase));
+                        existingSnap.SecondaryControllerId = rel.DestinationControllerId;
+                        existingSnap.SecondaryVolume = rel.DestinationVolume;
+                        existingSnap.IsReplicated = true;
                     }
                     else
                     {
-                        var newRow = new NetappSnapshot
+                        var label = await db.BackupRecords
+                            .Where(r => r.JobId == matchingJobId &&
+                                        r.StorageName == rel.SourceVolume &&
+                                        r.SnapshotName == snapName)
+                            .Select(r => r.RetentionUnit.ToLower())
+                            .FirstOrDefaultAsync(ct)
+                            ?? "not_found";
+
+                        var newSnap = new NetappSnapshot
                         {
-                            JobId = jobId,
-                            SnapshotName = snap,
-                            CreatedAt = now, // internal bookkeeping; NOT backup timestamp
-                            LastChecked = now,
+                            CreatedAt = now,
+                            ExistsOnPrimary = primaryList.Any(x => x.Equals(snapName, StringComparison.OrdinalIgnoreCase)),
                             ExistsOnSecondary = true,
-                            ExistsOnPrimary = primSet.Contains(snap),
                             IsReplicated = true,
+                            JobId = matchingJobId,
+                            LastChecked = now,
                             PrimaryControllerId = rel.SourceControllerId,
                             PrimaryVolume = rel.SourceVolume,
                             SecondaryControllerId = rel.DestinationControllerId,
                             SecondaryVolume = rel.DestinationVolume,
-                            SnapmirrorLabel = null
+                            SnapmirrorLabel = label,
+                            SnapshotName = snapName
                         };
-                        db.NetappSnapshots.Add(newRow);
-                        trackedByKey[(jobId, keySnap)] = newRow;
+
+                        db.NetappSnapshots.Add(newSnap);
+                        trackedLookup[key] = newSnap;
                     }
                 }
-
-                // ---- Upsert for PRIMARY: track snapshots that exist on primary even if missing on secondary
-                foreach (var snap in primSet)
-                {
-                    var keyVol = (rel.SourceVolume ?? "").ToLowerInvariant();
-                    var keySnap = (snap ?? "").ToLowerInvariant();
-
-                    if (!jobByVolumeSnap.TryGetValue((keyVol, keySnap), out var jobId))
-                        continue; // only act when a matching BackupRecord exists
-
-                    if (trackedByKey.ContainsKey((jobId, keySnap)))
-                        continue; // already tracked (from secondary pass or earlier)
-
-                    var existsOnSecondary = secSet.Contains(snap);
-
-                    var newRow = new NetappSnapshot
-                    {
-                        JobId = jobId,
-                        SnapshotName = snap,
-                        CreatedAt = now, // internal bookkeeping; NOT backup timestamp
-                        LastChecked = now,
-                        ExistsOnPrimary = true,
-                        ExistsOnSecondary = existsOnSecondary,
-                        IsReplicated = existsOnSecondary,
-                        PrimaryControllerId = rel.SourceControllerId,
-                        PrimaryVolume = rel.SourceVolume,
-                        SecondaryControllerId = rel.DestinationControllerId,
-                        SecondaryVolume = rel.DestinationVolume,
-                        SnapmirrorLabel = null
-                    };
-                    db.NetappSnapshots.Add(newRow);
-                    trackedByKey[(jobId, keySnap)] = newRow;
-                }
-
-                // Refresh ExistsOnPrimary for any tracked row that belongs to this (source) relation
-                foreach (var row in tracked.Where(t =>
-                             t.PrimaryControllerId == rel.SourceControllerId &&
-                             string.Equals(t.PrimaryVolume, rel.SourceVolume, StringComparison.OrdinalIgnoreCase)))
-                {
-                    row.ExistsOnPrimary = primSet.Contains(row.SnapshotName);
-                    row.LastChecked = now;
-                }
             }
 
-            // ---- Cleanup: remove rows that are gone from BOTH sides ------------------
-            var grace = TimeSpan.FromMinutes(15);
-            var toRemove = new List<NetappSnapshot>();
-
-            foreach (var row in tracked)
-            {
-                // Existence on primary
-                bool onPrimary = false;
-                if (row.PrimaryControllerId > 0 && !string.IsNullOrWhiteSpace(row.PrimaryVolume))
-                {
-                    var key = $"{row.PrimaryControllerId}|{row.PrimaryVolume}";
-                    if (primarySets.TryGetValue(key, out var primSet))
-                        onPrimary = primSet.Contains(row.SnapshotName);
-                }
-
-                // Existence on secondary
-                bool onSecondary = false;
-                if (row.SecondaryControllerId > 0 && !string.IsNullOrWhiteSpace(row.SecondaryVolume))
-                {
-                    var key = $"{row.SecondaryControllerId}|{row.SecondaryVolume}";
-                    if (secondarySets.TryGetValue(key, out var secSet))
-                        onSecondary = secSet.Contains(row.SnapshotName);
-                }
-
-                // Update flags from cached sets
-                row.ExistsOnPrimary = onPrimary;
-                row.ExistsOnSecondary = onSecondary;
-                row.IsReplicated = onSecondary;
-                row.LastChecked = now;
-
-                // If missing on both sides and it's not "too fresh", delete the tracking row
-                var createdAt = row.CreatedAt == default ? now : row.CreatedAt;
-                var tooFresh = (now - createdAt) < grace;
-                if (!onPrimary && !onSecondary && !tooFresh)
-                {
-                    toRemove.Add(row);
-                }
-            }
-
-            if (toRemove.Count > 0)
-            {
-                _logger.LogInformation(
-                    "TrackSnapshots: removing {Count} NetappSnapshot rows that are missing on both primary/secondary.",
-                    toRemove.Count);
-                db.NetappSnapshots.RemoveRange(toRemove);
-            }
-
-            // ---- Save with retry on SQLITE_BUSY --------------------------------------
+            // Save with SQLITE_BUSY retry
             for (int i = 0; i < 3; i++)
             {
                 try
@@ -380,7 +302,8 @@ namespace BareProx.Services.Background
                     await db.SaveChangesAsync(ct);
                     break;
                 }
-                catch (DbUpdateException ey) when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
+                catch (DbUpdateException ey)
+                    when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
                 {
                     if (i == 2) throw;
                     await Task.Delay(500, ct);
@@ -388,50 +311,63 @@ namespace BareProx.Services.Background
             }
         }
 
-
-
         private async Task PruneOldOrStuckJobs(CancellationToken ct)
         {
             using var scope = _services.CreateScope();
-            await using var db = await _dbf.CreateAsync(ct);
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
             var now = DateTime.UtcNow;
             var cutoff = now.AddDays(-30);
 
-            // Age pivot for a job is CompletedAt if present, otherwise StartedAt
+            // 30d policy
+            string[] failedStatuses = { "Failed", "Error", "Aborted", "Cancelled" };
+            string[] inProgressStatuses = { "Pending", "Queued", "Running", "InProgress", 
+                                            "Started", "Creating Proxmox snapshots", "Waiting for Proxmox snapshots", 
+                                            "Proxmox snapshots completed", "Paused VMs", "NetApp snapshot created", "Triggering SnapMirror update" };
+
             var toDeleteIds = await db.Jobs
                 .AsNoTracking()
-                .Where(j =>
-                    (j.CompletedAt ?? j.StartedAt) < cutoff &&
-                    (
-                        // 1) Any job with Status != "Completed"
-                        (j.Status != null && !EF.Functions.Like(j.Status, "Completed"))
-                        ||
-                        // 2) Any Restore job (any status)
-                        (j.Type != null && EF.Functions.Like(j.Type, "Restore"))
-                    )
-                )
+                .Where(j => (j.CompletedAt ?? j.StartedAt) < cutoff &&
+                            (j.Type == "Restore" ||
+                             (j.Type == "Backup" && j.Status != null && failedStatuses.Contains(j.Status)) ||
+                             (j.Status == null || inProgressStatuses.Contains(j.Status))))
                 .Select(j => j.Id)
                 .ToListAsync(ct);
 
             if (toDeleteIds.Count == 0)
             {
-                _logger.LogDebug("PruneJobs: nothing to delete.");
+                _logger.LogDebug("PruneJobs: nothing to delete (cutoff {Cutoff}).", cutoff);
                 return;
             }
+
+            // Collect VM-result IDs for log deletion
+            var vmResultIds = await db.JobVmResults
+                .Where(r => toDeleteIds.Contains(r.JobId))
+                .Select(r => r.Id)
+                .ToListAsync(ct);
 
             for (int attempt = 0; attempt < 3; attempt++)
             {
                 using var tx = await db.Database.BeginTransactionAsync(ct);
                 try
                 {
-                    // Remove dependents first (adjust if you have cascades)
+                    // 1) Logs -> via JobVmResultId
+                    if (vmResultIds.Count > 0)
+                    {
+                        db.JobVmLogs.RemoveRange(
+                            db.JobVmLogs.Where(l => vmResultIds.Contains(l.JobVmResultId)));
+                    }
+
+                    // 2) VM results -> via JobId
+                    db.JobVmResults.RemoveRange(
+                        db.JobVmResults.Where(r => toDeleteIds.Contains(r.JobId)));
+
+                    // 3) Snapshot tracking & backup records
                     db.NetappSnapshots.RemoveRange(
                         db.NetappSnapshots.Where(s => toDeleteIds.Contains(s.JobId)));
-
                     db.BackupRecords.RemoveRange(
                         db.BackupRecords.Where(r => toDeleteIds.Contains(r.JobId)));
 
-                    // Finally remove the jobs
+                    // 4) Finally the jobs
                     db.Jobs.RemoveRange(
                         db.Jobs.Where(j => toDeleteIds.Contains(j.Id)));
 
@@ -439,8 +375,8 @@ namespace BareProx.Services.Background
                     await tx.CommitAsync(ct);
 
                     _logger.LogInformation(
-                        "Pruned {JobCount} old jobs (>30d): non-completed and all Restore. Rows affected: {Rows}.",
-                        toDeleteIds.Count, affected);
+                        "Pruned {JobCount} jobs older than {Days} days (Restore:any, Backup:failed, stale in-progress). Rows affected: {Rows}.",
+                        toDeleteIds.Count, 30, affected);
                     break;
                 }
                 catch (DbUpdateException ey) when (ey.InnerException is Microsoft.Data.Sqlite.SqliteException se && se.SqliteErrorCode == 5)
@@ -458,7 +394,6 @@ namespace BareProx.Services.Background
             }
         }
 
-
         private readonly struct JobSnapKey
         {
             public int JobId { get; }
@@ -470,17 +405,16 @@ namespace BareProx.Services.Background
                 SnapshotName = snapshotName;
             }
 
-public override bool Equals(object? obj)
+            public override bool Equals(object? obj)
             {
                 if (obj is not JobSnapKey other) return false;
                 return JobId == other.JobId
                     && string.Equals(SnapshotName, other.SnapshotName, StringComparison.OrdinalIgnoreCase);
             }
 
-public override int GetHashCode()
+            public override int GetHashCode()
                 => HashCode.Combine(JobId, SnapshotName?.ToLowerInvariant());
         }
-
 
         private class JobSnapKeyComparer : IEqualityComparer<JobSnapKey>
         {

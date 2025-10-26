@@ -25,12 +25,49 @@ using System.ComponentModel.DataAnnotations;
 namespace BareProx.Models
 {
 
+    // -------------------------------------------------------
+    // Settings page aggregate VM (Time Zone + Cert + Email)
+    // -------------------------------------------------------
+    public class SettingsPageViewModel
+    {
+        public SettingsPageViewModel()
+        {
+            Config = new ConfigSettingsViewModel();
+            Regenerate = new RegenerateCertViewModel();
+            Email = new EmailSettingsViewModel();
+            TimeZones = new List<SelectListItem>();
+        }
+
+        /// <summary>Sub-model for the “Time Zone” form (prefix: "Config")</summary>
+        public ConfigSettingsViewModel Config { get; set; }
+
+        /// <summary>Sub-model for the “Regenerate Certificate” form (prefix: "Regenerate")</summary>
+        public RegenerateCertViewModel Regenerate { get; set; }
+
+        /// <summary>Sub-model for the “Email Notifications” form (prefix: "Email")</summary>
+        public EmailSettingsViewModel Email { get; set; }
+        public UpdateSettingsViewModel Updates { get; set; } = new();
+
+        /// <summary>List of time zones for the dropdown</summary>
+        public IEnumerable<SelectListItem> TimeZones { get; set; }
+    }
+
+
+    public class UpdateSettingsViewModel
+    {
+        public bool Enabled { get; set; }
+        /// <summary>How often to check, in minutes. Default 360 (6h).</summary>
+        public int FrequencyMinutes { get; set; } = 360;
+    }
+
+    // -------------------------------------------------------
+    // Certificate regeneration view model
+    // -------------------------------------------------------
     public class RegenerateCertViewModel
     {
-
         [Display(Name = "Current Certificate Subject")]
         [BindNever]
-        public string CurrentSubject { get; set; }
+        public string CurrentSubject { get; set; } = string.Empty;
 
         [Display(Name = "Valid From")]
         [BindNever]
@@ -39,15 +76,12 @@ namespace BareProx.Models
         [Display(Name = "Valid Until")]
         [BindNever]
         public DateTime? CurrentNotAfter { get; set; }
-        [BindNever]
 
         [Display(Name = "Thumbprint")]
-        public string CurrentThumbprint { get; set; }
+        [BindNever]
+        public string CurrentThumbprint { get; set; } = string.Empty;
 
-        // -------------------------------------------------------
         // Part C: Fields for regenerating a new certificate
-        // -------------------------------------------------------
-
         [Display(Name = "New Common Name (e.g. CN=localhost)")]
         [Required]
         public string RegenSubjectName { get; set; } = "CN=localhost";
@@ -59,63 +93,105 @@ namespace BareProx.Models
         [Display(Name = "Subject Alternative Names (comma-separated)")]
         public string RegenSANs { get; set; } = "localhost";
     }
+
+    // -------------------------------------------------------
+    // Core config settings (persisted)
+    // -------------------------------------------------------
     public class ConfigSettings
     {
         // This used to be “DefaultTimeZone”
-        public string TimeZoneWindows { get; set; } = "";
+        public string TimeZoneWindows { get; set; } = string.Empty;
 
         // New field for IANA names
-        public string TimeZoneIana { get; set; } = "";
+        public string TimeZoneIana { get; set; } = string.Empty;
 
         // (…other settings …)
     }
 
+    // -------------------------------------------------------
+    // Time zone selection VM shown on Settings page
+    // -------------------------------------------------------
     public class ConfigSettingsViewModel
     {
-        // This is what the user actually selects in the dropdown:
-        // the Windows‐style time-zone ID. 
-        // We mark it [Required] so that validation will fail if nothing is chosen.
         [Display(Name = "Time Zone")]
         [Required(ErrorMessage = "Please select a time zone.")]
-        public string TimeZoneWindows { get; set; }
+        public string TimeZoneWindows { get; set; } = string.Empty;
 
-        // We also expose an IANA field in the ViewModel, 
-        // but mark it [BindNever] so that it isn’t bound from the form.
-        // Instead, your POST handler will call TZConvert.WindowsToIana(...) 
-        // and fill this in before persisting.
+        // Filled by server-side mapping Windows -> IANA
         [BindNever]
-        public string TimeZoneIana { get; set; } = "";
+        public string TimeZoneIana { get; set; } = string.Empty;
     }
 
-    /// <summary>
-    /// Holds both the Time Zone sub‐model and the Certificate‐Regeneration sub‐model,
-    /// plus a list of TimeZones for populating the dropdown.
-    /// </summary>
-    public class SettingsPageViewModel
+    // -------------------------------------------------------
+    // NEW: Email notification settings
+    // -------------------------------------------------------
+    public class EmailSettingsViewModel
     {
-        public SettingsPageViewModel()
-        {
-            Config = new ConfigSettingsViewModel();
-            Regenerate = new RegenerateCertViewModel();
-            TimeZones = new List<SelectListItem>();
-        }
+        [Display(Name = "Enable email notifications")]
+        public bool Enabled { get; set; }
+
+        [Display(Name = "SMTP Server")]
+        [MaxLength(255)]
+        public string? SmtpHost { get; set; }
+
+        [Display(Name = "Port")]
+        [Range(1, 65535)]
+        public int SmtpPort { get; set; } = 587;
 
         /// <summary>
-        /// Sub‐model for the “Time Zone” form (prefix: "Config")
+        /// "None" | "StartTls" | "SslTls"
         /// </summary>
-        public ConfigSettingsViewModel Config { get; set; }
+        [Display(Name = "Security")]
+        [RegularExpression("None|StartTls|SslTls", ErrorMessage = "Security must be None, StartTls, or SslTls.")]
+        public string SecurityMode { get; set; } = "StartTls";
+
+        [Display(Name = "Username")]
+        [MaxLength(255)]
+        public string? Username { get; set; }
+
+        // Leave blank in POST to keep existing (handled in controller)
+        [Display(Name = "Password / App Password")]
+        [DataType(DataType.Password)]
+        public string? Password { get; set; }
+
+        [Display(Name = "From Address")]
+        [EmailAddress]
+        public string? From { get; set; }
+
+        // Comma-separated
+        [Display(Name = "Default Recipients")]
+        [MaxLength(1024)]
+        public string? DefaultRecipients { get; set; }
+
+        // Notification switches
+        [Display(Name = "Notify on backup success")]
+        public bool OnBackupSuccess { get; set; }
+
+        [Display(Name = "Notify on backup failure")]
+        public bool OnBackupFailure { get; set; } = true;
+
+        [Display(Name = "Notify on restore success")]
+        public bool OnRestoreSuccess { get; set; }
+
+        [Display(Name = "Notify on restore failure")]
+        public bool OnRestoreFailure { get; set; } = true;
+
+        [Display(Name = "Notify on warnings / system alerts")]
+        public bool OnWarnings { get; set; } = true;
 
         /// <summary>
-        /// Sub‐model for the “Regenerate Certificate” form (prefix: "Regenerate")
+        /// "Info" | "Warning" | "Error" | "Critical"
         /// </summary>
-        public RegenerateCertViewModel Regenerate { get; set; }
-
-        /// <summary>
-        /// List of time zones for the dropdown
-        /// </summary>
-        public IEnumerable<SelectListItem> TimeZones { get; set; }
+        [Display(Name = "Minimum severity to notify")]
+        [RegularExpression("Info|Warning|Error|Critical", ErrorMessage = "Severity must be Info, Warning, Error, or Critical.")]
+        public string MinSeverity { get; set; } = "Info";
     }
 
+
+
+    // -------------------------------------------------------
+    // Other VMs
+    // -------------------------------------------------------
     public sealed class ProxmoxHubViewModel
     {
         // Tab 1: list of clusters

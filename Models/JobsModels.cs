@@ -23,11 +23,58 @@ namespace BareProx.Models
     public class JobViewModel
     {
         public int Id { get; set; }
-        public string Type { get; set; }
-        public string RelatedVm { get; set; }
-        public string Status { get; set; }
+        public string? Type { get; set; }
+        public string? RelatedVm { get; set; }
+        public string? Status { get; set; }
         public DateTime StartedAtLocal { get; set; }
         public DateTime? CompletedAtLocal { get; set; }
         public string ErrorMessage { get; set; }
+    }
+
+    // ViewModels used by Details view
+    public sealed class JobDetailsViewModel
+    {
+        public int JobId { get; set; }
+        public string Type { get; set; } = string.Empty;
+        public string RelatedVm { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public string? ErrorMessage { get; set; }
+        public DateTime StartedAtLocal { get; set; }
+        public DateTime? CompletedAtLocal { get; set; }
+        public List<JobVmResultViewModel> VmResults { get; set; } = new();
+    }
+
+    public sealed class JobVmResultViewModel
+    {
+        public int Id { get; set; }
+        public int JobId { get; set; }
+        public int VMID { get; set; }
+        public string VmName { get; set; } = string.Empty;
+        public string HostName { get; set; } = string.Empty;
+        public string StorageName { get; set; } = string.Empty;
+
+        public string Status { get; set; } = "Pending";
+        public string? Reason { get; set; }
+        public string? ErrorMessage { get; set; }
+
+        public bool WasRunning { get; set; }
+        public bool IoFreezeAttempted { get; set; }
+        public bool IoFreezeSucceeded { get; set; }
+        public bool SnapshotRequested { get; set; }
+        public bool SnapshotTaken { get; set; }
+        public string? ProxmoxSnapshotName { get; set; }
+        public string? SnapshotUpid { get; set; }
+
+        public DateTime StartedAtLocal { get; set; }
+        public DateTime? CompletedAtLocal { get; set; }
+
+        public List<JobVmLogViewModel> Logs { get; set; } = new();
+    }
+
+    public sealed class JobVmLogViewModel
+    {
+        public string Level { get; set; } = "Info";
+        public string Message { get; set; } = string.Empty;
+        public DateTime TimestampLocal { get; set; }
     }
 }

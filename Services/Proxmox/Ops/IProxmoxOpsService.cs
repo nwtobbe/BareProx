@@ -36,7 +36,7 @@ namespace BareProx.Services.Proxmox.Ops
         /// Sends an HTTP request to Proxmox, automatically handling auth/csrf refresh.
         /// Accepts absolute (https://host:8006/...) or relative (/api2/json/...) URLs.
         /// </summary>
-        Task<HttpResponseMessage> SendWithRefreshAsync(ProxmoxCluster cluster, HttpMethod method, string url, HttpContent content = null, CancellationToken ct = default);
+        Task<HttpResponseMessage> SendWithRefreshAsync(ProxmoxCluster cluster, HttpMethod method, string url, HttpContent? content = null, CancellationToken ct = default);
 
         /// <summary>
         /// Waits for a Proxmox task (UPID) to complete successfully.

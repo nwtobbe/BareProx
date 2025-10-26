@@ -1,4 +1,24 @@
-﻿using BareProx.Data;
+﻿/*
+ * BareProx - Backup and Restore Automation for Proxmox using NetApp
+ *
+ * Copyright (C) 2025 Tobias Modig
+ *
+ * This file is part of BareProx.
+ *
+ * BareProx is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * BareProx is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services.Proxmox.Authentication;
 using BareProx.Services.Proxmox.Helpers;
@@ -19,18 +39,15 @@ namespace BareProx.Services.Proxmox.Ops
     /// </summary>
     public sealed class ProxmoxOpsService : IProxmoxOpsService
     {
-        private readonly ApplicationDbContext _context;
         private readonly ILogger<ProxmoxOpsService> _logger;
         private readonly IProxmoxHelpersService _proxmoxHelpers;
         private readonly IProxmoxAuthenticator _auth;
 
         public ProxmoxOpsService(
-            ApplicationDbContext context,
             ILogger<ProxmoxOpsService> logger,
             IProxmoxHelpersService proxmoxHelpers,
             IProxmoxAuthenticator auth)
         {
-            _context = context;
             _logger = logger;
             _proxmoxHelpers = proxmoxHelpers;
             _auth = auth;
@@ -41,12 +58,12 @@ namespace BareProx.Services.Proxmox.Ops
         /// Accepts absolute or relative URLs (your callers currently pass absolute).
         /// </summary>
        public async Task<HttpResponseMessage> SendWithRefreshAsync(
-    ProxmoxCluster cluster,
-    HttpMethod method,
-    string url,
-    HttpContent? content = null,
-    CancellationToken ct = default)
-{
+         ProxmoxCluster cluster,
+         HttpMethod method,
+         string url,
+         HttpContent? content = null,
+         CancellationToken ct = default)
+        {
     // Resolve absolute URL and which host we’re talking to
     var absoluteUrl = await ResolveAbsoluteUrlAsync(cluster, url, ct);
 

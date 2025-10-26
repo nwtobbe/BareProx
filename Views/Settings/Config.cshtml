@@ -71,8 +71,204 @@
 
 <hr />
 
+<!-- =========================================
+     Section: Update Checker
+     ========================================= -->
+<h4>Update checker</h4>
+
+@using (Html.BeginForm("SaveUpdateSettings", "Settings", FormMethod.Post, new { @class = "mb-3" }))
+{
+    @Html.AntiForgeryToken()
+
+    <div class="form-check form-switch mb-2">
+        <input class="form-check-input"
+               type="checkbox"
+               id="Updates_Enabled"
+               name="Updates.Enabled"
+               value="true"
+               @(Model.Updates?.Enabled == true ? "checked" : "") />
+        <label class="form-check-label" for="Updates_Enabled">
+            Enable “check for updates”
+        </label>
+    </div>
+
+    <div id="updates-warning" class="alert alert-warning d-none py-2">
+        <strong>Heads up:</strong> This feature fetches version info and CHANGELOG from GitHub.
+        Your server must have outbound HTTPS access to <code>raw.githubusercontent.com</code>.
+    </div>
+
+    <div id="updates-fields" class="row g-3 @(Model.Updates?.Enabled == true ? "" : "d-none")">
+        <div class="col-md-4">
+            <label for="Updates_FrequencyMinutes" class="form-label">Check frequency</label>
+            <select class="form-select" id="Updates_FrequencyMinutes" name="Updates.FrequencyMinutes">
+                @{
+                    int freq = Model.Updates?.FrequencyMinutes ?? 360;
+                    string Opt(int val, string text) =>
+                    $"<option value=\"{val}\" {(freq == val ? "selected" : "")}>{text}</option>";
+                }
+                @Html.Raw(Opt(1440, "Daily"))
+                @Html.Raw(Opt(2880, "Every 2 days"))
+                @Html.Raw(Opt(10080, "Weekly"))
+            </select>
+        </div>
+    </div>
+
+    <button type="submit" class="btn btn-outline-secondary btn-sm mt-2">Save</button>
+}
+
+<hr />
+
+<!-- =========================================
+     Section C: Email Notifications
+     ========================================= -->
+<h4>Email Notifications</h4>
+
+@using (Html.BeginForm("SaveEmailSettings", "Settings", FormMethod.Post, new { @class = "mb-3" }))
+{
+    @Html.AntiForgeryToken()
+
+    <div class="form-check form-switch mb-3" value="false">
+        <input class="form-check-input"
+               type="checkbox"
+               id="Email_Enabled"
+               name="Email.Enabled"
+               value="true"
+               @(Model.Email?.Enabled == true ? "checked" : "") />
+        <label class="form-check-label" for="Email_Enabled">
+            Enable email notifications
+        </label>
+    </div>
+
+    <!-- Hidden when not enabled -->
+    <div id="email-settings-fields" class="border rounded p-3 bg-light @(Model.Email?.Enabled == true ? "" : "d-none")">
+        <div class="row g-3">
+            <div class="col-md-6">
+                <label for="Email_SmtpHost" class="form-label">SMTP Server</label>
+                <input class="form-control" id="Email_SmtpHost" name="Email.SmtpHost" value="@Model.Email?.SmtpHost" />
+                @Html.ValidationMessage("Email.SmtpHost", "", new { @class = "text-danger" })
+            </div>
+
+            <div class="col-md-3">
+                <label for="Email_SmtpPort" class="form-label">Port</label>
+                <input type="number" class="form-control" id="Email_SmtpPort" name="Email.SmtpPort" value="@(Model.Email?.SmtpPort ?? 587)" min="1" />
+                @Html.ValidationMessage("Email.SmtpPort", "", new { @class = "text-danger" })
+            </div>
+
+            <div class="col-md-3">
+                <label for="Email_SecurityMode" class="form-label">Security</label>
+                <select class="form-select" id="Email_SecurityMode" name="Email.SecurityMode">
+                    @{
+                        var sec = Model.Email?.SecurityMode ?? "StartTls";
+                        string Opt(string val, string text) => $"<option value=\"{val}\" {(sec == val ? "selected" : "")}>{text}</option>";
+                    }
+                    @Html.Raw(Opt("None", "None"))
+                    @Html.Raw(Opt("StartTls", "STARTTLS"))
+                    @Html.Raw(Opt("SslTls", "SSL/TLS"))
+                </select>
+                @Html.ValidationMessage("Email.SecurityMode", "", new { @class = "text-danger" })
+            </div>
+
+            <div class="col-md-6">
+                <label for="Email_Username" class="form-label">Username</label>
+                <input class="form-control" id="Email_Username" name="Email.Username" value="@Model.Email?.Username" autocomplete="username" />
+                @Html.ValidationMessage("Email.Username", "", new { @class = "text-danger" })
+            </div>
+
+            <div class="col-md-6">
+                <label for="Email_Password" class="form-label">Password / App Password</label>
+                <div class="input-group">
+                    <input type="password" class="form-control" id="Email_Password" name="Email.Password" value="" placeholder="••••••••" autocomplete="current-password" />
+                    <button class="btn btn-outline-secondary" type="button" id="togglePwd">Show</button>
+                </div>
+                @Html.ValidationMessage("Email.Password", "", new { @class = "text-danger" })
+                <small class="text-muted">Leave blank to keep existing password.</small>
+            </div>
+
+            <div class="col-md-6">
+                <label for="Email_From" class="form-label">From Address</label>
+                <input type="email" class="form-control" id="Email_From" name="Email.From" value="@Model.Email?.From" />
+                @Html.ValidationMessage("Email.From", "", new { @class = "text-danger" })
+            </div>
+
+            <div class="col-md-6">
+                <label for="Email_DefaultRecipients" class="form-label">Recipients</label>
+                <input class="form-control" id="Email_DefaultRecipients" name="Email.DefaultRecipients" value="@Model.Email?.DefaultRecipients" placeholder="tobias@example.com,alerts@example.com" />
+                <small class="text-muted">Comma-separated list.</small>
+                @Html.ValidationMessage("Email.DefaultRecipients", "", new { @class = "text-danger" })
+            </div>
+        </div>
+
+        <hr />
+
+        <label class="form-label">Notify for</label>
+        <div class="row g-3">
+            <div class="col-md-3">
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="Email_OnBackupSuccess" name="Email.OnBackupSuccess" value="true" @(Model.Email?.OnBackupSuccess == true ? "checked" : "") />
+                    <label class="form-check-label" for="Email_OnBackupSuccess">Backup success</label>
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="Email_OnBackupFailure" name="Email.OnBackupFailure" value="true" @(Model.Email?.OnBackupFailure == true ? "checked" : "") />
+                    <label class="form-check-label" for="Email_OnBackupFailure">Backup failure</label>
+                </div>
+            </div>
+
+            <div class="col-md-3">
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="Email_OnRestoreSuccess" name="Email.OnRestoreSuccess" value="true" @(Model.Email?.OnRestoreSuccess == true ? "checked" : "") />
+                    <label class="form-check-label" for="Email_OnRestoreSuccess">Restore success</label>
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="Email_OnRestoreFailure" name="Email.OnRestoreFailure" value="true" @(Model.Email?.OnRestoreFailure == true ? "checked" : "") />
+                    <label class="form-check-label" for="Email_OnRestoreFailure">Restore failure</label>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="checkbox" id="Email_OnWarnings" name="Email.OnWarnings" value="true" @(Model.Email?.OnWarnings == true ? "checked" : "") />
+                    <label class="form-check-label" for="Email_OnWarnings">Warnings / System alerts</label>
+                </div>
+
+                <div class="row">
+                    <div class="col-8">
+                        <label for="Email_MinSeverity" class="form-label">Minimum severity to notify</label>
+                        <select class="form-select" id="Email_MinSeverity" name="Email.MinSeverity">
+                            @{
+                                var sev = Model.Email?.MinSeverity ?? "Info";
+                                string SOpt(string v) => $"<option value=\"{v}\" {(sev == v ? "selected" : "")}>{v}</option>";
+                            }
+                            @Html.Raw(SOpt("Info"))
+                            @Html.Raw(SOpt("Warning"))
+                            @Html.Raw(SOpt("Error"))
+                            @Html.Raw(SOpt("Critical"))
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <button type="submit" class="btn btn-primary mt-3">Save Email Settings</button>
+}
+
+@using (Html.BeginForm("SendTestEmail", "Settings", FormMethod.Post, new { @class = "mt-2" }))
+{
+    @Html.AntiForgeryToken()
+    <!-- Hidden when not enabled -->
+    <div id="email-test" class="@(Model.Email?.Enabled == true ? "" : "d-none")">
+        <div class="input-group" style="max-width: 520px;">
+            <input type="email" class="form-control" name="to" placeholder="Send test email to…" />
+            <button type="submit" class="btn btn-outline-primary">Send Test Email</button>
+        </div>
+        <small class="text-muted">Uses the saved SMTP settings above.</small>
+    </div>
+}
+
+<hr />
+
 <!-- ========================================
-     Section C: Display Current Certificate
+     Section D: Current Certificate (moved)
      ======================================== -->
 @if (!string.IsNullOrWhiteSpace(Model.Regenerate.CurrentSubject))
 {
@@ -98,10 +294,74 @@ else
     </div>
 }
 
-<hr />
+@section Scripts {
+    @await Html.PartialAsync("_ValidationScriptsPartial")
+
+    <script>
+        (function () {
+            // ----- Email section toggle -----
+            const enabled   = document.getElementById('Email_Enabled');
+            const box       = document.getElementById('email-settings-fields');
+            const testRow   = document.getElementById('email-test');
+            const togglePwd = document.getElementById('togglePwd');
+            const pwd       = document.getElementById('Email_Password');
+
+            function setDisabled(container, off) {
+                if (!container) return;
+                container.querySelectorAll('input, select, button, textarea').forEach(el => {
+                    if (el.id === 'Email_Enabled') return;
+                    el.disabled = off;
+                });
+            }
+
+            function updateEmailState() {
+                const on = enabled?.checked ?? false;
+                if (on) {
+                    box?.classList.remove('d-none');
+                    testRow?.classList.remove('d-none');
+                    setDisabled(box, false);
+                } else {
+                    setDisabled(box, true);
+                    box?.classList.add('d-none');
+                    testRow?.classList.add('d-none');
+                }
+            }
+
+            enabled?.addEventListener('change', updateEmailState);
+            updateEmailState();
+
+            if (togglePwd && pwd) {
+                togglePwd.addEventListener('click', function () {
+                    const isPwd = pwd.type === 'password';
+                    pwd.type = isPwd ? 'text' : 'password';
+                    this.textContent = isPwd ? 'Hide' : 'Show';
+                });
+            }
+
+            // ----- Updates section toggle -----
+            const updChk   = document.getElementById('Updates_Enabled');
+            const updBox   = document.getElementById('updates-fields');
+            const updWarn  = document.getElementById('updates-warning');
+
+            function updateUpdatesState() {
+                const on = updChk?.checked ?? false;
+                if (on) {
+                    updBox?.classList.remove('d-none');
+                    updWarn?.classList.remove('d-none');
+                } else {
+                    updBox?.classList.add('d-none');
+                    updWarn?.classList.add('d-none');
+                }
+            }
+
+            updChk?.addEventListener('change', updateUpdatesState);
+            updateUpdatesState();
+        })();
+    </script>
+}
 
 <!-- ===========================================
-     Section D: Regenerate Certificate Form
+     Section E: Regenerate Certificate Form
      =========================================== -->
 <h4>Regenerate Self-Signed Certificate</h4>
 @using (Html.BeginForm("RegenerateCert", "Settings", FormMethod.Post))
@@ -127,8 +387,4 @@ else
     </div>
 
     <button type="submit" class="btn btn-warning">Regenerate Certificate</button>
-}
-
-@section Scripts {
-    @await Html.PartialAsync("_ValidationScriptsPartial")
 }

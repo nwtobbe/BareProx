@@ -18,77 +18,128 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
-using System.Text.Json;
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services.Background;
-using Microsoft.EntityFrameworkCore;
 using BareProx.Services.Netapp;
-
+using BareProx.Services.Notifications;
+using BareProx.Services.Proxmox;
+using BareProx.Services.Proxmox.Restore;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using System.Linq;
+using System.Text.Json;
 
 namespace BareProx.Services.Restore
 {
     public class RestoreService : IRestoreService
     {
-        private readonly ApplicationDbContext _context;
+        private readonly IDbContextFactory<ApplicationDbContext> _dbf;
         private readonly IBackgroundServiceQueue _taskQueue;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ILogger<RestoreService> _logger;
+        // Field retained (even if unused directly) to keep ctor wiring symmetrical
         private readonly INetappVolumeService _netappVolumeService;
+        private readonly IEmailSender _email;
+        private readonly IAppTimeZoneService _tz;
 
         public RestoreService(
-            ApplicationDbContext context,
+            IDbContextFactory<ApplicationDbContext> dbf,
             IBackgroundServiceQueue taskQueue,
             IServiceScopeFactory scopeFactory,
             ILogger<RestoreService> logger,
-            INetappVolumeService netappVolumeService)
+            INetappVolumeService netappVolumeService,
+            IEmailSender email,
+            IAppTimeZoneService tz)
         {
-            _context = context;
+            _dbf = dbf;
             _taskQueue = taskQueue;
             _scopeFactory = scopeFactory;
             _logger = logger;
             _netappVolumeService = netappVolumeService;
+            _email = email;
+            _tz = tz;
         }
 
         public async Task<bool> RunRestoreAsync(RestoreFormViewModel model, CancellationToken ct)
         {
-            // 1) Create job record
-            var job = new Job
+            // 1) Create job record (Queued) using a short-lived factory context
+            int jobId;
+            await using (var db = await _dbf.CreateDbContextAsync(ct))
             {
-                Type = "Restore",
-                Status = "Queued",
-                RelatedVm = model.VmName,
-                PayloadJson = JsonSerializer.Serialize(model),
-                StartedAt = DateTime.UtcNow
-            };
-            _context.Jobs.Add(job);
-            await _context.SaveChangesAsync(ct);
-            var jobId = job.Id;
+                var job = new Job
+                {
+                    Type = "Restore",
+                    Status = "Queued",
+                    RelatedVm = model.VmName,
+                    PayloadJson = JsonSerializer.Serialize(model),
+                    StartedAt = DateTime.UtcNow
+                };
+                db.Jobs.Add(job);
+                await db.SaveChangesAsync(ct);
+                jobId = job.Id;
+            }
 
             // 2) Enqueue background work
             _taskQueue.QueueBackgroundWorkItem(async backgroundCt =>
             {
                 using var scope = _scopeFactory.CreateScope();
-                var ctx = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+                var ctxFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>();
+                await using var ctx = await ctxFactory.CreateDbContextAsync(backgroundCt);
+
                 var netappflexclone = scope.ServiceProvider.GetRequiredService<INetappFlexCloneService>();
                 var proxmox = scope.ServiceProvider.GetRequiredService<ProxmoxService>();
+                var proxmoxRestore = scope.ServiceProvider.GetRequiredService<IProxmoxRestore>();
                 var netappVolumeSvc = scope.ServiceProvider.GetRequiredService<INetappVolumeService>();
                 var netappExportNfs = scope.ServiceProvider.GetRequiredService<INetappExportNFSService>();
 
-                // Reload job in new context
+                // Reload job in this scope
                 var backgroundJob = await ctx.Jobs.FindAsync(new object[] { jobId }, backgroundCt);
-                backgroundJob.Status = "Running";
-                backgroundJob.StartedAt = DateTime.UtcNow;
+                if (backgroundJob == null) return;
+
+                // Create per-VM result row (one VM per restore)
+                int.TryParse(model.VmId, out var vmid);
+                var vmResult = new JobVmResult
+                {
+                    JobId = jobId,
+                    VMID = vmid,
+                    VmName = model.VmName ?? "",
+                    HostName = model.HostAddress ?? "",
+                    StorageName = model.VolumeName ?? "",
+                    Status = "Running",
+                    Reason = "",
+                    ErrorMessage = null,
+                    WasRunning = false,
+                    IoFreezeAttempted = false,
+                    IoFreezeSucceeded = false,
+                    SnapshotRequested = false,
+                    SnapshotTaken = false,
+                    ProxmoxSnapshotName = null,
+                    SnapshotUpid = null,
+                    StartedAtUtc = DateTime.UtcNow,
+                    CompletedAtUtc = null
+                };
+                ctx.JobVmResults.Add(vmResult);
                 await ctx.SaveChangesAsync(backgroundCt);
+                var vmResultId = vmResult.Id;
+
+                await UpdateJobStatusAsync(ctx, backgroundJob, "Running", null, backgroundCt);
+                await LogVmAsync(ctx, vmResultId, "Info", "Restore job started.", backgroundCt);
+
+                string? cloneName = null;
 
                 try
                 {
                     // 3) Clone volume from snapshot
-                    var cloneName = $"restore_{jobId}_{DateTime.UtcNow:yyyyMMddHHmmss}";
+                    cloneName = $"restore_{jobId}_{DateTime.UtcNow:yyyyMMddHHmmss}";
                     model.CloneVolumeName = cloneName;
+                    await LogVmAsync(ctx, vmResultId, "Info",
+                        $"Cloning volume '{model.VolumeName}' from snapshot '{model.SnapshotName}' → '{cloneName}'.",
+                        backgroundCt);
 
-                    // ✅ Derive snapshot-as-volume-chain from the backup run (JobId == BackupId)
-                    bool snapChainActive = await ctx.BackupRecords
+                    // Determine snapshot-as-volume chain flag from the originating backup
+                    var snapChainActive = await ctx.BackupRecords
                         .Where(b => b.Id == model.BackupId)
                         .AnyAsync(b => b.SnapshotAsvolumeChain, backgroundCt);
 
@@ -102,51 +153,51 @@ namespace BareProx.Services.Restore
                     if (!cloneResult.Success)
                         throw new InvalidOperationException(cloneResult.Message);
 
-                    // 4) Copy export policy (branch if restoring from secondary)
+                    await LogVmAsync(ctx, vmResultId, "Info", $"Clone created: '{cloneName}'.", backgroundCt);
+                    await UpdateJobStatusAsync(ctx, backgroundJob, "Cloned volume", null, backgroundCt);
+
+                    // 4) Copy/ensure export policy
                     if (model.Target.Equals("Secondary", StringComparison.OrdinalIgnoreCase))
                     {
-                        // a) figure out which primary controller & volume to copy from
+                        await LogVmAsync(ctx, vmResultId, "Info", "Applying export policy on secondary.", backgroundCt);
+
                         var snap = await ctx.NetappSnapshots
+                            .AsNoTracking()
                             .FirstOrDefaultAsync(s => s.JobId == model.BackupId, backgroundCt);
 
-                        int primaryCtrl = snap?.PrimaryControllerId
-                                           ?? await ctx.SnapMirrorRelations
-                                                .Where(r =>
-                                                    r.DestinationControllerId == model.ControllerId &&
-                                                    r.DestinationVolume == model.VolumeName)
-                                                .Select(r => r.SourceControllerId)
-                                                .FirstOrDefaultAsync(backgroundCt);
+                        var primaryCtrl = snap?.PrimaryControllerId
+                                          ?? await ctx.SnapMirrorRelations
+                                              .Where(r => r.DestinationControllerId == model.ControllerId &&
+                                                          r.DestinationVolume == model.VolumeName)
+                                              .Select(r => r.SourceControllerId)
+                                              .FirstOrDefaultAsync(backgroundCt);
 
-                        string primaryVol = snap?.PrimaryVolume
-                                            ?? await ctx.SnapMirrorRelations
-                                                 .Where(r =>
-                                                     r.DestinationControllerId == model.ControllerId &&
-                                                     r.DestinationVolume == model.VolumeName)
-                                                 .Select(r => r.SourceVolume)
-                                                 .FirstOrDefaultAsync(backgroundCt);
+                        var primaryVol = snap?.PrimaryVolume
+                                         ?? await ctx.SnapMirrorRelations
+                                             .Where(r => r.DestinationControllerId == model.ControllerId &&
+                                                         r.DestinationVolume == model.VolumeName)
+                                             .Select(r => r.SourceVolume)
+                                             .FirstOrDefaultAsync(backgroundCt);
 
-                        // b) read the export‐policy name from SelectedNetappVolumes on primary
                         var primaryPolicy = await ctx.SelectedNetappVolumes
-                            .Where(v => v.NetappControllerId == primaryCtrl &&
-                                        v.VolumeName == primaryVol)
+                            .Where(v => v.NetappControllerId == primaryCtrl && v.VolumeName == primaryVol)
                             .Select(v => v.ExportPolicyName)
                             .FirstOrDefaultAsync(backgroundCt)
-                            ?? throw new InvalidOperationException($"No policy for {primaryVol}@{primaryCtrl}");
+                            ?? throw new InvalidOperationException($"No export policy for {primaryVol}@{primaryCtrl}");
 
-                        // c) ensure it exists on secondary
+                        var svmName = await ctx.SelectedNetappVolumes
+                            .Where(v => v.NetappControllerId == model.ControllerId && v.VolumeName == model.VolumeName)
+                            .Select(v => v.Vserver)
+                            .FirstOrDefaultAsync(backgroundCt)
+                            ?? throw new InvalidOperationException("Missing SVM on secondary.");
+
                         await netappExportNfs.EnsureExportPolicyExistsOnSecondaryAsync(
                             exportPolicyName: primaryPolicy,
                             primaryControllerId: primaryCtrl,
                             secondaryControllerId: model.ControllerId,
-                            svmName: await ctx.SelectedNetappVolumes
-                                                       .Where(v => v.NetappControllerId == model.ControllerId &&
-                                                                   v.VolumeName == model.VolumeName)
-                                                       .Select(v => v.Vserver)
-                                                       .FirstOrDefaultAsync(backgroundCt)
-                                                    ?? throw new InvalidOperationException("Missing SVM"),
+                            svmName: svmName,
                             ct: backgroundCt);
 
-                        // d) assign it to the new clone
                         var setOk = await netappExportNfs.SetExportPolicyAsync(
                             volumeName: cloneName,
                             exportPolicyName: primaryPolicy,
@@ -156,12 +207,13 @@ namespace BareProx.Services.Restore
                         if (!setOk)
                         {
                             await netappVolumeSvc.DeleteVolumeAsync(cloneName, model.ControllerId, backgroundCt);
-                            throw new InvalidOperationException("Failed to set export policy on cloned volume.");
+                            throw new InvalidOperationException("Failed to set export policy on cloned volume (secondary).");
                         }
                     }
                     else
                     {
-                        // Primary: just copy the policy in‐place
+                        await LogVmAsync(ctx, vmResultId, "Info", "Copying export policy on primary.", backgroundCt);
+
                         var policyOk = await netappExportNfs.CopyExportPolicyAsync(
                             model.VolumeName,
                             cloneName,
@@ -175,13 +227,15 @@ namespace BareProx.Services.Restore
                         }
                     }
 
+                    await UpdateJobStatusAsync(ctx, backgroundJob, "Export policy applied", null, backgroundCt);
 
-                    // 5) Ensure export path is set
-                    var volInfo = await netappVolumeSvc.LookupVolumeAsync(cloneName, model.ControllerId, backgroundCt);
-                    if (volInfo == null)
-                        throw new InvalidOperationException($"UUID not found for clone '{cloneName}'.");
+                    // 5) Ensure export path
+                    var volInfo = await netappVolumeSvc.LookupVolumeAsync(cloneName, model.ControllerId, backgroundCt)
+                                ?? throw new InvalidOperationException($"UUID not found for clone '{cloneName}'.");
 
                     var exportPath = $"/{cloneName}";
+                    await LogVmAsync(ctx, vmResultId, "Info", $"Setting export path '{exportPath}'.", backgroundCt);
+
                     var exported = await netappExportNfs.SetVolumeExportPathAsync(
                         volInfo.Uuid,
                         exportPath,
@@ -194,39 +248,38 @@ namespace BareProx.Services.Restore
                         throw new InvalidOperationException($"Failed to export clone '{cloneName}'.");
                     }
 
+                    await UpdateJobStatusAsync(ctx, backgroundJob, "Export path set", null, backgroundCt);
+
                     // 6) Mount on target host
                     var mounts = await netappVolumeSvc.GetVolumesWithMountInfoAsync(model.ControllerId, backgroundCt);
                     var cloneMount = mounts.FirstOrDefault(m =>
-                        m.VolumeName.Equals(cloneName, StringComparison.OrdinalIgnoreCase));
+                        m.VolumeName.Equals(cloneName, StringComparison.OrdinalIgnoreCase))
+                        ?? throw new InvalidOperationException($"Mount info not found for clone '{cloneName}'.");
 
-                    if (cloneMount == null)
-                        throw new InvalidOperationException($"Mount info not found for clone '{cloneName}'.");
-
-                    // Load the cluster with hosts
+                    // NOTE: original logic picks the first cluster that has hosts;
+                    // if you have ClusterId on the model, filter by it instead.
                     var clusterInfo = await ctx.ProxmoxClusters
                         .Include(c => c.Hosts)
-                        .FirstOrDefaultAsync(c => c.Hosts.Any(), backgroundCt);
+                        .FirstOrDefaultAsync(c => c.Hosts.Any(), backgroundCt)
+                        ?? throw new InvalidOperationException("Proxmox cluster not found.");
 
-                    if (clusterInfo == null)
-                        throw new InvalidOperationException("Proxmox cluster not found.");
-
-                    // Identify original and target hosts
                     var origHost = clusterInfo.Hosts
                         .FirstOrDefault(h => h.HostAddress == model.OriginalHostAddress);
 
                     var targetHost = clusterInfo.Hosts
-                        .FirstOrDefault(h => h.HostAddress == model.HostAddress);
+                        .FirstOrDefault(h => h.HostAddress == model.HostAddress)
+                        ?? throw new InvalidOperationException("Selected target host not found in cluster.");
 
-                    if (targetHost == null)
-                        throw new InvalidOperationException("Selected target host not found in cluster.");
+                    await LogVmAsync(ctx, vmResultId, "Info",
+                        $"Mounting NFS on host '{targetHost.Hostname}' ({targetHost.HostAddress}).",
+                        backgroundCt);
 
-                    // Perform NFS mount on the target host
                     var mountSuccess = await proxmox.MountNfsStorageViaApiAsync(
                         clusterInfo,
                         targetHost.Hostname!,
                         cloneName,
                         cloneMount.MountIp,
-                        exportPath, 
+                        exportPath,
                         snapChainActive);
 
                     if (!mountSuccess)
@@ -235,19 +288,27 @@ namespace BareProx.Services.Restore
                         throw new InvalidOperationException("Failed to mount clone on target host.");
                     }
 
+                    await UpdateJobStatusAsync(ctx, backgroundJob, "Mounted on target host", null, backgroundCt);
+
                     // 7) Perform restore
+                    await LogVmAsync(ctx, vmResultId, "Info",
+                        $"Starting restore to host '{targetHost.Hostname}' (type: {model.RestoreType}).",
+                        backgroundCt);
+
                     bool restored;
                     if (model.RestoreType == RestoreType.ReplaceOriginal && origHost != null)
                     {
-                        // Remove existing VM on original host
+                        await LogVmAsync(ctx, vmResultId, "Info",
+                            $"Shutting down and removing original VM {model.VmId} on '{origHost.Hostname}'.",
+                            backgroundCt);
+
                         await proxmox.ShutdownAndRemoveVmAsync(
                             clusterInfo,
                             origHost.Hostname!,
                             int.Parse(model.VmId),
                             backgroundCt);
 
-                        // Restore using original VMID on target host
-                        restored = await proxmox.RestoreVmFromConfigWithOriginalIdAsync(
+                        restored = await proxmoxRestore.RestoreVmFromConfigWithOriginalIdAsync(
                             model,
                             targetHost.HostAddress,
                             cloneName,
@@ -256,8 +317,7 @@ namespace BareProx.Services.Restore
                     }
                     else
                     {
-                        // Create new VM on target host
-                        restored = await proxmox.RestoreVmFromConfigAsync(
+                        restored = await proxmoxRestore.RestoreVmFromConfigAsync(
                             model,
                             targetHost.HostAddress,
                             cloneName,
@@ -268,22 +328,164 @@ namespace BareProx.Services.Restore
                     if (!restored)
                         throw new InvalidOperationException("VM restore failed.");
 
-                    // 8) Mark success
+                    await LogVmAsync(ctx, vmResultId, "Info", "Restore completed.", backgroundCt);
+
+                    // 8) Mark success (both VM row and job)
+                    vmResult.Status = "Success";
+                    vmResult.CompletedAtUtc = DateTime.UtcNow;
+                    await ctx.SaveChangesAsync(backgroundCt);
+
                     backgroundJob.Status = "Completed";
                     backgroundJob.CompletedAt = DateTime.UtcNow;
                     await ctx.SaveChangesAsync(backgroundCt);
+
+                    // Notify (Success)
+                    await TryNotifyAsync(
+                        jobId: jobId,
+                        finalStatus: "Success",
+                        vmName: model.VmName ?? "",
+                        storageName: model.VolumeName ?? "",
+                        snapshotName: model.SnapshotName ?? "",
+                        targetHost: targetHost.Hostname ?? model.HostAddress ?? "",
+                        errorOrNote: null,
+                        ct: backgroundCt);
                 }
                 catch (Exception ex)
                 {
-                    // 9) Mark failure
+                    // Per-VM failure log & status
+                    await LogVmAsync(ctx, vmResultId, "Error", ex.Message, backgroundCt);
+
+                    var vmRow = await ctx.JobVmResults.FindAsync(new object[] { vmResultId }, backgroundCt);
+                    if (vmRow != null)
+                    {
+                        vmRow.Status = "Failed";
+                        vmRow.ErrorMessage = ex.Message;
+                        vmRow.CompletedAtUtc = DateTime.UtcNow;
+                        await ctx.SaveChangesAsync(backgroundCt);
+                    }
+
+                    // Job failure
                     backgroundJob.Status = "Failed";
                     backgroundJob.ErrorMessage = ex.Message;
                     backgroundJob.CompletedAt = DateTime.UtcNow;
                     await ctx.SaveChangesAsync(backgroundCt);
+
+                    // Notify (Failure)
+                    await TryNotifyAsync(
+                        jobId: jobId,
+                        finalStatus: "Error",
+                        vmName: model.VmName ?? "",
+                        storageName: model.VolumeName ?? "",
+                        snapshotName: model.SnapshotName ?? "",
+                        targetHost: model.HostAddress ?? "",
+                        errorOrNote: ex.Message,
+                        ct: backgroundCt);
                 }
             });
 
             return true;
         }
+
+        // ---- helpers (mirror Backup style) -----------------------------
+
+        private static async Task UpdateJobStatusAsync(
+            ApplicationDbContext ctx,
+            Job job,
+            string status,
+            string? error,
+            CancellationToken ct)
+        {
+            job.Status = status;
+            if (!string.IsNullOrWhiteSpace(error)) job.ErrorMessage = error;
+            await ctx.SaveChangesAsync(ct);
+        }
+
+        private static async Task LogVmAsync(
+            ApplicationDbContext ctx,
+            int jobVmResultId,
+            string level,
+            string message,
+            CancellationToken ct)
+        {
+            ctx.JobVmLogs.Add(new JobVmLog
+            {
+                JobVmResultId = jobVmResultId,
+                Level = level,
+                Message = message,
+                TimestampUtc = DateTime.UtcNow
+            });
+            await ctx.SaveChangesAsync(ct);
+        }
+
+        // -------- Email notification (Success/Failure) ------------------
+
+        private async Task TryNotifyAsync(
+            int jobId,
+            string finalStatus,           // "Success" | "Error"
+            string vmName,
+            string storageName,
+            string snapshotName,
+            string targetHost,
+            string? errorOrNote,
+            CancellationToken ct)
+        {
+            try
+            {
+                await using var db = await _dbf.CreateDbContextAsync(ct);
+                var s = await db.EmailSettings.AsNoTracking().FirstOrDefaultAsync(e => e.Id == 1, ct);
+                if (s is null || !s.Enabled) return;
+
+                // Decide if we should send based on flags + MinSeverity
+                var finalRank = finalStatus == "Error" ? 3 : 1; // Error=3, Success (Info)=1
+                var minRank = SevRank(s.MinSeverity ?? "Info");
+
+                var send =
+                    (finalStatus == "Success" && s.OnRestoreSuccess && finalRank >= minRank) ||
+                    (finalStatus == "Error" && s.OnRestoreFailure && finalRank >= minRank);
+
+                if (!send) return;
+
+                // Recipients
+                var recipients = (s.DefaultRecipients ?? "")
+                    .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                if (recipients.Length == 0) return;
+
+                var nowApp = _tz.ConvertUtcToApp(DateTime.UtcNow);
+
+                var subj = $"BareProx: Restore {finalStatus} — {vmName} ({storageName}:{snapshotName}) [Job #{jobId}]";
+                var html = $@"
+                    <h3>BareProx Restore {finalStatus}</h3>
+                    <p>
+                      <b>Job:</b> #{jobId}<br/>
+                      <b>VM:</b> {System.Net.WebUtility.HtmlEncode(vmName)}<br/>
+                      <b>Storage:</b> {System.Net.WebUtility.HtmlEncode(storageName)}<br/>
+                      <b>Snapshot:</b> {System.Net.WebUtility.HtmlEncode(snapshotName)}<br/>
+                      <b>Target host:</b> {System.Net.WebUtility.HtmlEncode(targetHost)}<br/>
+                      <b>When (App time):</b> {nowApp:u}
+                    </p>
+                    {(string.IsNullOrWhiteSpace(errorOrNote) ? "" :
+                      $@"<p><b>Notes:</b><br/><pre style=""white-space:pre-wrap"">{System.Net.WebUtility.HtmlEncode(errorOrNote)}</pre></p>")}
+                    <p>— BareProx</p>";
+
+                // One mail per recipient (simple & robust)
+                foreach (var r in recipients)
+                {
+                    await _email.SendAsync(r, subj, html, ct);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Never fail the restore because email failed — just log.
+                _logger.LogWarning(ex, "TryNotifyAsync (Restore) failed for Job {JobId}", jobId);
+            }
+        }
+
+        private static int SevRank(string s) => s?.ToLowerInvariant() switch
+        {
+            "critical" => 4,
+            "error" => 3,
+            "warning" => 2,
+            _ => 1 // Info
+        };
     }
 }

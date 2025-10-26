@@ -19,12 +19,12 @@
  */
 
 using BareProx.Data;
-using BareProx.Services;
+using BareProx.Services.Proxmox;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Reflection;
 
-    public class HomeController : Controller
+public class HomeController : Controller
 {
     private readonly ApplicationDbContext _context;
     private readonly ProxmoxService _proxmoxService;

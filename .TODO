@@ -1,38 +1,3 @@
 ﻿
 Fix intermittent copy export failue
-Fix mac addresses when restoring to new vmid
-New uuid when restoring to new vm
 
-Verify restore
-Fixed readme
-
-Fix file rename not working when low on space
-
-VM GenID → --vmgenid 1 (autogen) or pass your own UUID
-
-SMBIOS UUID → -smbios1 uuid=<uuid> (generate yourself)
-
-	BareProx.Services
-├── Authentication
-│   ├── IProxmoxAuthenticator
-│   └── ProxmoxAuthenticator         ←– handles login, ticket/CSRF fetching & storage
-│
-├── Networking
-│   ├── IProxmoxNetworkService
-│   └── ProxmoxNetworkService       ←– all `netX` operations: mac changes, link_down, pause/resume
-│
-├── VirtualMachines
-│   ├── IProxmoxVmService
-│   └── ProxmoxVmService            ←– create/delete/restore VMs, Generate VMIDs, vmgenid, shutdown/reboot
-│
-├── Snapshots
-│   ├── IProxmoxSnapshotService
-│   └── ProxmoxSnapshotService      ←– list/create/delete/restore snapshots, wait-for-task
-│
-├── Storage
-│   ├── IProxmoxStorageService
-│   └── ProxmoxStorageService       ←– mount/unmount NFS, list storage, cleanup mount-points
-│
-└── Internal
-    ├── IHttpProxmoxClientFactory   ←– builds HttpClient with auth headers
-    └── ProxmoxApiRequester         ←– SendWithRefreshAsync, low-level GET/PUT/POST/DELETE

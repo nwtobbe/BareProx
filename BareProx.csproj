@@ -16,27 +16,34 @@
     <PackageReference Include="Hangfire.AspNetCore" Version="1.8.21" />
     <PackageReference Include="jQuery" Version="3.7.1" />
     <PackageReference Include="jquery.datatables" Version="1.10.15" />
+    <PackageReference Include="Markdig" Version="0.43.0" />
     <PackageReference Include="Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore" Version="8.0.21" />
     <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="8.0.21" />
     <PackageReference Include="Microsoft.AspNetCore.Identity.UI" Version="8.0.21" />
+    <PackageReference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" Version="4.8.0" />
+
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.10">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
+
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.10" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.10" />
+
     <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="9.0.10">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.VisualStudio.Web.CodeGeneration.Design" Version="8.0.7" />
+
+    <PackageReference Include="Microsoft.VisualStudio.Web.CodeGeneration.Design" Version="8.0.7" PrivateAssets="all" />
+
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <PackageReference Include="Polly" Version="8.6.4" />
     <PackageReference Include="RestSharp" Version="112.1.0" />
     <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
     <PackageReference Include="Serilog.Sinks.File.Archive" Version="1.0.6" />
-    <PackageReference Include="SSH.NET" Version="2025.0.0" />
+    <PackageReference Include="SSH.NET" Version="2025.1.0" />
     <PackageReference Include="TimeZoneConverter" Version="7.2.0" />
   </ItemGroup>
 
@@ -49,42 +56,51 @@
     <Folder Include="Migrations\" />
   </ItemGroup>
 
-	<PropertyGroup Condition="'$(Configuration)' == 'Debug'">
-		<DefineConstants>DEBUG;TRACE</DefineConstants>
-	</PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+  </PropertyGroup>
 
-	<PropertyGroup Condition="'$(Configuration)' == 'Release'">
-		<DefineConstants>TRACE</DefineConstants>
-		<!-- Ensure DEBUG is NOT defined here -->
-	</PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DefineConstants>TRACE</DefineConstants>
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <TieredCompilation>true</TieredCompilation>
+    <TieredPGO>true</TieredPGO>
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
 
-	<Target Name="GenerateVersionInfo" BeforeTargets="BeforeBuild" Condition="'$(OS)' == 'Windows_NT'">
-		<Exec Command="powershell -ExecutionPolicy Bypass -File Tools\GenerateVersionInfo.ps1" />
-	</Target>
+  <Target Name="GenerateVersionInfo" BeforeTargets="BeforeBuild" Condition="'$(OS)' == 'Windows_NT'">
+    <Exec Command="powershell -ExecutionPolicy Bypass -File Tools\GenerateVersionInfo.ps1" />
+  </Target>
 
-	<PropertyGroup>
-		<GenerateAssemblyInfo>false</GenerateAssemblyInfo>
-		<Deterministic>false</Deterministic>
-	</PropertyGroup>
+  <PropertyGroup>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <Deterministic>false</Deterministic>
+  </PropertyGroup>
 
 	<ItemGroup>
-		<PackageReference Include="Microsoft.Build" Version="17.14.28">
-			<PrivateAssets>all</PrivateAssets>
+		<PackageReference Include="Microsoft.Build" Version="17.14.28" PrivateAssets="all" ExcludeAssets="runtime">
+			<NoWarn>NU1701</NoWarn>
 		</PackageReference>
-		<PackageReference Include="Microsoft.Build.Framework" Version="17.14.28">
-			<PrivateAssets>all</PrivateAssets>
+		<PackageReference Include="Microsoft.Build.Framework" Version="17.14.28" PrivateAssets="all" ExcludeAssets="runtime">
+			<NoWarn>NU1701</NoWarn>
 		</PackageReference>
-		<PackageReference Include="Microsoft.Build.Tasks.Core" Version="17.14.28">
-			<PrivateAssets>all</PrivateAssets>
+		<PackageReference Include="Microsoft.Build.Tasks.Core" Version="17.14.28" PrivateAssets="all" ExcludeAssets="runtime">
+			<NoWarn>NU1701</NoWarn>
 		</PackageReference>
-		<PackageReference Include="Microsoft.Build.Utilities.Core" Version="17.14.28">
-			<PrivateAssets>all</PrivateAssets>
+		<PackageReference Include="Microsoft.Build.Utilities.Core" Version="17.14.28" PrivateAssets="all" ExcludeAssets="runtime">
+			<NoWarn>NU1701</NoWarn>
 		</PackageReference>
-		<PackageReference Include="Microsoft.NET.StringTools" Version="17.14.28">
-			<PrivateAssets>all</PrivateAssets>
+		<PackageReference Include="Microsoft.NET.StringTools" Version="17.14.28" PrivateAssets="all" ExcludeAssets="runtime">
+			<NoWarn>NU1701</NoWarn>
 		</PackageReference>
-		<PackageReference Include="Microsoft.IO.Redist" Version="6.1.0">
-			<PrivateAssets>all</PrivateAssets>
+
+		<!-- Keep Locator available at runtime so RegisterDefaults() can run -->
+		<PackageReference Include="Microsoft.Build.Locator" Version="1.10.2" PrivateAssets="all">
+			<NoWarn>NU1701</NoWarn>
+		</PackageReference>
+
+		<!-- Optional: you likely don't need this at all; safe to remove -->
+		<PackageReference Include="Microsoft.IO.Redist" Version="6.1.0" PrivateAssets="all" ExcludeAssets="runtime">
 			<NoWarn>NU1701</NoWarn>
 		</PackageReference>
 	</ItemGroup>
