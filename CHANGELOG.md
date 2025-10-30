@@ -14,11 +14,11 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - Page. Settings/System
-- 
+- Page. Cleanup. Now only one click at a time.
 
 
 ### Fixed
-- 
+- Page Jobs. Truncated error messages
 
 
 

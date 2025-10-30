@@ -7,7 +7,7 @@
         "Failed" => "table-danger",
         "Cancelled" => "table-warning",
         "Running" => "table-info",
-        "Warning" => "table-warning",  
+        "Warning" => "table-warning",
         _ => ""
     };
 
@@ -17,7 +17,7 @@
         "Failed" => "danger",
         "Cancelled" => "warning",
         "Running" => "info",
-        "Warning" => "warning", 
+        "Warning" => "warning",
         _ => "secondary"
     };
 }
@@ -48,7 +48,11 @@ else
                 var badge = GetStatusBadge(job.Status);
                 <tr class="@GetRowClass(job.Status)">
                     <td class="text-nowrap">@job.Type</td>
-                    <td class="text-truncate" title="@job.RelatedVm">@job.RelatedVm</td>
+
+                    <td class="text-truncate" style="max-width: 30ch;" title="@job.RelatedVm">
+                        @job.RelatedVm
+                    </td>
+
                     <td>
                         <span class="badge bg-@badge align-middle">@job.Status</span>
                         @if (job.Status == "Running")
@@ -57,30 +61,46 @@ else
                             <span class="visually-hidden">In progress</span>
                         }
                 </td>
+
                 <td class="text-nowrap">@job.StartedAtLocal.ToString("yyyy-MM-dd HH:mm")</td>
+
                 <td class="text-nowrap">
                     @(job.CompletedAtLocal.HasValue
                                     ? job.CompletedAtLocal.Value.ToString("yyyy-MM-dd HH:mm")
                                     : "-")
             </td>
-            <td class="text-truncate" title="@(job.ErrorMessage ?? "-")">
-                @(string.IsNullOrEmpty(job.ErrorMessage) ? "-" : job.ErrorMessage)
-            </td>
-            <td class="text-end">
-                <div class="btn-group btn-group-sm" role="group" aria-label="Job actions">
-                    <button type="button"
-                            class="btn btn-outline-primary js-job-details"
-                            data-job-id="@job.Id">
-                        Details
-                    </button>
 
-                    @if (job.Status == "Running")
+                    <!-- Error: truncate with ellipsis, full text in tooltip -->
+                    <td class="align-middle">
+                @if (string.IsNullOrEmpty(job.ErrorMessage))
+                        {
+                            @:"-"
+                        }
+                        else
+                        {
+                            <span class="d-inline-block text-truncate text-break align-middle"
+                                  style="max-width: 40ch;"
+                                  title="@job.ErrorMessage">
+                                @job.ErrorMessage
+                            </span>
+                        }
+                    </td>
+
+                    <td class="text-end">
+                        <div class="btn-group btn-group-sm" role="group" aria-label="Job actions">
+                            <button type="button"
+                                    class="btn btn-outline-primary js-job-details"
+                                    data-job-id="@job.Id">
+                                Details
+                            </button>
+
+                            @if (job.Status == "Running")
                             {
                                 <form asp-controller="Jobs"
                                       asp-action="Cancel"
                                       asp-route-id="@job.Id"
                                       method="post"
-                                      class="d-inline">
+                                      class="d-inline ms-2">
                                     @Html.AntiForgeryToken()
                                     <button type="submit" class="btn btn-outline-danger">Cancel</button>
                                 </form>
