@@ -352,7 +352,6 @@ if (isConfigured)
     builder.Services.AddScoped<INetappSnapmirrorService, NetappSnapmirrorService>();
     builder.Services.AddScoped<INetappSnapshotService, NetappSnapshotService>();
     builder.Services.AddScoped<ProxmoxService>();
-    builder.Services.AddScoped<IProxmoxIdService, ProxmoxIdService>();
     builder.Services.AddScoped<IProxmoxAuthenticator, ProxmoxAuthenticator>();
     builder.Services.AddScoped<IProxmoxHelpersService, ProxmoxHelpersService>();
     builder.Services.AddScoped<IRestoreService, RestoreService>();
