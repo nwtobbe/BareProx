@@ -85,7 +85,7 @@ namespace BareProx.Controllers
         [HttpGet]
         public async Task<IActionResult> Config(CancellationToken ct)
         {
-            // Load /config/appsettings.json (for time zone section)
+            // Load /config/appsettings.json (for time zone + updates)
             JObject cfg = System.IO.File.Exists(_configFile)
                 ? JObject.Parse(System.IO.File.ReadAllText(_configFile))
                 : new JObject();
@@ -130,6 +130,12 @@ namespace BareProx.Controllers
                     RegenSubjectName = cert?.Subject ?? "CN=localhost",
                     RegenValidDays = 365,
                     RegenSANs = "localhost"
+                },
+                // NEW: Updates section from appsettings.json
+                Updates = new UpdateSettingsViewModel
+                {
+                    Enabled = (bool?)cfg["Updates"]?["Enabled"] ?? false,
+                    FrequencyMinutes = (int?)cfg["Updates"]?["FrequencyMinutes"] ?? 360
                 }
             };
 
@@ -221,7 +227,38 @@ namespace BareProx.Controllers
             return RedirectToAction(nameof(Config));
         }
 
-        // Helper: rebuild page VM (now also fills Email)
+        // ========================================================
+        // NEW: POST — Save Update Checker settings
+        // ========================================================
+        [HttpPost]
+        [ValidateAntiForgeryToken]
+        public IActionResult SaveUpdateSettings([Bind(Prefix = "Updates")] UpdateSettingsViewModel vm)
+        {
+            // Accept only a few safe frequencies
+            var allowed = new HashSet<int> { 1440, 2880, 10080 };
+            if (!allowed.Contains(vm.FrequencyMinutes))
+            {
+                // fallback to 360 if something odd was posted
+                vm.FrequencyMinutes = 10080;
+            }
+
+            JObject cfg = System.IO.File.Exists(_configFile)
+                ? JObject.Parse(System.IO.File.ReadAllText(_configFile))
+                : new JObject();
+
+            if (cfg["Updates"] == null || cfg["Updates"]!.Type != JTokenType.Object)
+                cfg["Updates"] = new JObject();
+
+            var upd = (JObject)cfg["Updates"]!;
+            upd["Enabled"] = vm.Enabled;
+            upd["FrequencyMinutes"] = vm.FrequencyMinutes;
+
+            System.IO.File.WriteAllText(_configFile, cfg.ToString());
+            TempData["Success"] = "Update checker settings saved.";
+            return RedirectToAction(nameof(Config));
+        }
+
+        // Helper: rebuild page VM (now also fills Email + Updates)
         private SettingsPageViewModel BuildSettingsPageViewModel()
         {
             JObject cfg = System.IO.File.Exists(_configFile)
@@ -264,6 +301,12 @@ namespace BareProx.Controllers
                     RegenSubjectName = cert?.Subject ?? "CN=localhost",
                     RegenValidDays = 365,
                     RegenSANs = "localhost"
+                },
+                // NEW: Updates section
+                Updates = new UpdateSettingsViewModel
+                {
+                    Enabled = (bool?)cfg["Updates"]?["Enabled"] ?? false,
+                    FrequencyMinutes = (int?)cfg["Updates"]?["FrequencyMinutes"] ?? 360
                 }
             };
 

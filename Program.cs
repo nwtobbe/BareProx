@@ -32,6 +32,7 @@ using BareProx.Services.Proxmox.Authentication;
 using BareProx.Services.Proxmox.Helpers;
 using BareProx.Services.Proxmox.Ops;
 using BareProx.Services.Proxmox.Snapshots;
+using BareProx.Services.Updates;
 using BareProx.Services.Restore;
 using BareProx.Services.Notifications;
 using Microsoft.AspNetCore.Authorization;
@@ -359,6 +360,9 @@ if (isConfigured)
     builder.Services.AddScoped<IProxmoxOpsService, ProxmoxOpsService>();
     builder.Services.AddScoped<IProxmoxSnapshotsService, ProxmoxSnapshotsService>();
     builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
+    builder.Services.AddMemoryCache();
+    builder.Services.AddHttpClient(nameof(UpdateChecker));
+    builder.Services.AddSingleton<IUpdateChecker, UpdateChecker>();
 
     // --- Remote API Client -----------------------------------------------------
     builder.Services.AddSingleton<IRemoteApiClient, RemoteApiClient>();

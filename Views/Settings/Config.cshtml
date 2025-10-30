@@ -72,6 +72,53 @@
 <hr />
 
 <!-- =========================================
+     Section: Update Checker
+     ========================================= -->
+<h4>Update checker</h4>
+
+@using (Html.BeginForm("SaveUpdateSettings", "Settings", FormMethod.Post, new { @class = "mb-3" }))
+{
+    @Html.AntiForgeryToken()
+
+    <div class="form-check form-switch mb-2">
+        <input class="form-check-input"
+               type="checkbox"
+               id="Updates_Enabled"
+               name="Updates.Enabled"
+               value="true"
+               @(Model.Updates?.Enabled == true ? "checked" : "") />
+        <label class="form-check-label" for="Updates_Enabled">
+            Enable “check for updates”
+        </label>
+    </div>
+
+    <div id="updates-warning" class="alert alert-warning d-none py-2">
+        <strong>Heads up:</strong> This feature fetches version info and CHANGELOG from GitHub.
+        Your server must have outbound HTTPS access to <code>raw.githubusercontent.com</code>.
+    </div>
+
+    <div id="updates-fields" class="row g-3 @(Model.Updates?.Enabled == true ? "" : "d-none")">
+        <div class="col-md-4">
+            <label for="Updates_FrequencyMinutes" class="form-label">Check frequency</label>
+            <select class="form-select" id="Updates_FrequencyMinutes" name="Updates.FrequencyMinutes">
+                @{
+                    int freq = Model.Updates?.FrequencyMinutes ?? 360;
+                    string Opt(int val, string text) =>
+                    $"<option value=\"{val}\" {(freq == val ? "selected" : "")}>{text}</option>";
+                }
+                @Html.Raw(Opt(1440, "Daily"))
+                @Html.Raw(Opt(2880, "Every 2 days"))
+                @Html.Raw(Opt(10080, "Weekly"))
+            </select>
+        </div>
+    </div>
+
+    <button type="submit" class="btn btn-outline-secondary btn-sm mt-2">Save</button>
+}
+
+<hr />
+
+<!-- =========================================
      Section C: Email Notifications
      ========================================= -->
 <h4>Email Notifications</h4>
@@ -252,6 +299,7 @@ else
 
     <script>
         (function () {
+            // ----- Email section toggle -----
             const enabled   = document.getElementById('Email_Enabled');
             const box       = document.getElementById('email-settings-fields');
             const testRow   = document.getElementById('email-test');
@@ -266,9 +314,8 @@ else
                 });
             }
 
-            function updateState() {
+            function updateEmailState() {
                 const on = enabled?.checked ?? false;
-
                 if (on) {
                     box?.classList.remove('d-none');
                     testRow?.classList.remove('d-none');
@@ -280,8 +327,8 @@ else
                 }
             }
 
-            enabled?.addEventListener('change', updateState);
-            updateState();
+            enabled?.addEventListener('change', updateEmailState);
+            updateEmailState();
 
             if (togglePwd && pwd) {
                 togglePwd.addEventListener('click', function () {
@@ -290,6 +337,25 @@ else
                     this.textContent = isPwd ? 'Hide' : 'Show';
                 });
             }
+
+            // ----- Updates section toggle -----
+            const updChk   = document.getElementById('Updates_Enabled');
+            const updBox   = document.getElementById('updates-fields');
+            const updWarn  = document.getElementById('updates-warning');
+
+            function updateUpdatesState() {
+                const on = updChk?.checked ?? false;
+                if (on) {
+                    updBox?.classList.remove('d-none');
+                    updWarn?.classList.remove('d-none');
+                } else {
+                    updBox?.classList.add('d-none');
+                    updWarn?.classList.add('d-none');
+                }
+            }
+
+            updChk?.addEventListener('change', updateUpdatesState);
+            updateUpdatesState();
         })();
     </script>
 }

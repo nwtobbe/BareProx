@@ -9,11 +9,12 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 ## [1.0.2510.2015] - 2025-10-25
 
 ### Added
--
+- Basic email notification
+- Update notification
 
 ### Changed
 - Page. Settings/System
-- Added basic email notification
+- 
 
 
 ### Fixed
@@ -22,9 +23,6 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
 ## [1.0.2510.2015] - 2025-10-25
-
-### Added
--
 
 ### Changed
 - About Page
@@ -41,9 +39,6 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.0.2510.2014] - 2025-10-20
 
-### Added
--
-
 ### Changed
 - Security updates
 
@@ -52,7 +47,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
 
-## [1.0.2510.2013] – 2025-10-20
+## [1.0.2510.2013] - 2025-10-20
 
 ### Added
 - Support for Snapshots as volume chains
@@ -83,7 +78,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
 
-## [1.0.2510.0914] – 2025-10-09
+## [1.0.2510.0914] - 2025-10-09
 
 ### Fixed
 
@@ -99,7 +94,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
 
-## [1.0.2509.0420] – 2025-09-04
+## [1.0.2509.0420] - 2025-09-04
 
 ### Fixed
 
@@ -108,7 +103,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
 
-## [1.0.2506.1614] – 2025-06-16
+## [1.0.2506.1614] - 2025-06-16
 
 ### Added
 
@@ -125,7 +120,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
 
-## [1.0.2506.1708] – 2025-06-17
+## [1.0.2506.1708] - 2025-06-17
 
 ### Added
 

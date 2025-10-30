@@ -24,6 +24,42 @@ using System.ComponentModel.DataAnnotations;
 
 namespace BareProx.Models
 {
+
+    // -------------------------------------------------------
+    // Settings page aggregate VM (Time Zone + Cert + Email)
+    // -------------------------------------------------------
+    public class SettingsPageViewModel
+    {
+        public SettingsPageViewModel()
+        {
+            Config = new ConfigSettingsViewModel();
+            Regenerate = new RegenerateCertViewModel();
+            Email = new EmailSettingsViewModel();
+            TimeZones = new List<SelectListItem>();
+        }
+
+        /// <summary>Sub-model for the “Time Zone” form (prefix: "Config")</summary>
+        public ConfigSettingsViewModel Config { get; set; }
+
+        /// <summary>Sub-model for the “Regenerate Certificate” form (prefix: "Regenerate")</summary>
+        public RegenerateCertViewModel Regenerate { get; set; }
+
+        /// <summary>Sub-model for the “Email Notifications” form (prefix: "Email")</summary>
+        public EmailSettingsViewModel Email { get; set; }
+        public UpdateSettingsViewModel Updates { get; set; } = new();
+
+        /// <summary>List of time zones for the dropdown</summary>
+        public IEnumerable<SelectListItem> TimeZones { get; set; }
+    }
+
+
+    public class UpdateSettingsViewModel
+    {
+        public bool Enabled { get; set; }
+        /// <summary>How often to check, in minutes. Default 360 (6h).</summary>
+        public int FrequencyMinutes { get; set; } = 360;
+    }
+
     // -------------------------------------------------------
     // Certificate regeneration view model
     // -------------------------------------------------------
@@ -151,31 +187,7 @@ namespace BareProx.Models
         public string MinSeverity { get; set; } = "Info";
     }
 
-    // -------------------------------------------------------
-    // Settings page aggregate VM (Time Zone + Cert + Email)
-    // -------------------------------------------------------
-    public class SettingsPageViewModel
-    {
-        public SettingsPageViewModel()
-        {
-            Config = new ConfigSettingsViewModel();
-            Regenerate = new RegenerateCertViewModel();
-            Email = new EmailSettingsViewModel();
-            TimeZones = new List<SelectListItem>();
-        }
 
-        /// <summary>Sub-model for the “Time Zone” form (prefix: "Config")</summary>
-        public ConfigSettingsViewModel Config { get; set; }
-
-        /// <summary>Sub-model for the “Regenerate Certificate” form (prefix: "Regenerate")</summary>
-        public RegenerateCertViewModel Regenerate { get; set; }
-
-        /// <summary>Sub-model for the “Email Notifications” form (prefix: "Email")</summary>
-        public EmailSettingsViewModel Email { get; set; }
-
-        /// <summary>List of time zones for the dropdown</summary>
-        public IEnumerable<SelectListItem> TimeZones { get; set; }
-    }
 
     // -------------------------------------------------------
     // Other VMs
