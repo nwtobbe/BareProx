@@ -28,6 +28,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
+using System.Linq; // NEW
+using BareProx.Services.Notifications;
 
 namespace BareProx.Services.Backup
 {
@@ -46,6 +48,7 @@ namespace BareProx.Services.Backup
         private readonly IAppTimeZoneService _tz;
         private readonly IProxmoxInventoryCache _invCache;
         private readonly IJobService _jobs;
+        private readonly IEmailSender _email;
 
         public BackupService(
             IDbContextFactory<ApplicationDbContext> dbf,
@@ -59,7 +62,8 @@ namespace BareProx.Services.Backup
             IConfiguration configuration,
             IAppTimeZoneService tz,
             IProxmoxInventoryCache invCache,
-            IJobService jobs)
+            IJobService jobs,
+            IEmailSender email)
         {
             _dbf = dbf;
             _proxmoxService = proxmoxService;
@@ -74,6 +78,7 @@ namespace BareProx.Services.Backup
             _tz = tz;
             _invCache = invCache;
             _jobs = jobs;
+            _email = email;
         }
 
         public async Task<bool> StartBackupAsync(
@@ -104,6 +109,8 @@ namespace BareProx.Services.Backup
             var vmsWerePaused = false;
             var hadWarnings = false; // non-critical issues -> final job status Warning
             var vmHadWarnings = new HashSet<int>(); // per-VM soft issues -> VM status Warning
+            var skippedCount = 0;                   // NEW
+            string? createdSnapshotName = null;     // NEW
 
             // Build excluded set
             var excludedSet = new HashSet<int>();
@@ -133,7 +140,7 @@ namespace BareProx.Services.Backup
                         .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
                 }
                 if (cluster == null)
-                    return await _jobs.FailJobAsync(jobId, $"Cluster with ID {clusterId} not found.", ct);
+                    return await FailAndNotifyAsync(jobId, storageName, label, $"Cluster with ID {clusterId} not found.", ct); // NEW
 
                 // Discover VMs eligible on this storage
                 bool snapChainActive = false;
@@ -149,10 +156,10 @@ namespace BareProx.Services.Backup
 
                 var storageWithVms = await _invCache.GetEligibleBackupStorageWithVMsAsync(cluster, netappControllerId, null, ct);
                 if (!storageWithVms.TryGetValue(storageName, out vms) || vms == null || !vms.Any())
-                    return await _jobs.FailJobAsync(jobId, $"No VMs found in storage '{storageName}'.", ct);
+                    return await FailAndNotifyAsync(jobId, storageName, label, $"No VMs found in storage '{storageName}'.", ct); // NEW
 
                 if (cluster.Hosts == null || !cluster.Hosts.Any())
-                    return await _jobs.FailJobAsync(jobId, "Cluster not properly configured.", ct);
+                    return await FailAndNotifyAsync(jobId, storageName, label, "Cluster not properly configured.", ct); // NEW
 
                 // Create per-VM rows up-front
                 var vmRows = new Dictionary<int, int>(capacity: vms.Count);
@@ -181,6 +188,7 @@ namespace BareProx.Services.Backup
                     if (excludedSet.Contains(vm.Id))
                     {
                         await _jobs.MarkVmSkippedAsync(rowId, "Excluded by user", ct);
+                        skippedCount++; // NEW
                         continue;
                     }
 
@@ -189,6 +197,7 @@ namespace BareProx.Services.Backup
                     if (isStopped)
                     {
                         await _jobs.MarkVmSkippedAsync(rowId, "VM is powered off", ct);
+                        skippedCount++; // NEW
                     }
                 }
 
@@ -328,9 +337,10 @@ namespace BareProx.Services.Backup
                     ct: ct);
 
                 if (!snapshotResult.Success)
-                    return await _jobs.FailJobAsync(jobId, snapshotResult.ErrorMessage, ct);
+                    return await FailAndNotifyAsync(jobId, storageName, label, snapshotResult.ErrorMessage, ct); // NEW
 
                 await _jobs.UpdateJobStatusAsync(jobId, "NetApp snapshot created", null, ct);
+                createdSnapshotName = snapshotResult.SnapshotName; // NEW
 
                 // Optional: fan-out a short note to each VM's log so it’s visible per VM
                 foreach (var vm in vms)
@@ -554,7 +564,7 @@ namespace BareProx.Services.Backup
                 {
                     var jobRow = await db.Jobs.FindAsync(new object?[] { jobId }, ct);
                     if (string.Equals(jobRow?.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
-                        return await _jobs.FailJobAsync(jobId, "Job was cancelled.", ct);
+                        return await FailAndNotifyAsync(jobId, storageName, label, "Job was cancelled.", ct); // NEW
                 }
 
                 // 8) Complete job (final status)
@@ -562,18 +572,38 @@ namespace BareProx.Services.Backup
                     await _jobs.CompleteJobAsync(jobId, "Warning", ct);
                 else
                     await _jobs.CompleteJobAsync(jobId, ct);
+
+                // NEW: mail summary
+                var warnedCount = vmHadWarnings.Count;
+                var final = hadWarnings ? "Warning" : "Success";
+                await TryNotifyAsync(jobId, storageName, label, final,
+                    errorOrNote: null,
+                    snapshotName: createdSnapshotName,
+                    totalVms: vms?.Count ?? 0,
+                    skippedVms: skippedCount,
+                    warnedVms: warnedCount,
+                    ct);
+
                 return true;
             }
             catch (OperationCanceledException)
             {
                 if (jobId > 0)
-                    return await _jobs.FailJobAsync(jobId, "Job was cancelled.", CancellationToken.None);
+                {
+                    await _jobs.FailJobAsync(jobId, "Job was cancelled.", CancellationToken.None);
+                    await TryNotifyAsync(jobId, storageName, label, "Error", "Job was cancelled.", null, 0, 0, 0, CancellationToken.None); // NEW
+                    return false;
+                }
                 throw;
             }
             catch (Exception ex)
             {
                 if (jobId > 0)
-                    return await _jobs.FailJobAsync(jobId, ex.Message, ct);
+                {
+                    await _jobs.FailJobAsync(jobId, ex.Message, ct);
+                    await TryNotifyAsync(jobId, storageName, label, "Error", ex.Message, createdSnapshotName, 0, 0, 0, ct); // NEW
+                    return false;
+                }
 
                 _logger.LogError(ex, "StartBackupAsync failed before Job creation. storage={Storage}", storageName);
                 return false;
@@ -649,5 +679,102 @@ namespace BareProx.Services.Backup
                 }
             }
         }
+
+        // NEW: convenience wrapper that also emails on failure
+        private async Task<bool> FailAndNotifyAsync(
+            int jobId,
+            string storageName,
+            string label,
+            string error,
+            CancellationToken ct)
+        {
+            var res = await _jobs.FailJobAsync(jobId, error, ct);
+            await TryNotifyAsync(jobId, storageName, label, "Error", error, snapshotName: null,
+                                 totalVms: 0, skippedVms: 0, warnedVms: 0, ct);
+            return res;
+        }
+
+        // central mail sender (reads EmailSettings row id=1)
+        private async Task TryNotifyAsync(
+            int jobId,
+            string storageName,
+            string label,
+            string finalStatus,              // "Success" | "Warning" | "Error"
+            string? errorOrNote,             // optional details
+            string? snapshotName,            // optional
+            int totalVms,
+            int skippedVms,
+            int warnedVms,
+            CancellationToken ct)
+        {
+            try
+            {
+                using var db = await _dbf.CreateDbContextAsync(ct);
+                var s = await db.EmailSettings.AsNoTracking().FirstOrDefaultAsync(e => e.Id == 1, ct);
+                if (s is null || !s.Enabled) return;
+
+                // Decide if we should send based on flags + MinSeverity
+                var finalRank = finalStatus switch
+                {
+                    "Error" => 3,
+                    "Warning" => 2,
+                    _ => 1 // Success -> Info
+                };
+                var minRank = SevRank(s.MinSeverity ?? "Info");
+
+                var send =
+                    (finalStatus == "Success" && s.OnBackupSuccess && finalRank >= minRank) ||
+                    (finalStatus == "Warning" && s.OnWarnings && finalRank >= minRank) ||
+                    (finalStatus == "Error" && s.OnBackupFailure && finalRank >= minRank);
+
+                if (!send) return;
+
+                // Recipients
+                var to = (s.DefaultRecipients ?? "").Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                if (to.Length == 0) return;
+
+                var nowUtc = DateTime.UtcNow;
+                var nowApp = _tz.ConvertUtcToApp(nowUtc);      // uses your configured app time zone
+                var tzName = _timeZoneId;
+                var subj = $"BareProx: Backup {finalStatus} — {storageName} ({label}) [Job #{jobId}]";
+
+                var html = $@"
+                        <h3>BareProx Backup {finalStatus}</h3>
+                        <p><b>Job:</b> #{jobId}<br/>
+                        <b>Storage:</b> {storageName}<br/>
+                        <b>Label:</b> {label}<br/>
+                        <b>Snapshot:</b> {(string.IsNullOrWhiteSpace(snapshotName) ? "n/a" : snapshotName)}<br/>
+                        <b>When ({tzName}):</b> {nowApp:yyyy-MM-dd HH:mm:ss}<br/>
+                        
+                        <table style=""border-collapse:collapse;min-width:360px"">
+                        <tr><td style=""padding:4px;border:1px solid #ccc""><b>Total VMs</b></td><td style=""padding:4px;border:1px solid #ccc"">{totalVms}</td></tr>
+                        <tr><td style=""padding:4px;border:1px solid #ccc""><b>Skipped</b></td><td style=""padding:4px;border:1px solid #ccc"">{skippedVms}</td></tr>
+                        <tr><td style=""padding:4px;border:1px solid #ccc""><b>VMs with warnings</b></td><td style=""padding:4px;border:1px solid #ccc"">{warnedVms}</td></tr>
+                        </table>
+                        
+                        {(string.IsNullOrWhiteSpace(errorOrNote) ? "" : $@"<p><b>Notes:</b><br/><pre style=""white-space:pre-wrap"">{System.Net.WebUtility.HtmlEncode(errorOrNote)}</pre></p>")}
+                        <p>— BareProx</p>";
+
+                // Send one mail per recipient (simple and robust)
+                foreach (var r in to)
+                {
+                    await _email.SendAsync(r, subj, html, ct);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Never fail the backup because email failed — just log.
+                _logger.LogWarning(ex, "TryNotifyAsync failed for Job {JobId}", jobId);
+            }
+        }
+
+        // severity mapping for MinSeverity filter
+        private static int SevRank(string s) => s?.ToLowerInvariant() switch
+        {
+            "critical" => 4,
+            "error" => 3,
+            "warning" => 2,
+            _ => 1 // Info
+        };
     }
 }

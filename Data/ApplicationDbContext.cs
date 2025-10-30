@@ -31,6 +31,7 @@ namespace BareProx.Data
         {
         }
         public DbSet<BareProx.Models.FeatureToggle> FeatureToggles { get; set; } = null!;
+        public DbSet<EmailSettings> EmailSettings { get; set; } = null!;
         public DbSet<ProxmoxCluster> ProxmoxClusters { get; set; }
         public DbSet<ProxmoxHost> ProxmoxHosts { get; set; }
         public DbSet<NetappController> NetappControllers { get; set; }
@@ -65,6 +66,20 @@ namespace BareProx.Data
             modelBuilder.Entity<SnapMirrorPolicy>()
                 .HasIndex(p => p.Uuid)
                 .IsUnique();
+
+            modelBuilder.Entity<EmailSettings>()
+                .HasKey(e => e.Id);
+
+            // Seed the single row (password null by default)
+            modelBuilder.Entity<EmailSettings>().HasData(new EmailSettings
+            {
+                Id = 1,
+                Enabled = false,
+                SmtpPort = 587,
+                SecurityMode = "StartTls",
+                MinSeverity = "Info",
+            });
         }
+
     }
 }

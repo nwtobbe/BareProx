@@ -33,6 +33,7 @@ using BareProx.Services.Proxmox.Helpers;
 using BareProx.Services.Proxmox.Ops;
 using BareProx.Services.Proxmox.Snapshots;
 using BareProx.Services.Restore;
+using BareProx.Services.Notifications;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
@@ -337,6 +338,7 @@ if (isConfigured)
         .AddEntityFrameworkStores<ApplicationDbContext>();
 
     // --- Repositories & Domain Services ----------------------------------------
+    builder.Services.AddDataProtection();
     builder.Services.AddScoped<BareProx.Services.Features.IFeatureService, BareProx.Services.Features.FeatureService>();
     builder.Services.AddScoped<IBackupRepository, BackupRepository>();
     builder.Services.AddScoped<IBackupService, BackupService>();
@@ -356,6 +358,7 @@ if (isConfigured)
     builder.Services.AddScoped<IMigrationExecutor, ProxmoxMigrationExecutor>();
     builder.Services.AddScoped<IProxmoxOpsService, ProxmoxOpsService>();
     builder.Services.AddScoped<IProxmoxSnapshotsService, ProxmoxSnapshotsService>();
+    builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
 
     // --- Remote API Client -----------------------------------------------------
     builder.Services.AddSingleton<IRemoteApiClient, RemoteApiClient>();

@@ -3,6 +3,7 @@ using System;
 using BareProx.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace BareProx.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251029113605_AddEmailSettings")]
+    partial class AddEmailSettings
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.10");
@@ -221,6 +224,9 @@ namespace BareProx.Migrations
                     b.Property<int>("SmtpPort")
                         .HasColumnType("INTEGER");
 
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("Username")
                         .HasMaxLength(255)
                         .HasColumnType("TEXT");
@@ -241,7 +247,8 @@ namespace BareProx.Migrations
                             OnRestoreSuccess = false,
                             OnWarnings = true,
                             SecurityMode = "StartTls",
-                            SmtpPort = 587
+                            SmtpPort = 587,
+                            UpdatedUtc = new DateTime(2025, 10, 29, 11, 36, 5, 80, DateTimeKind.Utc).AddTicks(8188)
                         });
                 });
 

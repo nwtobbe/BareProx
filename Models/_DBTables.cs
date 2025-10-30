@@ -31,6 +31,48 @@ namespace BareProx.Models
         public string Key { get; set; } = string.Empty;
         public bool Enabled { get; set; }
     }
+
+    public class EmailSettings
+    {
+        // Single-row table (Id = 1)
+        [Key]
+        public int Id { get; set; } = 1;
+
+        public bool Enabled { get; set; }
+
+        [MaxLength(255)]
+        public string? SmtpHost { get; set; }
+
+        [Range(1, 65535)]
+        public int SmtpPort { get; set; } = 587;
+
+        // "None" | "StartTls" | "SslTls"
+        [MaxLength(16)]
+        public string SecurityMode { get; set; } = "StartTls";
+
+        [MaxLength(255)]
+        public string? Username { get; set; }
+
+        // Protected with IDataProtector
+        public string? ProtectedPassword { get; set; }
+
+        [EmailAddress, MaxLength(255)]
+        public string? From { get; set; }
+
+        [MaxLength(1024)]
+        public string? DefaultRecipients { get; set; }  // comma-separated
+
+        public bool OnBackupSuccess { get; set; }
+        public bool OnBackupFailure { get; set; } = true;
+        public bool OnRestoreSuccess { get; set; }
+        public bool OnRestoreFailure { get; set; } = true;
+        public bool OnWarnings { get; set; } = true;
+
+        // "Info" | "Warning" | "Error" | "Critical"
+        [MaxLength(16)]
+        public string MinSeverity { get; set; } = "Info";
+
+    }
     public class ProxmoxCluster
     {
         public int Id { get; set; }

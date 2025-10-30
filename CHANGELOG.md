@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [1.0.2510.2015] - 2025-10-25
+
+### Added
+-
+
+### Changed
+- Page. Settings/System
+- Added basic email notification
+
+
+### Fixed
+- 
+
+
 
 ## [1.0.2510.2015] - 2025-10-25
 

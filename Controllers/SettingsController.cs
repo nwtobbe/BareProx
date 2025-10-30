@@ -24,15 +24,15 @@ using BareProx.Services;
 using BareProx.Services.Features;
 using BareProx.Services.Netapp;
 using BareProx.Services.Proxmox.Authentication;
-using Microsoft.AspNetCore.Hosting;
+using BareProx.Services.Notifications;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Hosting; // IHostApplicationLifetime
 using Newtonsoft.Json.Linq;
-using System.IO;
 using System.Runtime.InteropServices;
 using TimeZoneConverter;
-
 
 namespace BareProx.Controllers
 {
@@ -49,7 +49,8 @@ namespace BareProx.Controllers
         private readonly INetappVolumeService _netappVolumeService;
         private readonly IProxmoxAuthenticator _proxmoxAuthenticator;
         private readonly INetappAuthService _netappAuthService;
-
+        private readonly IEmailSender _email;
+        private readonly IDataProtector _protector;
 
         public SettingsController(
             ApplicationDbContext context,
@@ -60,7 +61,9 @@ namespace BareProx.Controllers
             IHostApplicationLifetime appLifetime,
             INetappVolumeService netappVolumeService,
             IProxmoxAuthenticator proxmoxAuthenticator,
-            INetappAuthService  netappAuthService)
+            INetappAuthService netappAuthService,
+            IEmailSender email,
+            IDataProtectionProvider dataProtectionProvider)
         {
             _context = context;
             _features = features;
@@ -72,35 +75,26 @@ namespace BareProx.Controllers
             _netappVolumeService = netappVolumeService;
             _proxmoxAuthenticator = proxmoxAuthenticator;
             _netappAuthService = netappAuthService;
+            _email = email;
+            _protector = dataProtectionProvider.CreateProtector("BareProx.EmailSettings.Password.v1");
         }
 
         // ========================================================
-        // GET: /Settings/Config
-        // Builds and returns the composite SettingsPageViewModel.
+        // GET: /Settings/Config  (single GET — builds full view model)
         // ========================================================
         [HttpGet]
-        public async Task<IActionResult> Config()
+        public async Task<IActionResult> Config(CancellationToken ct)
         {
-            // 1) Load or create the JSON config file
-            JObject cfg;
-            if (System.IO.File.Exists(_configFile))
-            {
-                var text = System.IO.File.ReadAllText(_configFile);
-                cfg = JObject.Parse(text);
-            }
-            else
-            {
-                cfg = new JObject();
-            }
+            // Load /config/appsettings.json (for time zone section)
+            JObject cfg = System.IO.File.Exists(_configFile)
+                ? JObject.Parse(System.IO.File.ReadAllText(_configFile))
+                : new JObject();
 
-            // 2) Read stored Windows‐style and IANA‐style time zones (if present)
+            // Read stored TZs
             var storedWindows = (string?)cfg["ConfigSettings"]?["TimeZoneWindows"];
             var storedIana = (string?)cfg["ConfigSettings"]?["TimeZoneIana"];
 
-            // 3) Determine which Windows ID to select in the dropdown
-            //    If storedWindows is nonempty, use it.
-            //    Else if storedIana is nonempty, convert it → Windows.
-            //    Else fallback to Local machine’s zone, converted → Windows if needed.
+            // Decide selected Windows TZ
             string selectedWindowsId;
             if (!string.IsNullOrWhiteSpace(storedWindows))
             {
@@ -108,25 +102,18 @@ namespace BareProx.Controllers
             }
             else if (!string.IsNullOrWhiteSpace(storedIana))
             {
-                try
-                {
-                    selectedWindowsId = TZConvert.IanaToWindows(storedIana.Trim());
-                }
-                catch
-                {
-                    // if conversion fails, fallback
-                    selectedWindowsId = GetLocalWindowsId();
-                }
+                try { selectedWindowsId = TZConvert.IanaToWindows(storedIana.Trim()); }
+                catch { selectedWindowsId = GetLocalWindowsId(); }
             }
             else
             {
                 selectedWindowsId = GetLocalWindowsId();
             }
 
-            // 4) Get current certificate details
+            // Current certificate
             var cert = _certService.CurrentCertificate;
 
-            // 5) Build the composite view model
+            // Base VM
             var vm = new SettingsPageViewModel
             {
                 Config = new ConfigSettingsViewModel
@@ -146,16 +133,45 @@ namespace BareProx.Controllers
                 }
             };
 
-            // 6) Build the Time Zone dropdown
-            vm.TimeZones = BuildTimeZoneSelectList(selectedWindowsId);
+            // Email settings (ensure seeded row exists; migrations should handle this)
+            var es = await _context.EmailSettings.AsNoTracking().FirstOrDefaultAsync(e => e.Id == 1, ct);
+            if (es == null)
+            {
+                es = new EmailSettings
+                {
+                    Id = 1,
+                    Enabled = false,
+                    SmtpPort = 587,
+                    SecurityMode = "StartTls",
+                    MinSeverity = "Info"
+                };
+                _context.EmailSettings.Add(es);
+                await _context.SaveChangesAsync(ct);
+            }
 
-            // 7) Get the experimental feature flag state
-            ViewBag.ExperimentalExtra = await _features.IsEnabledAsync("ExperimentalExtra");
+            vm.Email.Enabled = es.Enabled;
+            vm.Email.SmtpHost = es.SmtpHost;
+            vm.Email.SmtpPort = es.SmtpPort;
+            vm.Email.SecurityMode = es.SecurityMode ?? "StartTls";
+            vm.Email.Username = es.Username;
+            vm.Email.From = es.From;
+            vm.Email.DefaultRecipients = es.DefaultRecipients;
+            vm.Email.OnBackupSuccess = es.OnBackupSuccess;
+            vm.Email.OnBackupFailure = es.OnBackupFailure;
+            vm.Email.OnRestoreSuccess = es.OnRestoreSuccess;
+            vm.Email.OnRestoreFailure = es.OnRestoreFailure;
+            vm.Email.OnWarnings = es.OnWarnings;
+            vm.Email.MinSeverity = es.MinSeverity ?? "Info";
+            // Password intentionally left blank
+
+            // Time zone dropdown + feature flag
+            vm.TimeZones = BuildTimeZoneSelectList(selectedWindowsId);
+            ViewBag.ExperimentalExtra = await _features.IsEnabledAsync(FF_Experimental);
 
             return View("Config", vm);
         }
 
-        // POST from the checkbox form
+        // POST from the Experimental checkbox form
         [HttpPost]
         [ValidateAntiForgeryToken]
         public async Task<IActionResult> ToggleExperimental()
@@ -167,8 +183,7 @@ namespace BareProx.Controllers
         }
 
         // ========================================================
-        // POST: /Settings/Config
-        // Binds only to ConfigSettingsViewModel (prefix="Config")
+        // POST: /Settings/Config (Time zone only)
         // ========================================================
         [HttpPost]
         [ValidateAntiForgeryToken]
@@ -182,66 +197,39 @@ namespace BareProx.Controllers
                 return View("Config", pageVm);
             }
 
-            // 1) Translate Windows → IANA (if conversion fails, assume the value is already IANA)
+            // Windows → IANA
             string ianaId;
-            try
-            {
-                ianaId = TZConvert.WindowsToIana(configVm.TimeZoneWindows.Trim());
-            }
-            catch
-            {
-                ianaId = configVm.TimeZoneWindows.Trim();
-            }
+            try { ianaId = TZConvert.WindowsToIana(configVm.TimeZoneWindows.Trim()); }
+            catch { ianaId = configVm.TimeZoneWindows.Trim(); }
 
-            // 2) Load (or create) the root JObject
+            // Load root JSON
             JObject cfg = System.IO.File.Exists(_configFile)
                 ? JObject.Parse(System.IO.File.ReadAllText(_configFile))
                 : new JObject();
 
-            // 3) Remove any old top‐level keys if they exist
-            if (cfg["TimeZoneWindows"] != null)
-                cfg.Remove("TimeZoneWindows");
-            if (cfg["TimeZoneIana"] != null)
-                cfg.Remove("TimeZoneIana");
-
-            // 4) Make sure "ConfigSettings" exists
-            if (cfg["ConfigSettings"] == null || cfg["ConfigSettings"].Type != JTokenType.Object)
-            {
+            // Ensure "ConfigSettings" object
+            if (cfg["ConfigSettings"] == null || cfg["ConfigSettings"]!.Type != JTokenType.Object)
                 cfg["ConfigSettings"] = new JObject();
-            }
 
-            // 5) Write under "ConfigSettings" only
-            var section = (JObject)cfg["ConfigSettings"];
+            // Persist only under ConfigSettings
+            var section = (JObject)cfg["ConfigSettings"]!;
             section["TimeZoneWindows"] = configVm.TimeZoneWindows.Trim();
             section["TimeZoneIana"] = ianaId;
 
-            // 6) Persist back to /config/appsettings.json
             System.IO.File.WriteAllText(_configFile, cfg.ToString());
-
             TempData["Success"] = $"Default time zone “{configVm.TimeZoneWindows}” saved.";
             return RedirectToAction(nameof(Config));
         }
 
-
-        // ========================================================
-        // Helper: rebuild the composite page model (for validation errors)
-        // ========================================================
+        // Helper: rebuild page VM (now also fills Email)
         private SettingsPageViewModel BuildSettingsPageViewModel()
         {
-            // Re‐run the GET logic to fetch current state
-            JObject cfg;
-            if (System.IO.File.Exists(_configFile))
-            {
-                var text = System.IO.File.ReadAllText(_configFile);
-                cfg = JObject.Parse(text);
-            }
-            else
-            {
-                cfg = new JObject();
-            }
+            JObject cfg = System.IO.File.Exists(_configFile)
+                ? JObject.Parse(System.IO.File.ReadAllText(_configFile))
+                : new JObject();
 
-            var storedWindows = (string)cfg["DefaultTimeZoneWindows"];
-            var storedIana = (string)cfg["DefaultTimeZoneIana"];
+            var storedWindows = (string?)cfg["ConfigSettings"]?["TimeZoneWindows"];
+            var storedIana = (string?)cfg["ConfigSettings"]?["TimeZoneIana"];
 
             string selectedWindowsId;
             if (!string.IsNullOrWhiteSpace(storedWindows))
@@ -250,14 +238,8 @@ namespace BareProx.Controllers
             }
             else if (!string.IsNullOrWhiteSpace(storedIana))
             {
-                try
-                {
-                    selectedWindowsId = TZConvert.IanaToWindows(storedIana.Trim());
-                }
-                catch
-                {
-                    selectedWindowsId = GetLocalWindowsId();
-                }
+                try { selectedWindowsId = TZConvert.IanaToWindows(storedIana.Trim()); }
+                catch { selectedWindowsId = GetLocalWindowsId(); }
             }
             else
             {
@@ -285,11 +267,34 @@ namespace BareProx.Controllers
                 }
             };
 
+            // Also populate Email from DB (best effort; avoid throwing here)
+            try
+            {
+                var es = _context.EmailSettings.AsNoTracking().FirstOrDefault(e => e.Id == 1);
+                if (es != null)
+                {
+                    vm.Email.Enabled = es.Enabled;
+                    vm.Email.SmtpHost = es.SmtpHost;
+                    vm.Email.SmtpPort = es.SmtpPort;
+                    vm.Email.SecurityMode = es.SecurityMode ?? "StartTls";
+                    vm.Email.Username = es.Username;
+                    vm.Email.From = es.From;
+                    vm.Email.DefaultRecipients = es.DefaultRecipients;
+                    vm.Email.OnBackupSuccess = es.OnBackupSuccess;
+                    vm.Email.OnBackupFailure = es.OnBackupFailure;
+                    vm.Email.OnRestoreSuccess = es.OnRestoreSuccess;
+                    vm.Email.OnRestoreFailure = es.OnRestoreFailure;
+                    vm.Email.OnWarnings = es.OnWarnings;
+                    vm.Email.MinSeverity = es.MinSeverity ?? "Info";
+                }
+            }
+            catch { /* keep page rendering even if DB lookup fails here */ }
+
             vm.TimeZones = BuildTimeZoneSelectList(selectedWindowsId);
             return vm;
         }
 
-        // Helper: build a SelectList for all time zones
+        // Build the time zone dropdown
         private IEnumerable<SelectListItem> BuildTimeZoneSelectList(string selectedWindowsId)
         {
             var allZones = TimeZoneInfo.GetSystemTimeZones();
@@ -299,22 +304,14 @@ namespace BareProx.Controllers
 
                 if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                 {
-                    // On Windows: tzInfo.Id is already a Windows ID
                     windowsId = tzInfo.Id;
                     ianaId = TZConvert.WindowsToIana(tzInfo.Id);
                 }
                 else
                 {
-                    // On Linux: tzInfo.Id is IANA. Try to map; if it fails, just use the IANA as the "value"
                     ianaId = tzInfo.Id;
-                    try
-                    {
-                        windowsId = TZConvert.IanaToWindows(tzInfo.Id);
-                    }
-                    catch
-                    {
-                        windowsId = tzInfo.Id;
-                    }
+                    try { windowsId = TZConvert.IanaToWindows(tzInfo.Id); }
+                    catch { windowsId = tzInfo.Id; }
                 }
 
                 var display = $"{tzInfo.DisplayName}  [{ianaId}]";
@@ -331,41 +328,24 @@ namespace BareProx.Controllers
             return items;
         }
 
-
-        // Helper: get the local machine’s “Windows” ID (or convert from IANA if on Linux)
+        // Get the local machine’s “Windows” TZ id (convert from IANA if on Linux)
         private string GetLocalWindowsId()
         {
-            var local = TimeZoneInfo.Local.Id; // On Linux, this is IANA; on Windows, this is Windows.
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            {
-                return local;
-            }
-            else
-            {
-                try
-                {
-                    return TZConvert.IanaToWindows(local);
-                }
-                catch
-                {
-                    // If conversion fails, just return the IANA as a fallback
-                    return local;
-                }
-            }
+            var local = TimeZoneInfo.Local.Id; // On Linux it's IANA; on Windows it's Windows.
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return local;
+
+            try { return TZConvert.IanaToWindows(local); }
+            catch { return local; }
         }
 
         // ========================================================
-        // ========================================================
-        // ========================================================
         // POST: Settings/RegenerateCert
-        // (regenerate self-signed certificate based on user inputs)
         // ========================================================
         [HttpPost]
         [ValidateAntiForgeryToken]
         public IActionResult RegenerateCert([Bind(Prefix = "Regenerate")] RegenerateCertViewModel regenVm)
         {
-            // 1) Validate only the Regenerate submodel
-
+            // Only validate the Regenerate submodel
             ModelState.Remove("Regenerate.CurrentSubject");
             ModelState.Remove("Regenerate.CurrentNotBefore");
             ModelState.Remove("Regenerate.CurrentNotAfter");
@@ -373,7 +353,6 @@ namespace BareProx.Controllers
 
             if (!ModelState.IsValid)
             {
-                // Re‐build the composite and return view with errors
                 var pageVm = BuildSettingsPageViewModel();
                 pageVm.Regenerate.RegenSubjectName = regenVm.RegenSubjectName;
                 pageVm.Regenerate.RegenValidDays = regenVm.RegenValidDays;
@@ -381,7 +360,6 @@ namespace BareProx.Controllers
                 return View("Config", pageVm);
             }
 
-            // 2) Parse SANs (comma-separated into string[])
             var sansList = Array.Empty<string>();
             if (!string.IsNullOrWhiteSpace(regenVm.RegenSANs))
             {
@@ -390,7 +368,6 @@ namespace BareProx.Controllers
                     .ToArray();
             }
 
-            // 3) Perform certificate regeneration
             _certService.Regenerate(
                 subjectName: regenVm.RegenSubjectName,
                 validDays: regenVm.RegenValidDays,
@@ -402,34 +379,32 @@ namespace BareProx.Controllers
             return RedirectToAction(nameof(Config));
         }
 
-
         [HttpPost]
         [ValidateAntiForgeryToken]
         public IActionResult RestartApp()
         {
-            // Graceful shutdown – ensure your hosting environment restarts the app
-            HttpContext.Response.Headers.Add("Refresh", "3"); // optional: auto-refresh after 3 sec
+            HttpContext.Response.Headers.Add("Refresh", "3");
             _appLifetime.StopApplication();
             return Content("Application is restarting...");
         }
 
-        // POST: Settings/AuthenticateCluster
+        // ===================== Proxmox / NetApp admin bits (unchanged) =====================
+
         [HttpPost]
         public async Task<IActionResult> AuthenticateCluster(int id, CancellationToken ct)
         {
             var success = await _proxmoxAuthenticator.AuthenticateAndStoreTokenCidAsync(id, ct);
             TempData["Message"] = success ? "Authentication successful." : "Authentication failed.";
-            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = id }); // CHANGED
+            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = id });
         }
 
         [HttpGet]
         public async Task<IActionResult> NetappHub(int? selectedId = null, CancellationToken ct = default)
         {
             var list = await _context.NetappControllers.ToListAsync(ct);
-            NetappController? selected = null;
-
-            if (selectedId.HasValue)
-                selected = list.FirstOrDefault(x => x.Id == selectedId.Value);
+            NetappController? selected = selectedId.HasValue
+                ? list.FirstOrDefault(x => x.Id == selectedId.Value)
+                : null;
 
             var vm = new NetappHubViewModel
             {
@@ -439,7 +414,7 @@ namespace BareProx.Controllers
                 Message = TempData["Message"] as string
             };
 
-            return View(vm); // Views/Settings/NetappHub.cshtml
+            return View(vm);
         }
 
         [HttpPost]
@@ -456,7 +431,7 @@ namespace BareProx.Controllers
             await _context.SaveChangesAsync(ct);
 
             TempData["Message"] = $"Cluster \"{cluster.Name}\" added.";
-            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = cluster.Id }); // CHANGED
+            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = cluster.Id });
         }
 
         [HttpPost]
@@ -464,26 +439,15 @@ namespace BareProx.Controllers
         {
             using var tx = await _context.Database.BeginTransactionAsync(ct);
 
-            var cluster = await _context.ProxmoxClusters
-                .AsNoTracking()
-                .FirstOrDefaultAsync(c => c.Id == id, ct);
+            var cluster = await _context.ProxmoxClusters.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);
+            if (cluster == null) return RedirectToAction(nameof(ProxmoxHub));
 
-            if (cluster == null)
-                return RedirectToAction(nameof(ProxmoxHub));
-
-            // 1) Delete hosts/nodes
-            var hosts = await _context.ProxmoxHosts
-                .Where(h => h.ClusterId == id)
-                .ToListAsync(ct);
+            var hosts = await _context.ProxmoxHosts.Where(h => h.ClusterId == id).ToListAsync(ct);
             _context.ProxmoxHosts.RemoveRange(hosts);
 
-            // 2) Delete selected storage rows
-            var selectedStorages = await _context.SelectedStorages
-                .Where(s => s.ClusterId == id)
-                .ToListAsync(ct);
+            var selectedStorages = await _context.SelectedStorages.Where(s => s.ClusterId == id).ToListAsync(ct);
             _context.SelectedStorages.RemoveRange(selectedStorages);
 
-            // 4) Finally delete the cluster
             var trackedCluster = _context.ProxmoxClusters.Attach(cluster).Entity;
             _context.ProxmoxClusters.Remove(trackedCluster);
 
@@ -500,14 +464,10 @@ namespace BareProx.Controllers
             var existing = await _context.ProxmoxClusters.FindAsync(cluster.Id, ct);
             if (existing == null) return NotFound();
 
-            // Re-fill fields so the form shows user input back
             existing.Username = cluster.Username;
-            // do NOT set password here unless provided
 
             if (!ModelState.IsValid)
-            {
-                return View("EditCluster", existing); // render the edit view directly
-            }
+                return View("EditCluster", existing);
 
             if (!string.IsNullOrWhiteSpace(cluster.PasswordHash))
                 existing.PasswordHash = _encryptionService.Encrypt(cluster.PasswordHash);
@@ -520,10 +480,7 @@ namespace BareProx.Controllers
         [HttpPost]
         public async Task<IActionResult> AddHost(int clusterId, string hostAddress, string hostname, CancellationToken ct)
         {
-            var cluster = await _context.ProxmoxClusters
-                .Include(c => c.Hosts)
-                .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
-
+            var cluster = await _context.ProxmoxClusters.Include(c => c.Hosts).FirstOrDefaultAsync(c => c.Id == clusterId, ct);
             if (cluster == null) return NotFound();
 
             _context.ProxmoxHosts.Add(new ProxmoxHost
@@ -549,21 +506,19 @@ namespace BareProx.Controllers
             await _context.SaveChangesAsync(ct);
 
             TempData["Message"] = "Host removed.";
-            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = clusterId }); // CHANGED
+            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = clusterId });
         }
 
-        // POST: Settings/NetappControllers/Create
         [HttpPost]
         [ValidateAntiForgeryToken]
         public async Task<IActionResult> Create(
             [FromForm] string Hostname,
             [FromForm] string IpAddress,
-            [FromForm] bool IsPrimary,       // <- binds from hidden+checkbox
+            [FromForm] bool IsPrimary,
             [FromForm] string Username,
             [FromForm] string PasswordHash,
             CancellationToken ct)
         {
-
             var ok = await _netappAuthService.TryAuthenticateAsync(IpAddress, Username, PasswordHash, ct);
             if (!ok)
             {
@@ -575,7 +530,7 @@ namespace BareProx.Controllers
             {
                 Hostname = Hostname,
                 IpAddress = IpAddress,
-                IsPrimary = IsPrimary,       // <- no “single primary” logic added
+                IsPrimary = IsPrimary,
                 Username = Username,
                 PasswordHash = _encryptionService.Encrypt(PasswordHash)
             };
@@ -593,11 +548,9 @@ namespace BareProx.Controllers
             return RedirectToAction(nameof(NetappHub), new { selectedId = controller.Id });
         }
 
-
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> Edit(
-            int id, string Hostname, string IpAddress, bool IsPrimary, string Username, string PasswordHash, CancellationToken ct)
+        public async Task<IActionResult> Edit(int id, string Hostname, string IpAddress, bool IsPrimary, string Username, string PasswordHash, CancellationToken ct)
         {
             var existing = await _context.NetappControllers.FindAsync(id, ct);
             if (existing == null) return RedirectToAction(nameof(NetappHub));
@@ -614,7 +567,6 @@ namespace BareProx.Controllers
                 existing.PasswordHash = _encryptionService.Encrypt(PasswordHash);
             }
 
-            // Update unconditionally (you’re binding primitives)
             existing.Hostname = Hostname;
             existing.IpAddress = IpAddress;
             existing.IsPrimary = IsPrimary;
@@ -628,38 +580,29 @@ namespace BareProx.Controllers
             return RedirectToAction(nameof(NetappHub), new { selectedId = id });
         }
 
-
-        // GET: Settings/Delete/5
         [HttpPost, ValidateAntiForgeryToken, ActionName("Delete")]
         public async Task<IActionResult> DeleteConfirmed(int id, CancellationToken ct)
         {
-            var controller = await _context.NetappControllers
-                .FirstOrDefaultAsync(c => c.Id == id, ct);
+            var controller = await _context.NetappControllers.FirstOrDefaultAsync(c => c.Id == id, ct);
+            if (controller == null) return NotFound();
 
-            if (controller == null)
-                return NotFound();
-
-            // Remove relations referencing this controller (if your model has this DbSet)
             var snapMirrorRelations = await _context.SnapMirrorRelations
                 .Where(r => r.SourceControllerId == id || r.DestinationControllerId == id)
                 .ToListAsync(ct);
             if (snapMirrorRelations.Count > 0)
                 _context.SnapMirrorRelations.RemoveRange(snapMirrorRelations);
 
-            // Remove selected volumes tied to this controller
             var selectedVolumes = await _context.SelectedNetappVolumes
                 .Where(v => v.NetappControllerId == id)
                 .ToListAsync(ct);
             if (selectedVolumes.Count > 0)
                 _context.SelectedNetappVolumes.RemoveRange(selectedVolumes);
 
-            // Finally remove the controller itself
             _context.NetappControllers.Remove(controller);
-
             await _context.SaveChangesAsync(ct);
 
             TempData["Message"] = $"Controller \"{controller.Hostname}\" deleted.";
-            return Ok(); // let JS redirect the page
+            return Ok();
         }
 
         [HttpGet]
@@ -709,11 +652,7 @@ namespace BareProx.Controllers
         [HttpPost]
         public async Task<IActionResult> SaveSelectedStorage(SelectStorageViewModel model, CancellationToken ct)
         {
-            // Reuse your existing persistence logic as-is...
-            var existing = await _context.SelectedStorages
-                .Where(s => s.ClusterId == model.ClusterId)
-                .ToListAsync(ct);
-
+            var existing = await _context.SelectedStorages.Where(s => s.ClusterId == model.ClusterId).ToListAsync(ct);
             var selectedSet = new HashSet<string>(model.SelectedStorageIds ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
 
             var toRemove = existing.Where(e => !selectedSet.Contains(e.StorageIdentifier)).ToList();
@@ -725,17 +664,15 @@ namespace BareProx.Controllers
                 .Select(id => new ProxSelectedStorage { ClusterId = model.ClusterId, StorageIdentifier = id });
 
             _context.SelectedStorages.AddRange(toAdd);
-
             await _context.SaveChangesAsync(ct);
             TempData["Message"] = "Selected storage updated.";
 
-            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = model.ClusterId }); // CHANGED
+            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = model.ClusterId });
         }
 
         [HttpPost]
         public async Task<IActionResult> SaveNetappSelectedVolumes([FromBody] List<NetappVolumeExportDto> volumes, CancellationToken ct)
         {
-            // your existing save logic…
             var controllerId = volumes.FirstOrDefault()?.ClusterId ?? 0;
 
             var old = await _context.SelectedNetappVolumes
@@ -757,45 +694,9 @@ namespace BareProx.Controllers
             await _context.SaveChangesAsync(ct);
 
             await _netappVolumeService.UpdateAllSelectedVolumesAsync(ct);
-
             return Ok();
         }
-        private async Task<SelectStorageViewModel> BuildStorageViewAsync(int clusterId, CancellationToken ct)
-        {
-            // Reuse logic from ClusterStorage(...)
-            var cluster = await _context.ProxmoxClusters
-                .Include(c => c.Hosts)
-                .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
 
-            if (cluster == null)
-            {
-                return new SelectStorageViewModel { ClusterId = clusterId, StorageList = new List<ProxmoxStorageDto>() };
-            }
-
-            var allNfsStorage = await _proxmoxService.GetNfsStorageAsync(cluster, ct);
-
-            var selectedIds = await _context.Set<ProxSelectedStorage>()
-                .Where(s => s.ClusterId == clusterId)
-                .Select(s => s.StorageIdentifier)
-                .ToHashSetAsync(StringComparer.OrdinalIgnoreCase, ct);
-
-            var storageList = allNfsStorage
-                .Select(s => new ProxmoxStorageDto
-                {
-                    Id = s.Storage,              // keep your existing mapping
-                    Storage = s.Storage,
-                    Type = s.Type,
-                    Path = s.Path,
-                    Node = s.Node,
-                    IsSelected = selectedIds.Contains(s.Storage)
-                }).ToList();
-
-            return new SelectStorageViewModel
-            {
-                ClusterId = clusterId,
-                StorageList = storageList
-            };
-        }
         [HttpGet]
         public async Task<IActionResult> ProxmoxHub(int? selectedId = null, CancellationToken ct = default)
         {
@@ -810,9 +711,7 @@ namespace BareProx.Controllers
             {
                 selected = clusters.FirstOrDefault(c => c.Id == selectedId.Value);
                 if (selected != null)
-                {
-                    storageView = await BuildStorageViewAsync(selected.Id, ct); // <-- reuse
-                }
+                    storageView = await BuildStorageViewAsync(selected.Id, ct);
             }
 
             var vm = new ProxmoxHubViewModel
@@ -824,9 +723,126 @@ namespace BareProx.Controllers
                 Message = TempData["Message"] as string
             };
 
-            return View(vm); // Views/Settings/ProxmoxHub.cshtml
+            return View(vm);
         }
 
+        private async Task<SelectStorageViewModel> BuildStorageViewAsync(int clusterId, CancellationToken ct)
+        {
+            var cluster = await _context.ProxmoxClusters.Include(c => c.Hosts).FirstOrDefaultAsync(c => c.Id == clusterId, ct);
+            if (cluster == null)
+                return new SelectStorageViewModel { ClusterId = clusterId, StorageList = new List<ProxmoxStorageDto>() };
 
+            var allNfsStorage = await _proxmoxService.GetNfsStorageAsync(cluster, ct);
+
+            var selectedIds = await _context.Set<ProxSelectedStorage>()
+                .Where(s => s.ClusterId == clusterId)
+                .Select(s => s.StorageIdentifier)
+                .ToHashSetAsync(StringComparer.OrdinalIgnoreCase, ct);
+
+            var storageList = allNfsStorage.Select(s => new ProxmoxStorageDto
+            {
+                Id = s.Storage,
+                Storage = s.Storage,
+                Type = s.Type,
+                Path = s.Path,
+                Node = s.Node,
+                IsSelected = selectedIds.Contains(s.Storage)
+            }).ToList();
+
+            return new SelectStorageViewModel
+            {
+                ClusterId = clusterId,
+                StorageList = storageList
+            };
+        }
+
+        // ===================== Email settings: Save + Test =====================
+
+        [HttpPost, ValidateAntiForgeryToken]
+        public async Task<IActionResult> SaveEmailSettings([Bind(Prefix = "Email")] EmailSettingsViewModel vm, CancellationToken ct)
+        {
+            var sec = (vm.SecurityMode ?? "StartTls").Trim();
+            var port = vm.SmtpPort > 0
+                ? vm.SmtpPort
+                : (sec.Equals("SslTls", StringComparison.OrdinalIgnoreCase) ? 465
+                   : sec.Equals("StartTls", StringComparison.OrdinalIgnoreCase) ? 587
+                   : 25);
+
+            var noAuth = sec.Equals("None", StringComparison.OrdinalIgnoreCase)
+                         && port == 25
+                         && string.IsNullOrWhiteSpace(vm.Username);
+
+            if (vm.Enabled && string.IsNullOrWhiteSpace(vm.SmtpHost))
+                ModelState.AddModelError("Email.SmtpHost", "SMTP Server is required.");
+
+            var authRequired = vm.Enabled && !noAuth;
+            var existing = await _context.EmailSettings.AsNoTracking().FirstAsync(e => e.Id == 1, ct);
+
+            if (authRequired && string.IsNullOrWhiteSpace(vm.Username))
+                ModelState.AddModelError("Email.Username", "Username is required unless using Security=None on port 25.");
+
+            if (authRequired && string.IsNullOrWhiteSpace(vm.Password) && string.IsNullOrWhiteSpace(existing.ProtectedPassword))
+                ModelState.AddModelError("Email.Password", "Password (or an already saved password) is required when authentication is used.");
+
+            if (!ModelState.IsValid)
+            {
+                TempData["Error"] = "Fix the highlighted errors.";
+                return RedirectToAction(nameof(Config));
+            }
+
+            var s = await _context.EmailSettings.FirstAsync(e => e.Id == 1, ct);
+
+            s.Enabled = vm.Enabled;
+            s.SmtpHost = string.IsNullOrWhiteSpace(vm.SmtpHost) ? null : vm.SmtpHost.Trim();
+            s.SmtpPort = port;
+            s.SecurityMode = string.IsNullOrWhiteSpace(sec) ? "StartTls" : sec;
+
+            if (noAuth)
+            {
+                s.Username = null;
+                s.ProtectedPassword = null;
+            }
+            else
+            {
+                s.Username = string.IsNullOrWhiteSpace(vm.Username) ? null : vm.Username.Trim();
+                if (!string.IsNullOrWhiteSpace(vm.Password))
+                    s.ProtectedPassword = _protector.Protect(vm.Password);
+            }
+
+            s.From = string.IsNullOrWhiteSpace(vm.From) ? null : vm.From.Trim();
+            s.DefaultRecipients = string.IsNullOrWhiteSpace(vm.DefaultRecipients) ? null : vm.DefaultRecipients.Trim();
+
+            s.OnBackupSuccess = vm.OnBackupSuccess;
+            s.OnBackupFailure = vm.OnBackupFailure;
+            s.OnRestoreSuccess = vm.OnRestoreSuccess;
+            s.OnRestoreFailure = vm.OnRestoreFailure;
+            s.OnWarnings = vm.OnWarnings;
+            s.MinSeverity = vm.MinSeverity;
+
+            await _context.SaveChangesAsync(ct);
+            TempData["Success"] = "Email settings saved.";
+            return RedirectToAction(nameof(Config));
+        }
+
+        [HttpPost, ValidateAntiForgeryToken]
+        public async Task<IActionResult> SendTestEmail(string to, CancellationToken ct)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(to))
+                    throw new InvalidOperationException("Please provide a recipient email.");
+
+                var html = $@"<p>This is a test email from <b>BareProx</b> at {DateTime.UtcNow:u} (UTC).</p>
+                              <p>If you received this, SMTP settings work.</p>";
+
+                await _email.SendAsync(to.Trim(), "BareProx test email", html, ct);
+                TempData["Success"] = $"Test email sent to {to}.";
+            }
+            catch (Exception ex)
+            {
+                TempData["Error"] = $"Failed to send test email: {ex.Message}";
+            }
+            return RedirectToAction(nameof(Config));
+        }
     }
 }
