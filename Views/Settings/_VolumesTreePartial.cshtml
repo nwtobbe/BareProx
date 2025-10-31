@@ -15,43 +15,57 @@ else
         {
             var svm = Model.Svms[i];
             var collapseId = $"collapse-svm-{i}";
+            var hasSelected = svm.Volumes?.Any(v => v.IsSelected) == true;   // auto-open if something is selected
+            var selectedCount = svm.Volumes?.Count(v => v.IsSelected) ?? 0;
+            var totalCount = svm.Volumes?.Count ?? 0;
 
             <li class="list-group-item">
                 <div class="d-flex justify-content-between align-items-center">
                     <strong>@svm.Name</strong>
-                    <button class="btn btn-sm btn-outline-secondary"
-                            type="button"
-                            data-bs-toggle="collapse"
-                            data-bs-target="#@collapseId"
-                            aria-expanded="false"
-                            aria-controls="@collapseId">
-                        Toggle Volumes
-                    </button>
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="badge bg-secondary" title="Selected / Total">@selectedCount / @totalCount</span>
+                        <button class="btn btn-sm btn-outline-secondary"
+                                type="button"
+                                data-bs-toggle="collapse"
+                                data-bs-target="#@collapseId"
+                                aria-expanded="@(hasSelected.ToString().ToLower())"
+                                aria-controls="@collapseId">
+                            Toggle Volumes
+                        </button>
+                    </div>
                 </div>
 
-                <div class="collapse mt-2" id="@collapseId">
+                <div class="collapse mt-2 @(hasSelected ? "show" : "")" id="@collapseId">
                     <ul class="list-group">
-                        @foreach (var vol in svm.Volumes)
+                        @if (svm.Volumes != null)
                         {
-                            <li class="list-group-item">
-                                <input type="checkbox"
-                                       class="volume-checkbox form-check-input me-1"
-                                       data-vserver="@svm.Name"
-                                       data-volume="@vol.VolumeName"
-                                       data-uuid="@vol.Uuid"
-                                       data-mountip="@vol.MountIp"
-                                       data-clusterid="@vol.ClusterId"
-                                       @(vol.IsSelected ? "checked" : "") />
-                                @vol.VolumeName
-                                <small class="text-muted">(@vol.MountIp)</small>
-                            </li>
+                            @foreach (var vol in svm.Volumes)
+                            {
+                                var inputId = $"chk-{i}-{System.Web.HttpUtility.HtmlAttributeEncode(vol.Uuid ?? vol.VolumeName)}";
+
+                                <li class="list-group-item d-flex align-items-center">
+                                    <input type="checkbox"
+                                           id="@inputId"
+                                           class="volume-checkbox form-check-input me-2"
+                                           data-vserver="@svm.Name"
+                                           data-volume="@vol.VolumeName"
+                                           data-uuid="@vol.Uuid"
+                                           data-mountip="@vol.MountIp"
+                                           data-clusterid="@vol.ClusterId"
+                                           @(vol.IsSelected ? "checked=\"checked\"" : null) />
+                                    <label class="form-check-label mb-0" for="@inputId">
+                                        @vol.VolumeName
+                                        @if (!string.IsNullOrWhiteSpace(vol.MountIp))
+                                        {
+                                            <small class="text-muted">(@vol.MountIp)</small>
+                                        }
+                                    </label>
+                                </li>
+                            }
                         }
                     </ul>
                 </div>
             </li>
         }
     </ul>
-}
-@section Scripts {
-    <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
 }

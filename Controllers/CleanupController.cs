@@ -54,17 +54,22 @@ namespace BareProx.Controllers
         {
             var pageVm = new CleanupPageViewModel();
 
-            // 1) Load Proxmox clusters including their hosts
-            var clusters = await _context.ProxmoxClusters.Include(c => c.Hosts).ToListAsync(ct);
-            if (!clusters.Any())
+            // 1) Load Proxmox clusters including their hosts (no tracking)
+            var clusters = await _context.ProxmoxClusters
+                                         .Include(c => c.Hosts)
+                                         .AsNoTracking()
+                                         .ToListAsync(ct);
+            if (clusters.Count == 0)
             {
                 pageVm.WarningMessage = "No Proxmox clusters are configured.";
                 return View(pageVm);
             }
 
-            // 2) Load all NetApp controllers (primary & secondary)
-            var netappControllers = await _context.NetappControllers.ToListAsync(ct);
-            if (!netappControllers.Any())
+            // 2) Load all NetApp controllers (primary & secondary) (no tracking)
+            var netappControllers = await _context.NetappControllers
+                                                  .AsNoTracking()
+                                                  .ToListAsync(ct);
+            if (netappControllers.Count == 0)
             {
                 pageVm.WarningMessage = "No NetApp controllers are configured.";
                 return View(pageVm);
@@ -85,26 +90,27 @@ namespace BareProx.Controllers
                 {
                     var controllerId = controller.Id;
 
-                    // Fetch FlexClones for this controller
+                    // FlexClones for this controller
                     var allClones = await _netappFlexCloneService.ListFlexClonesAsync(controllerId, ct);
 
-                    // Fetch selected volumes from database
+                    // Selected volumes from database (no tracking)
                     var selectedVolumes = await _context.Set<SelectedNetappVolume>()
-                        .Where(v => v.NetappControllerId == controllerId)
-                        .AsNoTracking()
-                        .ToListAsync(ct);
+                                                        .Where(v => v.NetappControllerId == controllerId)
+                                                        .AsNoTracking()
+                                                        .ToListAsync(ct);
 
                     var selectedVolumeNames = selectedVolumes
                         .Select(v => v.VolumeName)
+                        .Where(n => !string.IsNullOrWhiteSpace(n))
                         .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-                    // Fetch mount info once per controller
+                    // Mount info once per controller
                     var mountInfos = await _netappVolumeService.GetVolumesWithMountInfoAsync(controllerId, ct);
 
                     // PART A: FlexClones In-use vs Orphaned
                     foreach (var cloneName in allClones)
                     {
-                        var mountInfo = mountInfos.FirstOrDefault(m => m.VolumeName == cloneName);
+                        var mountInfo = mountInfos.FirstOrDefault(m => string.Equals(m.VolumeName, cloneName, StringComparison.OrdinalIgnoreCase));
                         var mountIp = mountInfo?.MountIp;
 
                         // Check attached VMs per host
@@ -130,7 +136,7 @@ namespace BareProx.Controllers
                         });
                     }
 
-                    // PART B: Orphaned Snapshots per selected volume
+                    // PART B: Orphaned Snapshots per selected volume (only for primaries)
                     var primaryControllerIds = netappControllers
                         .Where(c => c.IsPrimary)
                         .Select(c => c.Id)
@@ -145,13 +151,17 @@ namespace BareProx.Controllers
                             ControllerId = controllerId
                         };
 
-                        var snapshotsOnDisk = await _netappSnapshotService.GetSnapshotsAsync(controllerId, selectedVolume.VolumeName, ct)
-                            ?? new List<string>();
+                        var snapshotsOnDisk = await _netappSnapshotService.GetSnapshotsAsync(controllerId, selectedVolume.VolumeName, ct);
 
-                        var recordedSnapshots = await _context.Set<BackupRecord>()
+                        // EF: fetch then build HashSet with comparer in-memory
+                        var recordedSnapshotsList = await _context.Set<BackupRecord>()
                             .Where(r => r.StorageName == selectedVolume.VolumeName)
                             .Select(r => r.SnapshotName)
-                            .ToHashSetAsync(StringComparer.OrdinalIgnoreCase, ct);
+                            .ToListAsync(ct);
+
+                        var recordedSnapshots = recordedSnapshotsList
+                            .Where(s => !string.IsNullOrWhiteSpace(s))
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
                         var orphanedSnapshots = snapshotsOnDisk
                             .Where(s => !recordedSnapshots.Contains(s) &&
@@ -170,7 +180,7 @@ namespace BareProx.Controllers
                             if (cloneForSnapshot != null)
                             {
                                 info.CloneName = cloneForSnapshot;
-                                var cloneMount = mountInfos.FirstOrDefault(m => m.VolumeName == cloneForSnapshot);
+                                var cloneMount = mountInfos.FirstOrDefault(m => string.Equals(m.VolumeName, cloneForSnapshot, StringComparison.OrdinalIgnoreCase));
                                 info.CloneMountIp = cloneMount?.MountIp;
 
                                 if (info.CloneName is not null)
@@ -188,6 +198,7 @@ namespace BareProx.Controllers
                             }
                             orphanedInfos.Add(info);
                         }
+
                         pvs.OrphanedSnapshots = orphanedInfos;
                         clusterVm.Volumes.Add(pvs);
                     }
@@ -202,12 +213,10 @@ namespace BareProx.Controllers
             return View(pageVm);
         }
 
-
-
         [HttpPost]
         [ValidateAntiForgeryToken]
         public async Task<IActionResult> Cleanup(string volumeName, string mountIp, int controllerId,
-        int clusterId, CancellationToken ct)
+            int clusterId, CancellationToken ct)
         {
             if (string.IsNullOrWhiteSpace(volumeName) || string.IsNullOrWhiteSpace(mountIp))
                 return BadRequest(new { error = "Missing volume or mount IP." });
@@ -215,6 +224,7 @@ namespace BareProx.Controllers
             // Reload cluster + hosts
             var cluster = await _context.ProxmoxClusters
                                         .Include(c => c.Hosts)
+                                        .AsNoTracking()
                                         .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
             if (cluster == null)
                 return NotFound(new { error = "Proxmox cluster not configured." });
@@ -249,7 +259,8 @@ namespace BareProx.Controllers
             // Delete the NetApp flexclone
             var deleted = await _netappVolumeService.DeleteVolumeAsync(
                               volumeName,
-                              controllerId);
+                              controllerId,
+                              ct);
 
             if (!deleted)
             {
@@ -265,7 +276,7 @@ namespace BareProx.Controllers
             });
         }
 
-        // — New: DELETE a single snapshot
+        // — Delete a single snapshot
         [HttpPost]
         [ValidateAntiForgeryToken]
         public async Task<IActionResult> CleanupSnapshot(string volumeName, string snapshotName, CancellationToken ct)
@@ -273,16 +284,33 @@ namespace BareProx.Controllers
             if (string.IsNullOrWhiteSpace(volumeName) || string.IsNullOrWhiteSpace(snapshotName))
                 return BadRequest(new { error = "Missing volume or snapshot name." });
 
-            var controllerId = await _context.NetappControllers
+            // Prefer the controller that owns this volume (SelectedNetappVolumes), then any primary, then any controller.
+            var controllerId = await _context.SelectedNetappVolumes
+                                             .Where(v => v.VolumeName == volumeName)
+                                             .Select(v => v.NetappControllerId)
+                                             .FirstOrDefaultAsync(ct);
+
+            if (controllerId == 0)
+            {
+                controllerId = await _context.NetappControllers
+                                             .Where(c => c.IsPrimary)
                                              .Select(c => c.Id)
                                              .FirstOrDefaultAsync(ct);
+            }
+            if (controllerId == 0)
+            {
+                controllerId = await _context.NetappControllers
+                                             .Select(c => c.Id)
+                                             .FirstOrDefaultAsync(ct);
+            }
             if (controllerId == 0)
                 return NotFound(new { error = "No NetApp controller configured." });
 
             var result = await _netappSnapshotService.DeleteSnapshotAsync(
                              controllerId,
                              volumeName,
-                             snapshotName, ct);
+                             snapshotName,
+                             ct);
 
             if (!result.Success)
             {

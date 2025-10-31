@@ -362,6 +362,7 @@ namespace BareProx.Models
         public int ProxmoxHostId { get; set; }
 
         // The chosen datastore identifier (matches ProxSelectedStorage.StorageIdentifier)
+        public int? SelectedNetappVolumeId { get; set; }
         public string StorageIdentifier { get; set; } = string.Empty;
 
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;

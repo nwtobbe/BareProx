@@ -1,6 +1,7 @@
 ﻿@model BareProx.Models.MigrationSettingsViewModel
 @{
     ViewData["Title"] = "Migration – Settings";
+    var hasStorages = Model?.StorageOptions != null && Model.StorageOptions.Any();
 }
 
 <h2 class="mb-3">Migration Settings</h2>
@@ -27,7 +28,7 @@
     </div>
 </form>
 
-<form asp-action="Settings" method="post">
+<form asp-action="Settings" method="post" novalidate>
     @Html.AntiForgeryToken()
     <input type="hidden" asp-for="SelectedClusterId" />
     <div asp-validation-summary="ModelOnly" class="text-danger mb-3"></div>
@@ -40,14 +41,51 @@
         </div>
 
         <div class="col-md-6">
-            <label class="form-label" asp-for="SelectedStorageIdentifier">Migration Datastore</label>
-            <select class="form-select" asp-for="SelectedStorageIdentifier" asp-items="Model.StorageOptions"></select>
+            <label class="form-label" asp-for="SelectedStorageIdentifier">
+                Migration Datastore
+                <span class="badge bg-secondary ms-1" title="Only datastores that exist in BOTH Proxmox → Selected storage and NetApp → Selected volumes">
+                    intersection
+                </span>
+            </label>
+
+            @if (hasStorages)
+            {
+                <select class="form-select"
+                        asp-for="SelectedStorageIdentifier"
+                        asp-items="Model.StorageOptions">
+                </select>
+                <div class="form-text">
+                    @Model.StorageOptions.Count option@(Model.StorageOptions.Count == 1 ? "" : "s") available.
+                </div>
+            }
+            else
+            {
+                <select class="form-select"
+                        asp-for="SelectedStorageIdentifier"
+                        asp-items="Model.StorageOptions"
+                        disabled="disabled">
+                </select>
+                <div class="alert alert-warning mt-2 py-2">
+                    <strong>No eligible datastores.</strong>
+                    Select at least one storage in <em>Proxmox → Selected storage</em>
+                    <span class="text-muted">and</span>
+                    the matching volume in <em>NetApp → Selected volumes</em>.
+                </div>
+            }
+
             <span class="text-danger small" asp-validation-for="SelectedStorageIdentifier"></span>
         </div>
     </div>
 
     <div class="mt-4 d-flex gap-2">
-        <button type="submit" class="btn btn-primary">Save</button>
+        @if (hasStorages)
+        {
+            <button type="submit" class="btn btn-primary">Save</button>
+        }
+        else
+        {
+            <button type="submit" class="btn btn-primary" disabled="disabled">Save</button>
+        }
         <a asp-action="Migrate" class="btn btn-outline-secondary">Back to Migrate</a>
         <a asp-action="Help" class="btn btn-outline-info">Help</a>
     </div>

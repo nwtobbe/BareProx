@@ -20,7 +20,7 @@
 
 using BareProx.Data;
 using BareProx.Models;
-using BareProx.Services.Migration;       // IProxmoxFileScanner
+using BareProx.Services.Migration;         // IProxmoxFileScanner
 using BareProx.Services.Proxmox.Migration; // IProxmoxMigration
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -32,31 +32,28 @@ using System.Text.Json;
 
 namespace BareProx.Controllers
 {
-    /// <summary>
-    /// Migration (debug/experimental) controller. Attribute-routed under /Migration.
-    /// </summary>
-    [AllowAnonymous]               // explicitly open (debug)
-    [Route("[controller]")]        // base: /Migration
+    // Add a controller-level route prefix so all endpoints live under /Migration/...
+    [Route("[controller]")]
     public class MigrationController : Controller
     {
         private readonly ILogger<MigrationController> _logger;
         private readonly ApplicationDbContext _db;
         private readonly IProxmoxFileScanner _scanner;
         private readonly IMigrationQueueRunner _runner;
-        private readonly IProxmoxMigration _migration; // NEW: replaces ProxmoxService for capability lookups
+        private readonly IProxmoxMigration _migration; // replaces ProxmoxService for capability lookups
 
         public MigrationController(
             ILogger<MigrationController> logger,
             ApplicationDbContext db,
             IProxmoxFileScanner scanner,
             IMigrationQueueRunner runner,
-            IProxmoxMigration migration)                // NEW
+            IProxmoxMigration migration)
         {
             _logger = logger;
             _db = db;
             _scanner = scanner;
             _runner = runner;
-            _migration = migration;                     // NEW
+            _migration = migration;
         }
 
         // =====================================================================
@@ -145,7 +142,6 @@ namespace BareProx.Controllers
         {
             await HydrateOptionsAsync(vm, ct);
 
-            // Simple validation
             if (vm.SelectedClusterId == 0)
                 ModelState.AddModelError(nameof(vm.SelectedClusterId), "Select a cluster.");
 
@@ -162,8 +158,14 @@ namespace BareProx.Controllers
                 return View(vm);
             }
 
+            // Resolve SelectedNetappVolumeId via volume name (intersection guarantees it exists)
+            var selectedNetappVolumeId = await _db.SelectedNetappVolumes
+                .Where(v => v.VolumeName == vm.SelectedStorageIdentifier)
+                .Select(v => (int?)v.Id)
+                .FirstOrDefaultAsync(ct);
+
             var existing = await _db.MigrationSelections
-                                    .FirstOrDefaultAsync(x => x.ClusterId == vm.SelectedClusterId, ct);
+                .FirstOrDefaultAsync(x => x.ClusterId == vm.SelectedClusterId, ct);
 
             if (existing == null)
             {
@@ -172,6 +174,7 @@ namespace BareProx.Controllers
                     ClusterId = vm.SelectedClusterId,
                     ProxmoxHostId = vm.SelectedHostId,
                     StorageIdentifier = vm.SelectedStorageIdentifier!,
+                    SelectedNetappVolumeId = selectedNetappVolumeId,   // NEW
                     UpdatedAt = DateTime.UtcNow
                 });
             }
@@ -179,6 +182,7 @@ namespace BareProx.Controllers
             {
                 existing.ProxmoxHostId = vm.SelectedHostId;
                 existing.StorageIdentifier = vm.SelectedStorageIdentifier!;
+                existing.SelectedNetappVolumeId = selectedNetappVolumeId; // NEW
                 existing.UpdatedAt = DateTime.UtcNow;
             }
 
@@ -194,9 +198,9 @@ namespace BareProx.Controllers
         private async Task HydrateOptionsAsync(MigrationSettingsViewModel vm, CancellationToken ct)
         {
             var clusters = await _db.ProxmoxClusters
-                                    .AsNoTracking()
-                                    .OrderBy(c => c.Name)
-                                    .ToListAsync(ct);
+                .AsNoTracking()
+                .OrderBy(c => c.Name)
+                .ToListAsync(ct);
 
             vm.ClusterOptions = clusters.Select(c => new SelectListItem
             {
@@ -218,15 +222,31 @@ namespace BareProx.Controllers
                 Text = string.IsNullOrWhiteSpace(h.Hostname) ? h.HostAddress : h.Hostname!
             }).ToList();
 
-            var storages = await _db.SelectedStorages.AsNoTracking()
+            // Proxmox-selected storages for this Proxmox cluster
+            var proxStorages = await _db.SelectedStorages.AsNoTracking()
                 .Where(s => s.ClusterId == vm.SelectedClusterId)
-                .OrderBy(s => s.StorageIdentifier)
+                .Select(s => s.StorageIdentifier)
                 .ToListAsync(ct);
 
-            vm.StorageOptions = storages.Select(s => new SelectListItem
+            var proxSet = proxStorages.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            // NetApp-selected volumes (by volume name) – cluster-agnostic, we match by name
+            var netappNames = await _db.SelectedNetappVolumes.AsNoTracking()
+                .Select(v => v.VolumeName)
+                .Distinct()
+                .ToListAsync(ct);
+
+            var netappSet = netappNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            // Intersection: only storages present on BOTH sides
+            var allowed = proxSet.Intersect(netappSet, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            vm.StorageOptions = allowed.Select(name => new SelectListItem
             {
-                Value = s.StorageIdentifier,
-                Text = s.StorageIdentifier
+                Value = name,
+                Text = name
             }).ToList();
         }
 
@@ -268,7 +288,7 @@ namespace BareProx.Controllers
             // Bridges from /network
             try
             {
-                var nets = await _migration.GetNodeNetworksAsync(node, ct);  // CHANGED
+                var nets = await _migration.GetNodeNetworksAsync(node, ct);
                 bridges.AddRange(
                     nets.Where(n => string.Equals(n.Type, "bridge", StringComparison.OrdinalIgnoreCase))
                         .Select(n => new BridgeOption(n.Iface ?? "vmbr0"))
@@ -284,7 +304,7 @@ namespace BareProx.Controllers
             // SDN bridges + VLANs
             try
             {
-                var vnets = await _migration.GetSdnVnetsAsync(ct);          // CHANGED
+                var vnets = await _migration.GetSdnVnetsAsync(ct);
 
                 bridges.AddRange(
                     vnets.Select(v => new BridgeOption($"{v.Vnet} (SDN)"))
@@ -315,7 +335,7 @@ namespace BareProx.Controllers
                     return slash >= 0 && slash + 1 < path.Length ? path[(slash + 1)..] : path;
                 }
 
-                var storages = await _migration.GetNodeStoragesAsync(node, ct); // CHANGED
+                var storages = await _migration.GetNodeStoragesAsync(node, ct);
                 _logger.LogDebug("Capabilities: node {Node} has {Count} storages.", node, storages.Count);
 
                 // Keep newest iso per file name across all storages
@@ -328,7 +348,7 @@ namespace BareProx.Controllers
                     IReadOnlyList<PveStorageContentItem> items;
                     try
                     {
-                        items = await _migration.GetStorageContentAsync(node, s.Storage!, "iso", ct); // CHANGED
+                        items = await _migration.GetStorageContentAsync(node, s.Storage!, "iso", ct);
                     }
                     catch (Exception listEx)
                     {

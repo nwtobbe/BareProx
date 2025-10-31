@@ -28,18 +28,20 @@ using System.Threading;
 using System.Threading.Tasks;
 using BareProx.Data;
 using BareProx.Models;
-using BareProx.Services.Proxmox.Migration; // IProxmoxMigration
+using BareProx.Services.Proxmox.Migration; // IProxmoxMigration (node-aware)
 using BareProx.Services.Helpers;           // ProxmoxSshException
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace BareProx.Services.Migration
 {
     /// <summary>
     /// Orchestrates preparing a Proxmox VM from VMware-sourced artifacts (VMDK descriptors).
+    /// Always executes on the node selected in MigrationSelections and uses its default storage.
     /// </summary>
     public sealed class ProxmoxMigrationExecutor : IMigrationExecutor
     {
-        private const string DefaultStorage = "vm_migration";
+        private const string HardcodedFallbackStorage = "vm_migration";
         private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
         // ----------- Compiled regexes (hot paths) -----------
@@ -77,13 +79,21 @@ namespace BareProx.Services.Migration
             _logger = logger;
         }
 
-        /// <summary>Executes the full migration preparation pipeline for one queue item.</summary>
+        /// <summary>
+        /// Executes the full migration preparation pipeline for one queue item.
+        /// Node and default storage come from MigrationSelections:
+        ///   - Node: ProxmoxHosts[ProxmoxHostId].Hostname ?? HostAddress
+        ///   - Default storage: MigrationSelections.StorageIdentifier (fallback to "vm_migration")
+        /// </summary>
         public async Task ExecuteAsync(MigrationQueueItem item, CancellationToken ct)
         {
+            // Resolve the concrete node and default storage we will act on
+            var (node, defaultStorage) = await ResolveNodeAndDefaultAsync(ct);
+
             var disks = Deserialize<List<DiskSpec>>(item.DisksJson) ?? new();
             var nics = Deserialize<List<NicSpec>>(item.NicsJson) ?? new();
 
-            // ---- 1) Validate input & VMID availability
+            // ---- 1) Validate input & VMID availability (on target node)
             await Step(item, "Validate", async () =>
             {
                 if (item.VmId is null or <= 0) throw new InvalidOperationException("VMID missing.");
@@ -96,11 +106,11 @@ namespace BareProx.Services.Migration
 
             await Step(item, "CheckVmid", async () =>
             {
-                var free = await _pve.IsVmidAvailableAsync(vmid, ct);
-                if (!free) throw new InvalidOperationException($"VMID {vmid} is already in use.");
+                var free = await _pve.IsVmidAvailableAsync(node, vmid, ct);
+                if (!free) throw new InvalidOperationException($"VMID {vmid} is already in use on node {node}.");
             });
 
-            // ---- 2) For each disk, copy & rewrite descriptor
+            // ---- 2) Copy & rewrite descriptors (on target node)
             for (int i = 0; i < disks.Count; i++)
             {
                 ct.ThrowIfCancellationRequested();
@@ -111,77 +121,81 @@ namespace BareProx.Services.Migration
                     if (string.IsNullOrWhiteSpace(d.Source))
                         throw new InvalidOperationException($"Disk[{i}] Source missing.");
                     if (string.IsNullOrWhiteSpace(d.Storage))
-                        throw new InvalidOperationException($"Disk[{i}] Storage missing.");
+                        d.Storage = defaultStorage; // respect MigrationSelections storage
 
                     var baseDir = $"/mnt/pve/{d.Storage}/images/{vmid}";
-                    await _pve.EnsureDirectoryAsync(baseDir, ct);
+                    _logger.LogInformation("Using node '{Node}' for storage '{Storage}' base '{BaseDir}'", node, d.Storage, baseDir);
+
+                    await _pve.EnsureDirectoryAsync(node, baseDir, ct);
 
                     var destDesc = $"{baseDir}/{FileNamePosix(d.Source!)}";
                     var absFlat = AbsoluteFlatPath(d.Source!);
 
-                    var original = await _pve.ReadTextFileAsync(d.Source!, ct);
+                    var original = await _pve.ReadTextFileAsync(node, d.Source!, ct);
                     var rewritten = RewriteVmdkDescriptor(original, absFlat);
-                    await _pve.WriteTextFileAsync(destDesc, rewritten, ct);
+                    await _pve.WriteTextFileAsync(node, destDesc, rewritten, ct);
 
-                    var verify = await _pve.ReadTextFileAsync(destDesc, ct);
+                    var verify = await _pve.ReadTextFileAsync(node, destDesc, ct);
                     var ok = verify.Contains("createType=\"monolithicFlat\"", StringComparison.OrdinalIgnoreCase)
                              && ReRwFlatLine.IsMatch(verify);
                     if (!ok) throw new InvalidOperationException("Descriptor copy/rewrite verification failed.");
                 });
             }
 
-            // ---- 3) Write base QEMU config
+            // ---- 3) Write base QEMU config (on target node)
             await Step(item, "WriteConf", async () =>
             {
                 var confPath = $"/etc/pve/qemu-server/{vmid}.conf";
-                var conf = BuildQemuConf(item, disks, nics);
-                await _pve.WriteTextFileAsync(confPath, conf, ct);
+                var conf = BuildQemuConf(item, disks, nics, defaultStorage);
+                _logger.LogInformation("Writing config for VMID {Vmid} on node '{Node}' → {Path}", vmid, node, confPath);
 
-                var back = await _pve.ReadTextFileAsync(confPath, ct);
+                await _pve.WriteTextFileAsync(node, confPath, conf, ct);
+
+                var back = await _pve.ReadTextFileAsync(node, confPath, ct);
                 if (!back.Contains($"name: {item.Name}", StringComparison.Ordinal))
                     _logger.LogWarning("Config name differs/missing for vmid {Vmid}", vmid);
                 if (!ReCdromNone.IsMatch(back))
                     throw new InvalidOperationException("CD-ROM (ide2) not present in config.");
             });
 
-            // ---- 4) Optional: add dummy VirtIO disk
+            // ---- 4) Optional: add dummy VirtIO disk (on target node)
             if (item.PrepareVirtio)
             {
                 await Step(item, "AddDummyDisk", async () =>
                 {
-                    var storage = disks.FirstOrDefault()?.Storage ?? DefaultStorage;
-                    var slot = await _pve.FirstFreeVirtioSlotAsync(vmid, ct) ?? 5;
-                    await _pve.AddDummyDiskAsync(vmid, storage, slot, 1, ct);
+                    var storage = disks.FirstOrDefault()?.Storage ?? defaultStorage;
+                    var slot = await _pve.FirstFreeVirtioSlotAsync(node, vmid, ct) ?? 5;
+                    await _pve.AddDummyDiskAsync(node, vmid, storage, slot, 1, ct);
                 });
             }
 
-            // ---- 5) Optional: mount VirtIO ISO
+            // ---- 5) Optional: mount VirtIO ISO (on target node)
             if (item.MountVirtioIso && !string.IsNullOrWhiteSpace(item.VirtioIsoName))
             {
                 await Step(item, "MountISO", async () =>
                 {
                     var confPath = $"/etc/pve/qemu-server/{vmid}.conf";
-                    await _pve.SetCdromAsync(vmid, item.VirtioIsoName!, ct);
-                    var conf = await _pve.ReadTextFileAsync(confPath, ct);
+                    await _pve.SetCdromAsync(node, vmid, item.VirtioIsoName!, ct);
+                    var conf = await _pve.ReadTextFileAsync(node, confPath, ct);
                     if (!ReCdromPresent.IsMatch(conf))
                         throw new InvalidOperationException("CD-ROM not present after ISO mount.");
                 });
             }
 
-            // ---- 6) UEFI: ensure efidisk0 exists (idempotent)
+            // ---- 6) UEFI: ensure efidisk0 exists (idempotent, on target node)
             if (item.Uefi)
             {
                 await Step(item, "AddEfiDisk", async () =>
                 {
                     var confPath = $"/etc/pve/qemu-server/{vmid}.conf";
-                    var conf = await _pve.ReadTextFileAsync(confPath, ct);
+                    var conf = await _pve.ReadTextFileAsync(node, confPath, ct);
 
                     if (!ReEfidisk.IsMatch(conf))
                     {
-                        var storage = disks.FirstOrDefault()?.Storage ?? DefaultStorage;
-                        await _pve.AddEfiDiskAsync(vmid, storage, ct);
+                        var storage = disks.FirstOrDefault()?.Storage ?? defaultStorage;
+                        await _pve.AddEfiDiskAsync(node, vmid, storage, ct);
 
-                        conf = await _pve.ReadTextFileAsync(confPath, ct);
+                        conf = await _pve.ReadTextFileAsync(node, confPath, ct);
                         if (!ReEfidisk.IsMatch(conf))
                             throw new InvalidOperationException("efidisk0 missing after add.");
                     }
@@ -192,7 +206,33 @@ namespace BareProx.Services.Migration
                 });
             }
 
-            await Log(item, "Finalize", $"VM {vmid} prepared.", "Info", ct);
+            await Log(item, "Finalize",
+                $"VM {vmid} prepared on node {node} (default storage: {defaultStorage}).",
+                "Info", ct);
+        }
+
+        // --------------------------------------------------------------------
+        // Resolve node + default storage from MigrationSelections
+        // --------------------------------------------------------------------
+        private async Task<(string node, string defaultStorage)> ResolveNodeAndDefaultAsync(CancellationToken ct)
+        {
+            var sel = await _db.MigrationSelections.AsNoTracking().FirstOrDefaultAsync(ct)
+                      ?? throw new InvalidOperationException("No MigrationSelection found; configure Migration → Settings first.");
+
+            var host = await _db.ProxmoxHosts.AsNoTracking()
+                          .FirstOrDefaultAsync(h => h.Id == sel.ProxmoxHostId, ct)
+                       ?? throw new InvalidOperationException($"Selected ProxmoxHostId {sel.ProxmoxHostId} not found.");
+
+            var node = !string.IsNullOrWhiteSpace(host.Hostname) ? host.Hostname! :
+                       !string.IsNullOrWhiteSpace(host.HostAddress) ? host.HostAddress! :
+                       throw new InvalidOperationException("Selected host has neither Hostname nor HostAddress.");
+
+            var storage = string.IsNullOrWhiteSpace(sel.StorageIdentifier)
+                ? HardcodedFallbackStorage
+                : sel.StorageIdentifier!;
+
+            _logger.LogInformation("Resolved MigrationSelections → node '{Node}', default storage '{Storage}'", node, storage);
+            return (node, storage);
         }
 
         // ---------------- Step wrapper & logging ----------------
@@ -309,7 +349,7 @@ namespace BareProx.Services.Migration
             return s;
         }
 
-        private static string BuildQemuConf(MigrationQueueItem item, List<DiskSpec> disks, List<NicSpec> nics)
+        private static string BuildQemuConf(MigrationQueueItem item, List<DiskSpec> disks, List<NicSpec> nics, string defaultStorage)
         {
             var sb = new StringBuilder();
             var vmid = item.VmId!.Value;
@@ -365,7 +405,7 @@ namespace BareProx.Services.Migration
             {
                 var bus = (d.Bus ?? "sata").ToLowerInvariant();
                 var idx = d.Index ?? 0;
-                var storage = string.IsNullOrWhiteSpace(d.Storage) ? DefaultStorage : d.Storage!;
+                var storage = string.IsNullOrWhiteSpace(d.Storage) ? defaultStorage : d.Storage!;
                 var desc = FileNamePosix(d.Source ?? "");
 
                 var useIoThread = bus is "scsi" or "virtio";

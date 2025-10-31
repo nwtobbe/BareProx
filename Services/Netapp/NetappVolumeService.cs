@@ -18,6 +18,7 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
+using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using BareProx.Data;
@@ -43,6 +44,9 @@ namespace BareProx.Services
             _logger = logger;
         }
 
+        private static string EnsureSlash(string baseUrl) =>
+            string.IsNullOrEmpty(baseUrl) || baseUrl.EndsWith("/") ? baseUrl : baseUrl + "/";
+
         // ---------------------------------------------------------------------
         // Vservers + Volumes (full tree)
         // ---------------------------------------------------------------------
@@ -67,6 +71,7 @@ namespace BareProx.Services
             }
 
             var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+            baseUrl = EnsureSlash(baseUrl);
 
             try
             {
@@ -112,6 +117,7 @@ namespace BareProx.Services
                         {
                             VolumeName = volumeName,
                             Uuid = uuid,
+                            // NOTE: If NetappVolumeDto exposes NetappControllerId, prefer that instead of ClusterId.
                             ClusterId = controller.Id
                         });
                     }
@@ -162,6 +168,7 @@ namespace BareProx.Services
             }
 
             var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+            baseUrl = EnsureSlash(baseUrl);
 
             try
             {
@@ -231,8 +238,9 @@ namespace BareProx.Services
                         {
                             VolumeName = volumeName,
                             VserverName = svmName,
-                            MountPath = $"{mountIp}:/{volumeName}",
-                            MountIp = mountIp
+                            MountPath = $"{mountIp}:/{volumeName}", // NOTE: assumes junction == volumeName
+                            MountIp = mountIp,
+                            NetappControllerId = controllerId,
                         });
                     }
                 }
@@ -279,6 +287,8 @@ namespace BareProx.Services
             }
 
             var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+            baseUrl = EnsureSlash(baseUrl);
+
             var url = $"{baseUrl}storage/volumes?fields=name";
             _logger.LogDebug("Fetching volumes: {Url}", url);
 
@@ -297,8 +307,8 @@ namespace BareProx.Services
                                .GetProperty("records")
                                .EnumerateArray()
                                .Select(r => r.GetProperty("name").GetString())
-                               .Where(n => !string.IsNullOrWhiteSpace(n) && n.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                               .Cast<string>()
+                               .Where(n => !string.IsNullOrWhiteSpace(n) && n!.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                               .Select(n => n!)
                                .ToList();
 
                 _logger.LogInformation("Found {Count} volumes with prefix '{Prefix}'.", names.Count, prefix);
@@ -336,6 +346,7 @@ namespace BareProx.Services
             }
 
             var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+            baseUrl = EnsureSlash(baseUrl);
 
             try
             {
@@ -362,6 +373,7 @@ namespace BareProx.Services
                     {
                         VolumeName = volumeName,
                         Uuid = uuid,
+                        // NOTE: If NetappVolumeDto exposes NetappControllerId, prefer that instead of ClusterId.
                         ClusterId = controller.Id
                     });
                 }
@@ -408,6 +420,8 @@ namespace BareProx.Services
             }
 
             var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+            baseUrl = EnsureSlash(baseUrl);
+
             var url = $"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volumeName)}&fields=uuid";
             _logger.LogDebug("Lookup volume: {Url}", url);
 
@@ -448,6 +462,7 @@ namespace BareProx.Services
             }
 
             var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+            baseUrl = EnsureSlash(baseUrl);
 
             try
             {
@@ -474,28 +489,31 @@ namespace BareProx.Services
                 var uuid = records[0].GetProperty("uuid").GetString();
                 if (string.IsNullOrEmpty(uuid)) return false;
 
-                // 2) (Optional) Unexport first – best-effort
+                // 2) (Optional) Unexport first – best-effort (PATCH)
                 var patchUrl = $"{baseUrl}storage/volumes/{uuid}";
                 var unexportPayload = new { nas = new { path = "" } };
-                var patchContent = new StringContent(JsonSerializer.Serialize(unexportPayload), Encoding.UTF8, "application/json");
-
-                _logger.LogDebug("PATCH unexport: {Url}", patchUrl);
-                var patchResp = await httpClient.PatchAsync(patchUrl, patchContent, ct);
-                if (!patchResp.IsSuccessStatusCode)
+                using (var patchReq = new HttpRequestMessage(HttpMethod.Patch, patchUrl)
                 {
-                    var body = await patchResp.Content.ReadAsStringAsync(ct);
-                    _logger.LogWarning("Unexport failed for {Name} (uuid={Uuid}): {Code} {Body}", volumeName, uuid, patchResp.StatusCode, body);
-                    // proceed anyway
+                    Content = new StringContent(JsonSerializer.Serialize(unexportPayload), Encoding.UTF8, "application/json")
+                })
+                {
+                    _logger.LogDebug("PATCH unexport: {Url}", patchUrl);
+                    var patchResp = await httpClient.SendAsync(patchReq, ct);
+                    if (!patchResp.IsSuccessStatusCode)
+                    {
+                        var body = await patchResp.Content.ReadAsStringAsync(ct);
+                        _logger.LogWarning("Unexport failed for {Name} (uuid={Uuid}): {Code} {Body}", volumeName, uuid, patchResp.StatusCode, body);
+                        // proceed anyway
+                    }
                 }
 
-                // 3) DELETE with force + return_timeout (0–120). Using 120s to avoid 202 when possible.
+                // 3) DELETE with force + return_timeout
                 const int timeoutSec = 120;
                 var deleteUrl = $"{baseUrl}storage/volumes/{uuid}?force=true&return_timeout={timeoutSec}";
                 _logger.LogDebug("DELETE volume (force): {Url}", deleteUrl);
 
                 var deleteResp = await httpClient.DeleteAsync(deleteUrl, ct);
 
-                // 3a) Handle async 202 Accepted – treat as success and log job link/uuid if present
                 if ((int)deleteResp.StatusCode == 202)
                 {
                     var body = await deleteResp.Content.ReadAsStringAsync(ct);
@@ -520,10 +538,9 @@ namespace BareProx.Services
                     catch { /* ignore parse errors */ }
 
                     _logger.LogInformation("Delete accepted (async). JobUuid={JobUuid} Link={JobHref}", jobUuid ?? "(n/a)", jobHref ?? "(n/a)");
-                    return true; // request accepted; ONTAP will finish in background
+                    return true;
                 }
 
-                // 3b) Normal success
                 var ok = deleteResp.IsSuccessStatusCode;
                 if (!ok)
                 {
@@ -548,7 +565,6 @@ namespace BareProx.Services
                 throw;
             }
         }
-
 
         // ---------------------------------------------------------------------
         // Selected volumes sync
@@ -597,6 +613,8 @@ namespace BareProx.Services
                 throw new Exception($"Controller {controllerId} not found.");
 
             var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+            baseUrl = EnsureSlash(baseUrl);
+
             var url = $"{baseUrl}storage/volumes/{volumeUuid}?fields=space,nas.export_policy.name,snapshot_locking_enabled";
             _logger.LogDebug("Sync GET: {Url}", url);
 
