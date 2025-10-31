@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
-## [1.0.2510.2015] - 2025-10-25
+## [1.0.2510.3113] - 2025-10-31
 
 ### Added
 - Basic email notification
@@ -18,7 +18,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 - Page. Proxmox. Added search and expand
 
 ### Fixed
-- Page Jobs. Truncated error messages
+- Page. Jobs. Truncated error messages
 
 
 
