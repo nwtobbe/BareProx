@@ -8,6 +8,13 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.0.2510.3113] - 2025-10-31
 
+### Fixed
+- Page Settings Netapp. Selected volumes not getting display as selected.
+
+
+
+## [1.0.2510.3113] - 2025-10-31
+
 ### Added
 - Basic email notification
 - Update notifications

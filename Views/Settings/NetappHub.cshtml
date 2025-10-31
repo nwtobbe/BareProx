@@ -174,8 +174,8 @@
                 <div class="card-header d-flex align-items-center justify-content-between">
                     <span>Exported Volumes</span>
                     <div class="d-flex gap-2">
-                        <button class="btn btn-sm btn-outline-secondary" id="expandAll">Expand all</button>
-                        <button class="btn btn-sm btn-outline-secondary" id="collapseAll">Collapse all</button>
+                        <button class="btn btn-sm btn-outline-secondary" id="expandAll" type="button">Expand all</button>
+                        <button class="btn btn-sm btn-outline-secondary" id="collapseAll" type="button">Collapse all</button>
                     </div>
                 </div>
                 <div class="card-body">
@@ -192,7 +192,7 @@
 
                     <input type="hidden" id="netappControllerId" value="@Model.Selected!.Id" />
                     <div class="d-flex justify-content-end mt-3">
-                        <button class="btn btn-success" id="saveVolumes">Save Selected Volumes</button>
+                        <button class="btn btn-success" id="saveVolumes" type="button">Save Selected Volumes</button>
                     </div>
                 </div>
             </div>
@@ -319,16 +319,55 @@
           if (location.hash === '#pane-vols')  showTab('#tab-vols');
         });
 
-        /* ----- Volumes: AJAX load + search + expand/collapse ----- */
+        /* ----- Volumes: AJAX load + search + expand/collapse + re-select saved ----- */
         (async function(){
           const cidEl = document.getElementById('netappControllerId');
           if (!cidEl) return;
 
           const controllerId = parseInt(cidEl.value, 10);
           const container = document.getElementById('volume-list-container');
-          const res = await fetch(`@Url.Action("GetVolumesTree", "Settings")?storageId=${controllerId}`);
+
+          // 1) Load the tree markup
+          const res = await fetch(`@Url.Action("GetVolumesTree", "Settings")?storageId=${controllerId}`, { credentials: "same-origin" });
           container.innerHTML = await res.text();
 
+          // 2) Fetch saved selections (expects JSON: array of strings (UUIDs) OR array of objects with Uuid/uuid)
+          let savedUuidSet = new Set();
+          try {
+            const selRes = await fetch(`@Url.Action("GetSelectedNetappVolumes", "Settings")?controllerId=${controllerId}`, { credentials: "same-origin" });
+            if (selRes.ok) {
+              const data = await selRes.json();
+              const uuids = Array.isArray(data)
+                ? (typeof data[0] === 'string' ? data : data.map(x => x?.Uuid ?? x?.uuid))
+                : [];
+              savedUuidSet = new Set(uuids.filter(Boolean).map(u => String(u).toLowerCase()));
+            }
+          } catch { /* optional endpoint; ignore errors */ }
+
+          // 3) Apply selection + expand ancestors so they’re visible
+          if (savedUuidSet.size > 0) {
+            container.querySelectorAll('.volume-checkbox').forEach(cb => {
+              const uuid = (cb.dataset.uuid || '').toLowerCase();
+              if (uuid && savedUuidSet.has(uuid)) {
+                cb.checked = true;
+
+                // Expand collapsed parents so the checked item is visible (Bootstrap 5 safe)
+                let el = cb;
+                while (el) {
+                  const col = el.closest?.('.collapse');
+                  if (col) {
+                    try {
+                      const inst = bootstrap.Collapse.getOrCreateInstance(col, { toggle: false });
+                      inst.show();
+                    } catch { /* noop */ }
+                  }
+                  el = el.parentElement;
+                }
+              }
+            });
+          }
+
+          // --- search / expand / collapse logic ---
           const search = document.getElementById('volSearch');
           const btnExpand = document.getElementById('expandAll');
           const btnCollapse = document.getElementById('collapseAll');
@@ -343,8 +382,10 @@
 
           function toggleAll(expand){
             container.querySelectorAll('.collapse').forEach(el => {
-              if (expand) new bootstrap.Collapse(el, { show: true });
-              else        new bootstrap.Collapse(el, { hide: true });
+              try {
+                const inst = bootstrap.Collapse.getOrCreateInstance(el, { toggle: false });
+                expand ? inst.show() : inst.hide();
+              } catch { /* noop */ }
             });
           }
 
@@ -373,84 +414,6 @@
             } else {
               alert("Failed to save volumes.");
             }
-          });
-        })();
-
-        /* ----- Add Controller modal wizard ----- */
-        (function(){
-          const modalEl   = document.getElementById('addControllerModal');
-          const form      = document.getElementById('addControllerForm');
-          const steps     = Array.from(document.querySelectorAll('.wizard-step'));
-          const pills     = Array.from(document.querySelectorAll('#naWizardSteps .nav-link'));
-          const btnBack   = document.getElementById('acBack');
-          const btnNext   = document.getElementById('acNext');
-          const btnSubmit = document.getElementById('acSubmit');
-          const hint      = document.getElementById('addControllerHint');
-
-          let current = 1;
-          const maxStep = 2;
-
-          function showStep(n){
-            current = n;
-            steps.forEach(s => s.classList.toggle('d-none', +s.dataset.step !== n));
-            pills.forEach(p => {
-              const step = +p.dataset.step;
-              p.classList.toggle('active', step === n);
-              const disabled = step > n;
-              p.classList.toggle('disabled', disabled);
-              p.tabIndex = disabled ? -1 : 0;
-              p.setAttribute('aria-disabled', disabled ? 'true' : 'false');
-            });
-            btnBack.disabled = (n === 1);
-            btnNext.classList.toggle('d-none', n === maxStep);
-            btnSubmit.classList.toggle('d-none', n !== maxStep);
-            hint.textContent = (n === 1)
-              ? 'Enter the display name and management IP/FQDN.'
-              : 'Enter credentials and choose whether it is a primary controller.';
-          }
-
-          function stepValid(n){
-            if (n === 1) {
-              return document.getElementById('acHostname').checkValidity()
-                  && document.getElementById('acIp').checkValidity();
-            }
-            if (n === 2) {
-              return document.getElementById('acUser').checkValidity()
-                  && document.getElementById('acPass').checkValidity();
-            }
-            return true;
-          }
-
-          btnNext?.addEventListener('click', () => {
-            form.classList.add('was-validated');
-            if (!stepValid(current)) return;
-            showStep(Math.min(maxStep, current + 1));
-          });
-
-          btnBack?.addEventListener('click', () => showStep(Math.max(1, current - 1)));
-
-          // prevent submit if invalid (HTML5 validation)
-          form?.addEventListener('submit', (e) => {
-            if (!form.checkValidity()) {
-              e.preventDefault(); e.stopPropagation();
-              form.classList.add('was-validated');
-            }
-          });
-
-          // reset wizard when modal opens
-          modalEl?.addEventListener('shown.bs.modal', () => {
-            form.reset();
-            form.classList.remove('was-validated');
-            showStep(1);
-            document.getElementById('acHostname')?.focus();
-          });
-
-          // allow clicking completed step pills to go back
-          pills.forEach(p => {
-            p.addEventListener('click', () => {
-              const s = +p.dataset.step;
-              if (!p.classList.contains('disabled')) showStep(s);
-            });
           });
         })();
 

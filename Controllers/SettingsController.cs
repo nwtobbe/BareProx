@@ -693,6 +693,19 @@ namespace BareProx.Controllers
             }
         }
 
+        [HttpGet]
+        public async Task<IActionResult> GetSelectedNetappVolumes(int controllerId, CancellationToken ct)
+        {
+            var uuids = await _context.SelectedNetappVolumes
+                .Where(v => v.NetappControllerId == controllerId)
+                .Select(v => v.Uuid)
+                .Where(u => u != null)
+                .Distinct()
+                .ToListAsync(ct);
+
+            return Json(uuids);
+        }
+
         [HttpPost]
         public async Task<IActionResult> SaveSelectedStorage(SelectStorageViewModel model, CancellationToken ct)
         {

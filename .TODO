@@ -1,3 +1,6 @@
 ﻿
 Fix intermittent copy export failue
 
+real certs
+check retention
+verify svm:s
