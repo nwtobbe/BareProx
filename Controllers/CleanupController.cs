@@ -22,6 +22,7 @@ using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services;
 using BareProx.Services.Netapp;
+using BareProx.Services.Proxmox;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 

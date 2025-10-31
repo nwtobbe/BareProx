@@ -20,8 +20,8 @@
 
 using BareProx.Data;
 using BareProx.Models;
-using BareProx.Services;                 // ProxmoxService
 using BareProx.Services.Migration;       // IProxmoxFileScanner
+using BareProx.Services.Proxmox.Migration; // IProxmoxMigration
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Rendering;
@@ -41,22 +41,22 @@ namespace BareProx.Controllers
     {
         private readonly ILogger<MigrationController> _logger;
         private readonly ApplicationDbContext _db;
-        private readonly ProxmoxService _proxmox;
         private readonly IProxmoxFileScanner _scanner;
         private readonly IMigrationQueueRunner _runner;
+        private readonly IProxmoxMigration _migration; // NEW: replaces ProxmoxService for capability lookups
 
         public MigrationController(
             ILogger<MigrationController> logger,
             ApplicationDbContext db,
-            ProxmoxService proxmox,
             IProxmoxFileScanner scanner,
-            IMigrationQueueRunner runner)
+            IMigrationQueueRunner runner,
+            IProxmoxMigration migration)                // NEW
         {
             _logger = logger;
             _db = db;
-            _proxmox = proxmox;
             _scanner = scanner;
             _runner = runner;
+            _migration = migration;                     // NEW
         }
 
         // =====================================================================
@@ -268,7 +268,7 @@ namespace BareProx.Controllers
             // Bridges from /network
             try
             {
-                var nets = await _proxmox.GetNodeNetworksAsync(node, ct);
+                var nets = await _migration.GetNodeNetworksAsync(node, ct);  // CHANGED
                 bridges.AddRange(
                     nets.Where(n => string.Equals(n.Type, "bridge", StringComparison.OrdinalIgnoreCase))
                         .Select(n => new BridgeOption(n.Iface ?? "vmbr0"))
@@ -284,7 +284,7 @@ namespace BareProx.Controllers
             // SDN bridges + VLANs
             try
             {
-                var vnets = await _proxmox.GetSdnVnetsAsync(ct);
+                var vnets = await _migration.GetSdnVnetsAsync(ct);          // CHANGED
 
                 bridges.AddRange(
                     vnets.Select(v => new BridgeOption($"{v.Vnet} (SDN)"))
@@ -315,7 +315,7 @@ namespace BareProx.Controllers
                     return slash >= 0 && slash + 1 < path.Length ? path[(slash + 1)..] : path;
                 }
 
-                var storages = await _proxmox.GetNodeStoragesAsync(node, ct);
+                var storages = await _migration.GetNodeStoragesAsync(node, ct); // CHANGED
                 _logger.LogDebug("Capabilities: node {Node} has {Count} storages.", node, storages.Count);
 
                 // Keep newest iso per file name across all storages
@@ -328,7 +328,7 @@ namespace BareProx.Controllers
                     IReadOnlyList<PveStorageContentItem> items;
                     try
                     {
-                        items = await _proxmox.GetStorageContentAsync(node, s.Storage!, "iso", ct);
+                        items = await _migration.GetStorageContentAsync(node, s.Storage!, "iso", ct); // CHANGED
                     }
                     catch (Exception listEx)
                     {

@@ -33,6 +33,7 @@ using BareProx.Services.Proxmox;
 using BareProx.Services.Proxmox.Authentication;
 using BareProx.Services.Proxmox.Helpers;
 using BareProx.Services.Proxmox.Ops;
+using BareProx.Services.Proxmox.Restore;
 using BareProx.Services.Proxmox.Snapshots;
 using BareProx.Services.Restore;
 using BareProx.Services.Updates;
@@ -231,7 +232,7 @@ var encSection = builder.Configuration.GetSection("Encryption");
 var existingKey = encSection.GetValue<string>("Key");
 if (string.IsNullOrWhiteSpace(existingKey))
 {
-    // 24 bytes → 32-char Base64Url key
+    // 24 bytes → 32-char Base64Url key (no padding for 24 bytes)
     var keyBytes = RandomNumberGenerator.GetBytes(24);
     var newKey = Base64UrlEncoder.Encode(keyBytes);
 
@@ -240,17 +241,19 @@ if (string.IsNullOrWhiteSpace(existingKey))
 
     // persist to appsettings.json
     var path = Path.Combine(persistentPath, "appsettings.json");
-    var json = File.ReadAllText(path);
+    var json = File.Exists(path) ? File.ReadAllText(path) : "{}";
     var settings = JObject.Parse(json);
 
-    if (settings["Encryption"]?.Type != JTokenType.Object)
-        settings["Encryption"] = new JObject();
+    // Ensure "Encryption" is a JObject
+    var encObj = (settings["Encryption"] as JObject)
+                 ?? (JObject)(settings["Encryption"] = new JObject());
 
-    settings["Encryption"]["Key"] = newKey;
+    // Set the key safely
+    encObj["Key"] = newKey;
 
-    File.WriteAllText(path,
-        settings.ToString(Formatting.Indented));
+    File.WriteAllText(path, settings.ToString(Formatting.Indented));
 }
+
 
 // --- 2) Register Services --------------------------------------------------
 builder.Services.AddSingleton<IEncryptionService, EncryptionService>();
@@ -351,13 +354,16 @@ if (isConfigured)
     builder.Services.AddScoped<INetappVolumeService, NetappVolumeService>();
     builder.Services.AddScoped<INetappSnapmirrorService, NetappSnapmirrorService>();
     builder.Services.AddScoped<INetappSnapshotService, NetappSnapshotService>();
+    builder.Services.AddScoped<IProxmoxSnapChains, ProxmoxSnapChains>();
     builder.Services.AddScoped<ProxmoxService>();
+    builder.Services.AddScoped<IProxmoxRestore, ProxmoxRestore>();
     builder.Services.AddScoped<IProxmoxAuthenticator, ProxmoxAuthenticator>();
     builder.Services.AddScoped<IProxmoxHelpersService, ProxmoxHelpersService>();
     builder.Services.AddScoped<IRestoreService, RestoreService>();
     builder.Services.AddScoped<IProxmoxFileScanner, ProxmoxFileScanner>();
     builder.Services.AddSingleton<IMigrationQueueRunner, MigrationQueueRunner>();
     builder.Services.AddScoped<IMigrationExecutor, ProxmoxMigrationExecutor>();
+    builder.Services.AddScoped<BareProx.Services.Proxmox.Migration.IProxmoxMigration,BareProx.Services.Proxmox.Migration.ProxmoxMigration>();
     builder.Services.AddScoped<IProxmoxOpsService, ProxmoxOpsService>();
     builder.Services.AddScoped<IProxmoxSnapshotsService, ProxmoxSnapshotsService>();
     builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();

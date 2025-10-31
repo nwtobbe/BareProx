@@ -23,6 +23,7 @@ using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services.Backup;
 using BareProx.Services.Netapp;
+using BareProx.Services.Proxmox;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using System.Globalization;

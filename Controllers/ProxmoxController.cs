@@ -21,6 +21,7 @@
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services;
+using BareProx.Services.Proxmox;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -47,64 +48,73 @@ namespace BareProx.Controllers
 
         public async Task<IActionResult> ListVMs(CancellationToken ct)
         {
-            // 1) Load cluster
+            // 1) Load the first configured cluster (no tracking)
             var cluster = await _context.ProxmoxClusters
+                .AsNoTracking()
                 .Include(c => c.Hosts)
                 .FirstOrDefaultAsync(ct);
+
             if (cluster == null)
             {
                 ViewBag.Warning = "No Proxmox clusters are configured.";
                 return View(new List<StorageWithVMsDto>());
             }
 
-            // 1a) Check cluster health and skip if *all* hosts are offline
-            var (quorate, onlineCount, totalCount, hostStates, summary)
-                = await _proxmoxService.GetClusterStatusAsync(cluster, ct);
-
-            // Collect the *names* of hosts that are actually up:
-            var onlineHostNames = hostStates
-                .Where(kvp => kvp.Value)
-                .Select(kvp => kvp.Key)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-            if (!onlineHostNames.Any())
-            {
-                ViewBag.Warning = "No Proxmox hosts are currently online: " + summary;
-                return View(new List<StorageWithVMsDto>());
-            }
-
-            // 1b) Prune cluster.Hosts to only those that are up
-            cluster.Hosts = cluster.Hosts
-                .Where(h => onlineHostNames.Contains(h.Hostname ?? h.HostAddress))
-                .ToList();
-
-            // 2) Pick primary NetApp controller
+            // 2) Primary NetApp controller (no tracking)
             var netappController = await _context.NetappControllers
+                .AsNoTracking()
                 .Where(c => c.IsPrimary)
+                .Select(c => new { c.Id })
                 .FirstOrDefaultAsync(ct);
+
             if (netappController == null)
             {
                 ViewBag.Warning = "No primary NetApp controller is configured.";
                 return View(new List<StorageWithVMsDto>());
             }
 
-            // 3) Read selected Proxmox storages for this cluster
+            // 3) Selected storages (filter set)
             var selectedStorageNames = await _context.SelectedStorages
+                .AsNoTracking()
                 .Where(s => s.ClusterId == cluster.Id)
                 .Select(s => s.StorageIdentifier)
                 .ToListAsync(ct);
-            if (!selectedStorageNames.Any())
+
+            if (selectedStorageNames.Count == 0)
             {
                 ViewBag.Warning = "No Proxmox storage has been selected for backup.";
                 return View(new List<StorageWithVMsDto>());
             }
 
-            // 4) Query Proxmox for VM lists, now only against the online hosts
+            var selectedStorageSet = new HashSet<string>(selectedStorageNames, StringComparer.OrdinalIgnoreCase);
+
+            // 4) Cluster/host status (skip entirely if all offline)
+            var (_, _, _, hostStates, summary) = await _proxmoxService.GetClusterStatusAsync(cluster, ct);
+            var onlineHostNames = hostStates.Where(kv => kv.Value).Select(kv => kv.Key)
+                                           .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            if (onlineHostNames.Count == 0)
+            {
+                ViewBag.Warning = "No Proxmox hosts are currently online: " + summary;
+                return View(new List<StorageWithVMsDto>());
+            }
+
+            // Local list of *online* hosts (don’t mutate EF entity)
+            var onlineHosts = cluster.Hosts
+                .Where(h => onlineHostNames.Contains(h.Hostname ?? h.HostAddress))
+                .ToList();
+
+            if (onlineHosts.Count == 0)
+            {
+                ViewBag.Warning = "No online hosts matched the configured cluster hosts.";
+                return View(new List<StorageWithVMsDto>());
+            }
+
+            // 5) Kick off VM inventory (uses cache internally)
             Dictionary<string, List<ProxmoxVM>> storageVmMap;
             try
             {
-                storageVmMap = await _invCache
-                    .GetVmsByStorageListAsync(cluster, selectedStorageNames, ct);
+                storageVmMap = await _invCache.GetVmsByStorageListAsync(cluster, selectedStorageNames, ct);
             }
             catch (ServiceUnavailableException ex)
             {
@@ -119,13 +129,43 @@ namespace BareProx.Controllers
                 return View(new List<StorageWithVMsDto>());
             }
 
-            // 5) Build DTOs & filter out empty storages
-            var model = storageVmMap
-                .Where(kvp => kvp.Value?.Any() == true)
-                .Select(kvp => new StorageWithVMsDto
+            // 6) In parallel: fetch only relevant SnapMirror relations and selected volumes
+            //    (restrict to the storages we actually care about)
+            var relationsTask = _context.SnapMirrorRelations
+                .AsNoTracking()
+                .Where(r => selectedStorageSet.Contains(r.SourceVolume))
+                .Select(r => new { r.SourceControllerId, r.SourceVolume, r.DestinationControllerId, r.DestinationVolume })
+                .ToListAsync(ct);
+
+            // We need to validate both ends exist in SelectedNetappVolumes; restrict to the two controllerId sets implied by the relations + the primary controller.
+            var selectedVolumesTask = _context.SelectedNetappVolumes
+                .AsNoTracking()
+                .Where(v => selectedStorageSet.Contains(v.VolumeName))
+                .Select(v => new { v.NetappControllerId, v.VolumeName, v.SnapshotLockingEnabled })
+                .ToListAsync(ct);
+
+            await Task.WhenAll(relationsTask, selectedVolumesTask);
+
+            var relations = relationsTask.Result;
+            var selectedVolumes = selectedVolumesTask.Result;
+
+            // Build quick-lookup sets
+            var selectedVolKeys = new HashSet<(int C, string V)>(
+                selectedVolumes.Select(v => (v.NetappControllerId, v.VolumeName)),
+                EqualityComparer<(int, string)>.Default);
+
+            // 7) Build DTOs (skip empty storages early)
+            var model = new List<StorageWithVMsDto>(capacity: storageVmMap.Count);
+            foreach (var kv in storageVmMap)
+            {
+                var storage = kv.Key;
+                var vms = kv.Value;
+                if (vms == null || vms.Count == 0) continue;
+
+                model.Add(new StorageWithVMsDto
                 {
-                    StorageName = kvp.Key,
-                    VMs = kvp.Value.Select(vm => new ProxmoxVM
+                    StorageName = storage,
+                    VMs = vms.Select(vm => new ProxmoxVM
                     {
                         Id = vm.Id,
                         Name = vm.Name,
@@ -134,47 +174,38 @@ namespace BareProx.Controllers
                     }).ToList(),
                     ClusterId = cluster.Id,
                     NetappControllerId = netappController.Id
-                    
-                })
-                .ToList();
-
-            // 6) Compute which storages can replicate
-            var selectedVolumes = await _context.SelectedNetappVolumes.ToListAsync(ct);
-            var relations = await _context.SnapMirrorRelations.ToListAsync(ct);
-            var replicable = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var rel in relations)
-            {
-                var primary = selectedVolumes.FirstOrDefault(v =>
-                    v.NetappControllerId == rel.SourceControllerId &&
-                    v.VolumeName == rel.SourceVolume);
-
-                var secondary = selectedVolumes.FirstOrDefault(v =>
-                    v.NetappControllerId == rel.DestinationControllerId &&
-                    v.VolumeName == rel.DestinationVolume);
-
-                if (primary != null && secondary != null)
-                    replicable.Add(rel.SourceVolume);
+                });
             }
+
+            if (model.Count == 0)
+            {
+                ViewBag.Warning = "No VMs found on the selected storage.";
+                return View(model);
+            }
+
+            // 8) Compute replicability & snapshot locking flags in O(1) lookups
+            //    Replicable if a relation exists for the storage AND both ends are present in SelectedNetappVolumes.
+            var replicableSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var r in relations)
+            {
+                if (selectedVolKeys.Contains((r.SourceControllerId, r.SourceVolume)) &&
+                    selectedVolKeys.Contains((r.DestinationControllerId, r.DestinationVolume)))
+                {
+                    replicableSet.Add(r.SourceVolume);
+                }
+            }
+
+            var lockByKey = selectedVolumes
+                .GroupBy(v => (v.NetappControllerId, v.VolumeName), EqualityComparer<(int, string)>.Default)
+                .ToDictionary(g => g.Key, g => g.Any(x => x.SnapshotLockingEnabled == true),
+                              EqualityComparer<(int, string)>.Default);
 
             foreach (var dto in model)
             {
-                // a) IsReplicable:
-                dto.IsReplicable = replicable.Contains(dto.StorageName);
-
-                // b) SnapshotLockingEnabled:
-                var vol = selectedVolumes.FirstOrDefault(v =>
-                    v.NetappControllerId == dto.NetappControllerId &&
-                    v.VolumeName.Equals(dto.StorageName, StringComparison.OrdinalIgnoreCase));
-
-                dto.SnapshotLockingEnabled = vol?.SnapshotLockingEnabled == true;
+                dto.IsReplicable = replicableSet.Contains(dto.StorageName);
+                dto.SnapshotLockingEnabled = lockByKey.TryGetValue((dto.NetappControllerId, dto.StorageName), out var enabled) && enabled;
             }
 
-            // 7) If no DTOs made it through, warn
-            if (!model.Any())
-                ViewBag.Warning = "No VMs found on the selected storage.";
-
-            // 8) Render
             return View(model);
         }
     }

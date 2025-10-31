@@ -19,18 +19,15 @@ namespace BareProx.Services.Proxmox.Ops
     /// </summary>
     public sealed class ProxmoxOpsService : IProxmoxOpsService
     {
-        private readonly ApplicationDbContext _context;
         private readonly ILogger<ProxmoxOpsService> _logger;
         private readonly IProxmoxHelpersService _proxmoxHelpers;
         private readonly IProxmoxAuthenticator _auth;
 
         public ProxmoxOpsService(
-            ApplicationDbContext context,
             ILogger<ProxmoxOpsService> logger,
             IProxmoxHelpersService proxmoxHelpers,
             IProxmoxAuthenticator auth)
         {
-            _context = context;
             _logger = logger;
             _proxmoxHelpers = proxmoxHelpers;
             _auth = auth;
@@ -41,12 +38,12 @@ namespace BareProx.Services.Proxmox.Ops
         /// Accepts absolute or relative URLs (your callers currently pass absolute).
         /// </summary>
        public async Task<HttpResponseMessage> SendWithRefreshAsync(
-    ProxmoxCluster cluster,
-    HttpMethod method,
-    string url,
-    HttpContent? content = null,
-    CancellationToken ct = default)
-{
+         ProxmoxCluster cluster,
+         HttpMethod method,
+         string url,
+         HttpContent? content = null,
+         CancellationToken ct = default)
+        {
     // Resolve absolute URL and which host we’re talking to
     var absoluteUrl = await ResolveAbsoluteUrlAsync(cluster, url, ct);
 

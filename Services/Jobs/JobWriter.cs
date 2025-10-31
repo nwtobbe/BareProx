@@ -29,18 +29,42 @@ namespace BareProx.Services.Jobs
         private readonly IDbContextFactory<ApplicationDbContext> _dbf;
         public JobService(IDbContextFactory<ApplicationDbContext> dbf) => _dbf = dbf;
 
-        // ---------------- Job-level ----------------
+        // ---- Status constants to avoid string typos -----------------------------------------
+        private static class JobStatus
+        {
+            public const string Running = "Running";
+            public const string Completed = "Completed";
+            public const string Failed = "Failed";
+            public const string Warning = "Warning";
+        }
+
+        private static class VmStatus
+        {
+            public const string Pending = "Pending";
+            public const string Success = "Success";
+            public const string Failed = "Failed";
+            public const string Skipped = "Skipped";
+            public const string Warning = "Warning";
+        }
+
+        // ---- Helpers ------------------------------------------------------------------------
+        private static async Task<JobVmResult?> GetVmRowAsync(ApplicationDbContext db, int id, CancellationToken ct)
+            => await db.JobVmResults.FindAsync(new object?[] { id }, ct);
+
+        // ---------------- Job-level -----------------------------------------------------------
         public async Task<int> CreateJobAsync(string type, string relatedVm, string payloadJson, CancellationToken ct = default)
         {
             using var db = await _dbf.CreateDbContextAsync(ct);
+
             var job = new Job
             {
-                Type = type,
-                Status = "Running",
-                RelatedVm = relatedVm,
+                Type = string.IsNullOrWhiteSpace(type) ? "Unknown" : type.Trim(),
+                Status = JobStatus.Running,
+                RelatedVm = relatedVm?.Trim(),
                 PayloadJson = payloadJson,
                 StartedAt = DateTime.UtcNow
             };
+
             db.Jobs.Add(job);
             await db.SaveChangesAsync(ct);
             return job.Id;
@@ -52,7 +76,7 @@ namespace BareProx.Services.Jobs
             var job = await db.Jobs.FindAsync(new object?[] { jobId }, ct);
             if (job == null) return;
 
-            job.Status = status;
+            job.Status = string.IsNullOrWhiteSpace(status) ? job.Status : status.Trim();
             if (!string.IsNullOrWhiteSpace(error))
                 job.ErrorMessage = error;
 
@@ -60,12 +84,12 @@ namespace BareProx.Services.Jobs
         }
 
         public async Task CompleteJobAsync(int jobId, CancellationToken ct = default)
-            => await CompleteJobCoreAsync(jobId, "Completed", ct);
+            => await CompleteJobCoreAsync(jobId, JobStatus.Completed, ct);
 
-        // NEW: explicit terminal status (e.g., "Warning")
+        // explicit terminal status (e.g. "Warning")
         public async Task CompleteJobAsync(int jobId, string finalStatus, CancellationToken ct = default)
         {
-            finalStatus = string.IsNullOrWhiteSpace(finalStatus) ? "Completed" : finalStatus.Trim();
+            finalStatus = string.IsNullOrWhiteSpace(finalStatus) ? JobStatus.Completed : finalStatus.Trim();
             await CompleteJobCoreAsync(jobId, finalStatus, ct);
         }
 
@@ -87,15 +111,15 @@ namespace BareProx.Services.Jobs
             var job = await db.Jobs.FindAsync(new object?[] { jobId }, ct);
             if (job == null) return false;
 
-            job.Status = "Failed";
+            job.Status = JobStatus.Failed;
             job.ErrorMessage = message;
             job.CompletedAt = DateTime.UtcNow;
 
             await db.SaveChangesAsync(ct);
-            return false;
+            return true; // fixed: indicate success
         }
 
-        // --------------- Per-VM rows ---------------
+        // --------------- Per-VM rows ---------------------------------------------------------
         public async Task<int> BeginVmAsync(int jobId, int vmid, string vmName, string hostName, string storageName, CancellationToken ct = default)
         {
             using var db = await _dbf.CreateDbContextAsync(ct);
@@ -106,7 +130,7 @@ namespace BareProx.Services.Jobs
                 VmName = vmName,
                 HostName = hostName,
                 StorageName = storageName,
-                Status = "Pending",
+                Status = VmStatus.Pending,
                 StartedAtUtc = DateTime.UtcNow
             };
             db.JobVmResults.Add(row);
@@ -117,10 +141,10 @@ namespace BareProx.Services.Jobs
         public async Task MarkVmSkippedAsync(int jobVmResultId, string reason, CancellationToken ct = default)
         {
             using var db = await _dbf.CreateDbContextAsync(ct);
-            var row = await db.JobVmResults.FindAsync(new object?[] { jobVmResultId }, ct);
+            var row = await GetVmRowAsync(db, jobVmResultId, ct);
             if (row == null) return;
 
-            row.Status = "Skipped";
+            row.Status = VmStatus.Skipped;
             row.Reason = reason;
             row.CompletedAtUtc = DateTime.UtcNow;
 
@@ -130,7 +154,7 @@ namespace BareProx.Services.Jobs
         public async Task SetIoFreezeResultAsync(int jobVmResultId, bool attempted, bool succeeded, bool wasRunning, CancellationToken ct = default)
         {
             using var db = await _dbf.CreateDbContextAsync(ct);
-            var row = await db.JobVmResults.FindAsync(new object?[] { jobVmResultId }, ct);
+            var row = await GetVmRowAsync(db, jobVmResultId, ct);
             if (row == null) return;
 
             row.IoFreezeAttempted = attempted;
@@ -143,7 +167,7 @@ namespace BareProx.Services.Jobs
         public async Task MarkVmSnapshotRequestedAsync(int jobVmResultId, string snapshotName, string? upid, CancellationToken ct = default)
         {
             using var db = await _dbf.CreateDbContextAsync(ct);
-            var row = await db.JobVmResults.FindAsync(new object?[] { jobVmResultId }, ct);
+            var row = await GetVmRowAsync(db, jobVmResultId, ct);
             if (row == null) return;
 
             row.SnapshotRequested = true;
@@ -156,7 +180,7 @@ namespace BareProx.Services.Jobs
         public async Task MarkVmSnapshotTakenAsync(int jobVmResultId, CancellationToken ct = default)
         {
             using var db = await _dbf.CreateDbContextAsync(ct);
-            var row = await db.JobVmResults.FindAsync(new object?[] { jobVmResultId }, ct);
+            var row = await GetVmRowAsync(db, jobVmResultId, ct);
             if (row == null) return;
 
             row.SnapshotTaken = true;
@@ -167,10 +191,10 @@ namespace BareProx.Services.Jobs
         public async Task MarkVmSuccessAsync(int jobVmResultId, int? backupRecordId = null, CancellationToken ct = default)
         {
             using var db = await _dbf.CreateDbContextAsync(ct);
-            var row = await db.JobVmResults.FindAsync(new object?[] { jobVmResultId }, ct);
+            var row = await GetVmRowAsync(db, jobVmResultId, ct);
             if (row == null) return;
 
-            row.Status = "Success";
+            row.Status = VmStatus.Success;
             row.BackupRecordId = backupRecordId;
             row.CompletedAtUtc = DateTime.UtcNow;
 
@@ -180,24 +204,24 @@ namespace BareProx.Services.Jobs
         public async Task MarkVmFailureAsync(int jobVmResultId, string error, CancellationToken ct = default)
         {
             using var db = await _dbf.CreateDbContextAsync(ct);
-            var row = await db.JobVmResults.FindAsync(new object?[] { jobVmResultId }, ct);
+            var row = await GetVmRowAsync(db, jobVmResultId, ct);
             if (row == null) return;
 
-            row.Status = "Failed";
+            row.Status = VmStatus.Failed;
             row.ErrorMessage = error;
             row.CompletedAtUtc = DateTime.UtcNow;
 
             await db.SaveChangesAsync(ct);
         }
 
-        // NEW: per-VM "Warning"
+        // per-VM "Warning"
         public async Task MarkVmWarningAsync(int jobVmResultId, string? note = null, CancellationToken ct = default)
         {
             using var db = await _dbf.CreateDbContextAsync(ct);
-            var row = await db.JobVmResults.FindAsync(new object?[] { jobVmResultId }, ct);
+            var row = await GetVmRowAsync(db, jobVmResultId, ct);
             if (row == null) return;
 
-            row.Status = "Warning";
+            row.Status = VmStatus.Warning;
             if (!string.IsNullOrWhiteSpace(note))
                 row.Reason = note; // or row.ErrorMessage = note;
             row.CompletedAtUtc = DateTime.UtcNow;
@@ -205,7 +229,7 @@ namespace BareProx.Services.Jobs
             await db.SaveChangesAsync(ct);
         }
 
-        // --------------- Per-VM logs ---------------
+        // --------------- Per-VM logs ---------------------------------------------------------
         public async Task LogVmAsync(int jobVmResultId, string message, string level = "Info", CancellationToken ct = default)
         {
             using var db = await _dbf.CreateDbContextAsync(ct);

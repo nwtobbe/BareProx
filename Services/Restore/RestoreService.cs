@@ -5,17 +5,17 @@
  * GPLv3
  */
 
-using System.Text.Json;
-using System.Linq;
 using BareProx.Data;
 using BareProx.Models;
-using BareProx.Services;
 using BareProx.Services.Background;
 using BareProx.Services.Netapp;
 using BareProx.Services.Notifications;
 using BareProx.Services.Proxmox;
+using BareProx.Services.Proxmox.Restore;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using System.Linq;
+using System.Text.Json;
 
 namespace BareProx.Services.Restore
 {
@@ -77,6 +77,7 @@ namespace BareProx.Services.Restore
 
                 var netappflexclone = scope.ServiceProvider.GetRequiredService<INetappFlexCloneService>();
                 var proxmox = scope.ServiceProvider.GetRequiredService<ProxmoxService>();
+                var proxmoxRestore = scope.ServiceProvider.GetRequiredService<IProxmoxRestore>();
                 var netappVolumeSvc = scope.ServiceProvider.GetRequiredService<INetappVolumeService>();
                 var netappExportNfs = scope.ServiceProvider.GetRequiredService<INetappExportNFSService>();
 
@@ -294,7 +295,7 @@ namespace BareProx.Services.Restore
                             int.Parse(model.VmId),
                             backgroundCt);
 
-                        restored = await proxmox.RestoreVmFromConfigWithOriginalIdAsync(
+                        restored = await proxmoxRestore.RestoreVmFromConfigWithOriginalIdAsync(
                             model,
                             targetHost.HostAddress,
                             cloneName,
@@ -303,7 +304,7 @@ namespace BareProx.Services.Restore
                     }
                     else
                     {
-                        restored = await proxmox.RestoreVmFromConfigAsync(
+                        restored = await proxmoxRestore.RestoreVmFromConfigAsync(
                             model,
                             targetHost.HostAddress,
                             cloneName,

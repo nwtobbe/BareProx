@@ -41,36 +41,27 @@ namespace BareProx.Services.Proxmox.Snapshots
     /// </summary>
     public sealed class ProxmoxSnapshotsService : IProxmoxSnapshotsService
     {
-        private readonly ApplicationDbContext _context;
         private readonly ILogger<ProxmoxSnapshotsService> _logger;
         private readonly IProxmoxHelpersService _proxmoxHelpers;
         private readonly IProxmoxOpsService _proxmoxOps;
-        private readonly IHttpClientFactory _httpFactory;
-        private readonly IProxmoxAuthenticator _auth;
 
         // You can register a named HttpClient ("proxmox") or use default
         public ProxmoxSnapshotsService(
-            ApplicationDbContext context,
             ILogger<ProxmoxSnapshotsService> logger,
             IProxmoxHelpersService proxmoxHelpers,
-            IProxmoxOpsService proxmoxOps,
-            IHttpClientFactory httpFactory,
-            IProxmoxAuthenticator auth)
+            IProxmoxOpsService proxmoxOps)
         {
-            _context = context;
             _logger = logger;
             _proxmoxHelpers = proxmoxHelpers;
             _proxmoxOps = proxmoxOps;
-            _httpFactory = httpFactory;
-            _auth = auth;
         }
 
         public async Task<List<ProxmoxSnapshotInfo>> GetSnapshotListAsync(
-     ProxmoxCluster cluster,
-     string node,
-     string hostAddress,
-     int vmid,
-     CancellationToken ct = default)
+            ProxmoxCluster cluster,
+            string node,
+            string hostAddress,
+            int vmid,
+            CancellationToken ct = default)
         {
             var url = $"https://{hostAddress}:8006/api2/json/nodes/{node}/qemu/{vmid}/snapshot";
 
@@ -214,6 +205,8 @@ namespace BareProx.Services.Proxmox.Snapshots
                 return false;
             }
         }
+
+
 
     }
 }

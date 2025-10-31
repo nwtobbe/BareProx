@@ -10,12 +10,12 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 - Basic email notification
-- Update notification
+- Update notifications
 
 ### Changed
 - Page. Settings/System
 - Page. Cleanup. Now only one click at a time.
-
+- Page. Proxmox. Added search and expand
 
 ### Fixed
 - Page Jobs. Truncated error messages
