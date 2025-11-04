@@ -27,6 +27,7 @@ namespace BareProx.Models
         public int ClusterId { get; set; }
         public int ControllerId { get; set; }
         public bool SnapshotLockingEnabled { get; set; }
+        public int? SelectedNetappVolumeId { get; set; }
     }
     public class CreateScheduleRequest
     {
@@ -36,8 +37,10 @@ namespace BareProx.Models
         public int ControllerId { get; set; }
 
         // New: map volumeName -> which cluster/controller to use
-        public Dictionary<string, VolumeMeta> VolumeMeta { get; set; } = new();
+        public Dictionary<string, VolumeMeta> VolumeMeta { get; set; }
+            = new(StringComparer.OrdinalIgnoreCase);
         public string StorageName { get; set; } = null!;
+        public int? SelectedNetappVolumeId { get; set; }
         public bool IsApplicationAware { get; set; }
         public string Name { get; set; } = null!;
         public List<string> ExcludedVmIds { get; set; } = new();
@@ -56,6 +59,14 @@ namespace BareProx.Models
         public bool EnableLocking { get; set; }
         public int? LockRetentionCount { get; set; }
         public string? LockRetentionUnit { get; set; } = "Hours";
+        // Notifications (new master switch)
+        public bool NotificationsEnabled { get; set; } = true;
+        public bool NotifyOnSuccess { get; set; }   // checkbox
+        public bool NotifyOnError { get; set; }   // checkbox
+        public string? NotificationEmails { get; set; } // optional CSV
+
+        // UI hint (no post needed, but handy to keep)
+        public bool EmailConfigured { get; set; }
     }
 
     public class ScheduleEntry
@@ -73,6 +84,7 @@ namespace BareProx.Models
     public class BackupRequest
     {
         public string StorageName { get; set; } = null!;
+        public int? selectedNetappVolumeId { get; set; }
         public bool IsApplicationAware { get; set; }
         public string Label { get; set; } = "Manual";
         public int ClusterId { get; set; }

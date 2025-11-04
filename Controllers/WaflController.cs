@@ -76,15 +76,20 @@ namespace BareProx.Controllers
             ViewBag.SelectedClusterId = selectedCluster.Id;
 
             // 3. Load all NetApp controllers
-            var netappControllers = await _context.NetappControllers.ToListAsync(ct);
+            var netappControllers = await _context.NetappControllers.AsNoTracking().ToListAsync(ct);
             if (!netappControllers.Any())
             {
                 ViewBag.Warning = "No NetApp controllers are configured.";
                 return View(new List<NetappControllerTreeDto>());
             }
 
-            // 4. Load **all** volumes (primary and secondary) from SelectedNetappVolumes
-            var selectedVolumes = await _context.SelectedNetappVolumes.ToListAsync(ct);
+            // 4. Load **enabled** volumes (primary and secondary) from SelectedNetappVolumes
+            //    (Disabled == true => skip; NULL => treated as enabled)
+            var selectedVolumes = await _context.SelectedNetappVolumes
+                                                .AsNoTracking()
+                                                .Where(v => v.Disabled != true)
+                                                .ToListAsync(ct);
+
             var volumeLookup = selectedVolumes.ToLookup(v => v.NetappControllerId);
 
             var result = new List<NetappControllerTreeDto>();
@@ -115,7 +120,7 @@ namespace BareProx.Controllers
                             Vserver = vol.Vserver,
                             MountIp = vol.MountIp,
                             Uuid = vol.Uuid,
-                            ClusterId = vol.ClusterId,
+                            ClusterId = vol.NetappControllerId,
                             IsSelected = true
                         };
 
@@ -132,54 +137,61 @@ namespace BareProx.Controllers
             return View(result);
         }
 
-
         public async Task<IActionResult> SnapMirrorGraph(CancellationToken ct)
         {
-            // 1) Pull everything to memory first (all with ct)
-            var snapshotList = await _context.NetappSnapshots
-                                             .ToListAsync(ct);
-            var policies = await _context.SnapMirrorPolicies
-                                               .ToListAsync(ct);
-            var retentions = await _context.SnapMirrorPolicyRetentions
-                                               .ToListAsync(ct);
-            var relationsRaw = await _context.SnapMirrorRelations
-                                               .ToListAsync(ct);
+            // Pull data (no tracking for speed)
+            var snapshotList = await _context.NetappSnapshots.AsNoTracking().ToListAsync(ct);
+            var policies = await _context.SnapMirrorPolicies.AsNoTracking().ToListAsync(ct);
+            var retentions = await _context.SnapMirrorPolicyRetentions.AsNoTracking().ToListAsync(ct);
+            var relationsRaw = await _context.SnapMirrorRelations.AsNoTracking().ToListAsync(ct);
 
-            // 2) Build lookups
+            // Build a fast lookup of "enabled" volumes (Disabled == true => excluded; NULL => included)
+            static string Key(int cid, string? vol) => $"{cid}||{(vol ?? string.Empty).ToLowerInvariant()}";
+
+            var enabledVolKeys = (await _context.SelectedNetappVolumes
+                .AsNoTracking()
+                .Where(v => v.Disabled != true)                   // only enabled
+                .Select(v => new { v.NetappControllerId, v.VolumeName })
+                .ToListAsync(ct))
+                .Where(x => !string.IsNullOrWhiteSpace(x.VolumeName))
+                .Select(x => Key(x.NetappControllerId, x.VolumeName))
+                .ToHashSet(StringComparer.Ordinal);               // keys already normalized
+
+            // Filter relations: require BOTH source and destination volumes to be enabled
+            var relationsFiltered = relationsRaw.Where(r =>
+                enabledVolKeys.Contains(Key(r.SourceControllerId, r.SourceVolume)) &&
+                enabledVolKeys.Contains(Key(r.DestinationControllerId, r.DestinationVolume))
+            ).ToList();
+
+            // Lookups for policy/retention/controller names
             var policyByUuid = policies
                 .Where(p => !string.IsNullOrEmpty(p.Uuid))
                 .ToDictionary(p => p.Uuid!, p => p, StringComparer.OrdinalIgnoreCase);
+
             var retentionsByPolicyId = retentions
                 .GroupBy(r => r.SnapMirrorPolicyId)
                 .ToDictionary(g => g.Key, g => g.ToList());
 
             var controllerNames = await _context.NetappControllers
                 .AsNoTracking()
-                .ToDictionaryAsync(c => c.Id, c => string.IsNullOrWhiteSpace(c.Hostname) ? $"#{c.Id}" : c.Hostname, ct);
+                .ToDictionaryAsync(
+                    c => c.Id,
+                    c => string.IsNullOrWhiteSpace(c.Hostname) ? $"#{c.Id}" : c.Hostname,
+                    ct
+                );
 
+            // Map to DTOs
             var relations = new List<SnapMirrorRelationGraphDto>();
-
-            foreach (var rel in relationsRaw)
+            foreach (var rel in relationsFiltered)
             {
-                // 3) Try to get the matching policy (null-safe)
+                // Policy + retentions
                 SnapMirrorPolicy? policy = null;
-                if (!string.IsNullOrEmpty(rel.PolicyUuid) &&
-                    policyByUuid.TryGetValue(rel.PolicyUuid, out var p))
-                {
-                    policy = p;
-                }
-                int policyId = policy?.Id ?? 0;
+                if (!string.IsNullOrEmpty(rel.PolicyUuid))
+                    policyByUuid.TryGetValue(rel.PolicyUuid, out policy);
 
-                // 4) Gather any retention entries for that policy
-                var relRetentions = retentionsByPolicyId
-                    .GetValueOrDefault(policyId, new List<SnapMirrorPolicyRetention>());
-
-                int getRetention(string label)
-                    => relRetentions.FirstOrDefault(r => r.Label == label)?.Count ?? 0;
-
-                // 5) Find any period string among retentions
-                string? lockedPeriod = relRetentions
-                    .FirstOrDefault(r => r.Period != null)?.Period;
+                var relRetentions = retentionsByPolicyId.GetValueOrDefault(policy?.Id ?? 0, new List<SnapMirrorPolicyRetention>());
+                int getRetention(string label) => relRetentions.FirstOrDefault(r => r.Label == label)?.Count ?? 0;
+                string? lockedPeriod = relRetentions.FirstOrDefault(r => r.Period != null)?.Period;
 
                 var dto = new SnapMirrorRelationGraphDto
                 {
@@ -199,7 +211,6 @@ namespace BareProx.Controllers
                     WeeklyRetention = getRetention("weekly"),
                     LockedPeriod = FormatIso8601Duration(lockedPeriod),
 
-                    // initialize counts to 0 (to be filled below)
                     HourlySnapshotsPrimary = 0,
                     DailySnapshotsPrimary = 0,
                     WeeklySnapshotsPrimary = 0,
@@ -211,26 +222,22 @@ namespace BareProx.Controllers
                 relations.Add(dto);
             }
 
-            // 6) Count snapshots for each relation
+            // Count snapshots for remaining (visible) relations
             foreach (var rel in relations)
             {
-                // PRIMARY side:
-                var primarySnaps = snapshotList
-                    .Where(s =>
-                        s.PrimaryControllerId == rel.SourceControllerId &&
-                        s.PrimaryVolume == rel.SourceVolume &&
-                        s.ExistsOnPrimary == true);
+                var primarySnaps = snapshotList.Where(s =>
+                    s.PrimaryControllerId == rel.SourceControllerId &&
+                    string.Equals(s.PrimaryVolume, rel.SourceVolume, StringComparison.OrdinalIgnoreCase) &&
+                    s.ExistsOnPrimary == true);
 
                 rel.HourlySnapshotsPrimary = primarySnaps.Count(s => s.SnapmirrorLabel == "hourly");
                 rel.DailySnapshotsPrimary = primarySnaps.Count(s => s.SnapmirrorLabel == "daily");
                 rel.WeeklySnapshotsPrimary = primarySnaps.Count(s => s.SnapmirrorLabel == "weekly");
 
-                // SECONDARY side:
-                var secondarySnaps = snapshotList
-                    .Where(s =>
-                        s.SecondaryControllerId == rel.DestinationControllerId &&
-                        s.SecondaryVolume == rel.DestinationVolume &&
-                        s.ExistsOnSecondary == true);
+                var secondarySnaps = snapshotList.Where(s =>
+                    s.SecondaryControllerId == rel.DestinationControllerId &&
+                    string.Equals(s.SecondaryVolume, rel.DestinationVolume, StringComparison.OrdinalIgnoreCase) &&
+                    s.ExistsOnSecondary == true);
 
                 rel.HourlySnapshotsSecondary = secondarySnaps.Count(s => s.SnapmirrorLabel == "hourly");
                 rel.DailySnapshotsSecondary = secondarySnaps.Count(s => s.SnapmirrorLabel == "daily");
@@ -239,6 +246,7 @@ namespace BareProx.Controllers
 
             return View(relations);
         }
+
 
         [HttpGet]
         public async Task<IActionResult> GetSnapshotsForVolume(
@@ -262,8 +270,8 @@ namespace BareProx.Controllers
 
         [HttpPost]
         public async Task<IActionResult> MountSnapshot(
-    MountSnapshotViewModel model,
-    CancellationToken ct)
+            MountSnapshotViewModel model,
+            CancellationToken ct)
         {
             if (!ModelState.IsValid)
                 return BadRequest("Invalid input.");
@@ -329,26 +337,24 @@ namespace BareProx.Controllers
 
                         // now look up the export-policy on the source (primary) side
                         exportPolicyName = await _context.SelectedNetappVolumes
+                            .AsNoTracking()
                             .Where(v =>
                                 v.NetappControllerId == primaryControllerId &&
-                                v.VolumeName == primaryVolumeName)
+                                v.VolumeName == primaryVolumeName &&
+                                v.Disabled != true) // skip disabled, include NULL
                             .Select(v => v.ExportPolicyName)
                             .FirstOrDefaultAsync(ct)
                             ?? throw new Exception(
                                 $"ExportPolicyName not found for primary volume '{primaryVolumeName}'");
-
                     }
 
-                    //if (snapshotRecord == null)
-                    //    return StatusCode(500, "Could not find snapshot metadata for export policy lookup.");
-
-                    // var primaryControllerId = snapshotRecord.PrimaryControllerId;
-                   //  var primaryVolumeName = snapshotRecord.PrimaryVolume;
-
-                    // Get export policy name from primary
+                    // Get export policy name from primary (consistent filter)
                     var primaryExportPolicy = await _context.SelectedNetappVolumes
-                        .Where(v => v.NetappControllerId == primaryControllerId &&
-                                    v.VolumeName == primaryVolumeName)
+                        .AsNoTracking()
+                        .Where(v =>
+                            v.NetappControllerId == primaryControllerId &&
+                            v.VolumeName == primaryVolumeName &&
+                            v.Disabled != true) // skip disabled
                         .Select(v => v.ExportPolicyName)
                         .FirstOrDefaultAsync(ct);
 
@@ -357,8 +363,11 @@ namespace BareProx.Controllers
 
                     // Get SVM name for the clone (from SelectedNetappVolumes on secondary)
                     var svmName = await _context.SelectedNetappVolumes
-                        .Where(v => v.NetappControllerId == model.ControllerId &&
-                                    v.VolumeName == model.VolumeName)
+                        .AsNoTracking()
+                        .Where(v =>
+                            v.NetappControllerId == model.ControllerId &&
+                            v.VolumeName == model.VolumeName &&
+                            v.Disabled != true) // skip disabled
                         .Select(v => v.Vserver)
                         .FirstOrDefaultAsync(ct);
 
@@ -440,8 +449,6 @@ namespace BareProx.Controllers
             }
         }
 
-
-
         [HttpPost]
         public async Task<IActionResult> UpdateSnapMirror(
             string relationUuid,
@@ -462,6 +469,7 @@ namespace BareProx.Controllers
                 return Json(new { success = false, message = ex.Message });
             }
         }
+
         public static string FormatIso8601Duration(string? isoDuration)
         {
             if (string.IsNullOrEmpty(isoDuration)) return "";

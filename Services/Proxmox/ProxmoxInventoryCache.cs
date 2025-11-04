@@ -38,8 +38,13 @@ public sealed class ProxmoxInventoryCache : IProxmoxInventoryCache
     // Stampede guard per key
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> _perKeyGates = new();
 
-    // Track keys per cluster for easy invalidation
+    // Track keys per cluster for broad invalidation
     private static readonly ConcurrentDictionary<int, ConcurrentDictionary<string, byte>> _clusterKeys = new();
+
+    // Track ONLY "eligible" keys by (clusterId, controllerId) for targeted invalidation
+    // Key format for eligible: $"{ELIGIBLE_PREFIX}{clusterId}:{controllerId}:{filterPart}"
+    private static readonly ConcurrentDictionary<(int clusterId, int controllerId), ConcurrentDictionary<string, byte>>
+        _controllerEligibleKeys = new();
 
     public ProxmoxInventoryCache(
         IMemoryCache memory,
@@ -110,12 +115,50 @@ public sealed class ProxmoxInventoryCache : IProxmoxInventoryCache
                 _memory.Remove(kv);
             _clusterKeys.TryRemove(clusterId, out _);
         }
+
+        // Also remove any controller-scoped keys for this cluster
+        foreach (var entry in _controllerEligibleKeys.Keys)
+        {
+            if (entry.clusterId == clusterId &&
+                _controllerEligibleKeys.TryGetValue(entry, out var ckeys))
+            {
+                foreach (var k in ckeys.Keys)
+                    _memory.Remove(k);
+                _controllerEligibleKeys.TryRemove(entry, out _);
+            }
+        }
     }
 
     public void InvalidateAll()
     {
         foreach (var kv in _clusterKeys)
             InvalidateCluster(kv.Key);
+    }
+
+    /// <summary>
+    /// Invalidate only "eligible" cache entries for a specific (clusterId, controllerId).
+    /// Optionally, provide a <paramref name="storageFilterToken"/> to only remove keys that contain that token
+    /// (useful when your lookups used storageFilterNames and you toggled a single volume).
+    /// </summary>
+    public void InvalidateEligibleForController(int clusterId, int controllerId, string? storageFilterToken = null)
+    {
+        if (_controllerEligibleKeys.TryGetValue((clusterId, controllerId), out var keys))
+        {
+            foreach (var k in keys.Keys)
+            {
+                if (string.IsNullOrWhiteSpace(storageFilterToken) ||
+                    k.Contains(storageFilterToken, StringComparison.OrdinalIgnoreCase))
+                {
+                    _memory.Remove(k);
+                    keys.TryRemove(k, out _);
+                }
+            }
+
+            if (keys.IsEmpty)
+            {
+                _controllerEligibleKeys.TryRemove((clusterId, controllerId), out _);
+            }
+        }
     }
 
     // ---------- shared core ----------
@@ -168,6 +211,21 @@ public sealed class ProxmoxInventoryCache : IProxmoxInventoryCache
 
             TrackKey(clusterId, key);
 
+            // If this is an "eligible" key, also track under (clusterId, controllerId)
+            if (key.StartsWith(ELIGIBLE_PREFIX, StringComparison.Ordinal))
+            {
+                // Expected eligible format:
+                // 0: "px:elig"
+                // 1: "{clusterId}"
+                // 2: "{controllerId}"
+                // 3: "{filterPart}" (may be "__ALL__" or joined names)
+                var parts = key.Split(':', 4); // keep filter as a single tail if it contains ':'
+                if (parts.Length >= 3 && int.TryParse(parts[2], out var controllerId))
+                {
+                    TrackEligibleKey(clusterId, controllerId, key);
+                }
+            }
+
             return fresh;
         }
         finally
@@ -210,6 +268,12 @@ public sealed class ProxmoxInventoryCache : IProxmoxInventoryCache
     private static void TrackKey(int clusterId, string key)
     {
         var bag = _clusterKeys.GetOrAdd(clusterId, _ => new ConcurrentDictionary<string, byte>());
+        bag[key] = 1;
+    }
+
+    private static void TrackEligibleKey(int clusterId, int controllerId, string key)
+    {
+        var bag = _controllerEligibleKeys.GetOrAdd((clusterId, controllerId), _ => new ConcurrentDictionary<string, byte>());
         bag[key] = 1;
     }
 

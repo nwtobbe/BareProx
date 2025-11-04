@@ -87,6 +87,7 @@ namespace BareProx.Services.Backup
 
         public async Task<bool> StartBackupAsync(
             string storageName,
+            int? selectedNetappVolumeId,
             bool isApplicationAware,
             string label,
             int clusterId,
@@ -132,6 +133,43 @@ namespace BareProx.Services.Backup
                     payloadJson: $"{{\"storageName\":\"{storageName}\",\"label\":\"{label}\",\"excludedCount\":{excludedSet.Count}}}",
                     ct);
 
+                // ---- Resolve SelectedNetappVolumeId / Disabled enforcement ----
+                using (var db0 = await _dbf.CreateDbContextAsync(ct))
+                {
+                    if (selectedNetappVolumeId.HasValue && selectedNetappVolumeId.Value > 0)
+                    {
+                        var row = await db0.SelectedNetappVolumes
+                                           .AsNoTracking()
+                                           .FirstOrDefaultAsync(v => v.Id == selectedNetappVolumeId.Value, ct);
+
+                        var check = ValidateSelectedVolumeRow(row, null);
+                        if (check.error is not null)
+                            return await FailAndNotifyAsync(jobId, storageName, label, check.error, scheduleId, ct);
+
+                        if (check.row is null)
+                            return await FailAndNotifyAsync(jobId, storageName, label, "SelectedNetappVolumeId not found.", scheduleId, ct);
+
+                        // Override effective inputs for the rest of the job
+                        storageName = check.row.VolumeName;
+                        netappControllerId = check.row.NetappControllerId;
+                    }
+                    else
+                    {
+                        var row = await db0.SelectedNetappVolumes
+                                           .AsNoTracking()
+                                           .FirstOrDefaultAsync(v =>
+                                               v.NetappControllerId == netappControllerId &&
+                                               v.VolumeName == storageName, ct);
+
+                        var check = ValidateSelectedVolumeRow(row, storageName);
+                        if (check.error is not null)
+                            return await FailAndNotifyAsync(jobId, storageName, label, check.error, scheduleId, ct);
+
+                        // (optional) selectedNetappVolumeId = check.row?.Id;
+                    }
+                }
+                // ---- END resolve/validate ----
+
                 using (var db = await _dbf.CreateDbContextAsync(ct))
                 {
                     cluster = await db.ProxmoxClusters
@@ -140,13 +178,12 @@ namespace BareProx.Services.Backup
                         .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
                 }
                 if (cluster == null)
-                    return await FailAndNotifyAsync(jobId, storageName, label, $"Cluster with ID {clusterId} not found.", ct);
+                    return await FailAndNotifyAsync(jobId, storageName, label, $"Cluster with ID {clusterId} not found.", scheduleId, ct);
 
                 // Discover VMs eligible on this storage
                 bool snapChainActive = false;
                 try
                 {
-                    // CHANGED: read from IProxmoxSnapChains
                     snapChainActive = await _snapChains.IsSnapshotChainActiveFromDefAsync(cluster, storageName, ct);
                     _logger.LogInformation("Snapshot-as-volume-chain on '{Storage}': {Active}", storageName, snapChainActive);
                 }
@@ -155,12 +192,47 @@ namespace BareProx.Services.Backup
                     _logger.LogWarning(ex, "Could not determine snapshot-as-volume-chain state for storage '{Storage}'. Defaulting to false.", storageName);
                 }
 
-                var storageWithVms = await _invCache.GetEligibleBackupStorageWithVMsAsync(cluster, netappControllerId, null, ct);
-                if (!storageWithVms.TryGetValue(storageName, out vms) || vms == null || !vms.Any())
-                    return await FailAndNotifyAsync(jobId, storageName, label, $"No VMs found in storage '{storageName}'.", ct);
+                var storageWithVms = await _invCache.GetEligibleBackupStorageWithVMsAsync(
+                    cluster,
+                    netappControllerId,
+                    new[] { storageName },
+                    ct);
+
+                if (!storageWithVms.TryGetValue(storageName, out vms) || vms is null || vms.Count == 0)
+                {
+                    _logger.LogWarning("No VMs returned for storage '{Storage}' (controllerId={Controller}).", storageName, netappControllerId);
+
+                    try
+                    {
+                        var raw = await _invCache.GetVmsByStorageListAsync(
+                            cluster,
+                            new[] { storageName },
+                            ct,
+                            maxAge: TimeSpan.Zero,
+                            forceRefresh: true);
+
+                        if (raw.TryGetValue(storageName, out var direct) && direct is { Count: > 0 })
+                        {
+                            _logger.LogInformation("Direct Proxmox listing found {Count} VM(s) on '{Storage}', but eligible set still empty.", direct.Count, storageName);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("Direct Proxmox listing also found no VMs on '{Storage}'.", storageName);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Sanity check (raw Proxmox listing) failed for storage '{Storage}'.", storageName);
+                    }
+
+                    return await FailAndNotifyAsync(jobId, storageName, label,
+                        $"No VMs found in storage '{storageName}'. " +
+                        $"(Tip: ensure the Proxmox storage name is correct and mounted on at least one online host.)",
+                        scheduleId, ct);
+                }
 
                 if (cluster.Hosts == null || !cluster.Hosts.Any())
-                    return await FailAndNotifyAsync(jobId, storageName, label, "Cluster not properly configured.", ct);
+                    return await FailAndNotifyAsync(jobId, storageName, label, "Cluster not properly configured.", scheduleId, ct);
 
                 // Create per-VM rows
                 var vmRows = new Dictionary<int, int>(capacity: vms.Count);
@@ -338,7 +410,7 @@ namespace BareProx.Services.Backup
                     ct: ct);
 
                 if (!snapshotResult.Success)
-                    return await FailAndNotifyAsync(jobId, storageName, label, snapshotResult.ErrorMessage, ct);
+                    return await FailAndNotifyAsync(jobId, storageName, label, snapshotResult.ErrorMessage, scheduleId, ct);
 
                 await _jobs.UpdateJobStatusAsync(jobId, "NetApp snapshot created", null, ct);
                 createdSnapshotName = snapshotResult.SnapshotName;
@@ -454,11 +526,14 @@ namespace BareProx.Services.Backup
                     {
                         var relation = await db.SnapMirrorRelations
                             .AsNoTracking()
-                            .FirstOrDefaultAsync(r => r.SourceVolume == storageName, ct);
+                            .FirstOrDefaultAsync(r =>
+                                r.SourceVolume == storageName &&
+                                r.SourceControllerId == netappControllerId, ct);
 
                         if (relation == null)
                         {
-                            _logger.LogWarning("SnapMirror: no relation found for source volume '{Storage}'. Replication skipped.", storageName);
+                            _logger.LogWarning("SnapMirror: no relation found for source volume '{Storage}' (controller {ControllerId}). Replication skipped.",
+                                storageName, netappControllerId);
                             await _jobs.UpdateJobStatusAsync(jobId, "Replication skipped (no SnapMirror relation)", null, ct);
                             foreach (var vm in vms)
                                 await _jobs.LogVmAsync(vmRows[vm.Id], "Replication skipped (no SnapMirror relation)", "Info", ct);
@@ -561,7 +636,7 @@ namespace BareProx.Services.Backup
                 {
                     var jobRow = await db.Jobs.FindAsync(new object?[] { jobId }, ct);
                     if (string.Equals(jobRow?.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
-                        return await FailAndNotifyAsync(jobId, storageName, label, "Job was cancelled.", ct);
+                        return await FailAndNotifyAsync(jobId, storageName, label, "Job was cancelled.", scheduleId, ct);
                 }
 
                 // 8) Complete job
@@ -578,7 +653,8 @@ namespace BareProx.Services.Backup
                     totalVms: vms?.Count ?? 0,
                     skippedVms: skippedCount,
                     warnedVms: warnedCount,
-                    ct);
+                    scheduleId: scheduleId,
+                    ct: ct);
 
                 return true;
             }
@@ -587,7 +663,7 @@ namespace BareProx.Services.Backup
                 if (jobId > 0)
                 {
                     await _jobs.FailJobAsync(jobId, "Job was cancelled.", CancellationToken.None);
-                    await TryNotifyAsync(jobId, storageName, label, "Error", "Job was cancelled.", null, 0, 0, 0, CancellationToken.None);
+                    await TryNotifyAsync(jobId, storageName, label, "Error", "Job was cancelled.", null, 0, 0, 0, scheduleId, CancellationToken.None);
                     return false;
                 }
                 throw;
@@ -597,7 +673,7 @@ namespace BareProx.Services.Backup
                 if (jobId > 0)
                 {
                     await _jobs.FailJobAsync(jobId, ex.Message, ct);
-                    await TryNotifyAsync(jobId, storageName, label, "Error", ex.Message, createdSnapshotName, 0, 0, 0, ct);
+                    await TryNotifyAsync(jobId, storageName, label, "Error", ex.Message, createdSnapshotName, 0, 0, 0, scheduleId, ct);
                     return false;
                 }
 
@@ -662,11 +738,12 @@ namespace BareProx.Services.Backup
             string storageName,
             string label,
             string error,
+            int scheduleId,
             CancellationToken ct)
         {
             var res = await _jobs.FailJobAsync(jobId, error, ct);
             await TryNotifyAsync(jobId, storageName, label, "Error", error, snapshotName: null,
-                                 totalVms: 0, skippedVms: 0, warnedVms: 0, ct);
+                                 totalVms: 0, skippedVms: 0, warnedVms: 0, scheduleId: scheduleId, ct: ct);
             return res;
         }
 
@@ -680,56 +757,92 @@ namespace BareProx.Services.Backup
             int totalVms,
             int skippedVms,
             int warnedVms,
+            int scheduleId,
             CancellationToken ct)
         {
             try
             {
                 using var db = await _dbf.CreateDbContextAsync(ct);
                 var s = await db.EmailSettings.AsNoTracking().FirstOrDefaultAsync(e => e.Id == 1, ct);
-                if (s is null || !s.Enabled) return;
+                if (s is null || !s.Enabled) return; // SMTP not configured/enabled => bail
 
-                var finalRank = finalStatus switch
+                const int ManualScheduleId = 999;
+                bool isManual = scheduleId == ManualScheduleId;
+
+                BackupSchedule? sched = null;
+                if (!isManual && scheduleId > 0)
+                    sched = await db.BackupSchedules.AsNoTracking().FirstOrDefaultAsync(x => x.Id == scheduleId, ct);
+
+                // Decide recipients + gating
+                string recipientsRaw = string.Empty;
+                bool sendAllowed = false;
+
+                if (isManual)
                 {
-                    "Error" => 3,
-                    "Warning" => 2,
-                    _ => 1
-                };
-                var minRank = SevRank(s.MinSeverity ?? "Info");
+                    // Manual jobs: use GLOBAL gates + GLOBAL recipients (unchanged)
+                    recipientsRaw = s.DefaultRecipients ?? string.Empty;
+                    sendAllowed = finalStatus switch
+                    {
+                        "Success" => s.OnBackupSuccess,
+                        "Warning" => s.OnBackupFailure, // treat warning like error
+                        "Error" => s.OnBackupFailure,
+                        _ => false
+                    };
+                }
+                else
+                {
+                    // Scheduled job: require schedule to exist and notifications be enabled on it
+                    if (sched is null) return;
 
-                var send =
-                    (finalStatus == "Success" && s.OnBackupSuccess && finalRank >= minRank) ||
-                    (finalStatus == "Warning" && s.OnWarnings && finalRank >= minRank) ||
-                    (finalStatus == "Error" && s.OnBackupFailure && finalRank >= minRank);
+                    // If the schedule has notifications disabled -> no notifications at all
+                    if (sched.NotificationsEnabled != true) return;
 
-                if (!send) return;
+                    // When notifications are enabled on the schedule:
+                    // - ONLY the schedule toggles control whether to send (ignore global gates)
+                    // - Recipients = schedule list if present; otherwise fallback to global default
+                    var hasSchedRecipients = !string.IsNullOrWhiteSpace(sched.NotificationEmails);
+                    recipientsRaw = hasSchedRecipients ? sched.NotificationEmails! : (s.DefaultRecipients ?? string.Empty);
 
-                var to = (s.DefaultRecipients ?? "").Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-                if (to.Length == 0) return;
+                    sendAllowed = finalStatus switch
+                    {
+                        "Success" => sched.NotifyOnSuccess == true,
+                        "Warning" => sched.NotifyOnError == true, // warnings treated like problems
+                        "Error" => sched.NotifyOnError == true,
+                        _ => false
+                    };
+                }
 
-                var nowUtc = DateTime.UtcNow;
-                var nowApp = _tz.ConvertUtcToApp(nowUtc);
+                // Normalize recipients
+                var to = (recipientsRaw ?? string.Empty)
+                    .Split(new[] { ';', ',' }, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+
+                if (!sendAllowed || to.Length == 0) return;
+
+                // Compose and send
+                var nowApp = _tz.ConvertUtcToApp(DateTime.UtcNow);
                 var tzName = _timeZoneId;
-                var subj = $"BareProx: Backup {finalStatus} — {storageName} ({label}) [Job #{jobId}]";
+                var schedTag = (!isManual && sched != null) ? $" [Schedule: {sched.Name}]" : "";
+                var subj = $"BareProx: Backup {finalStatus} — {storageName} ({label}){schedTag} [Job #{jobId}]";
 
                 var html = $@"
-                        <h3>BareProx Backup {finalStatus}</h3>
-                        <p><b>Job:</b> #{jobId}<br/>
-                        <b>Storage:</b> {storageName}<br/>
-                        <b>Label:</b> {label}<br/>
-                        <b>Snapshot:</b> {(string.IsNullOrWhiteSpace(snapshotName) ? "" : snapshotName)}<br/>
-                        <b>When ({tzName}):</b> {nowApp:yyyy-MM-dd HH:mm:ss}<br/>
-                        <table style=""border-collapse:collapse;min-width:360px"">
-                        <tr><td style=""padding:4px;border:1px solid #ccc""><b>Total VMs</b></td><td style=""padding:4px;border:1px solid #ccc"">{totalVms}</td></tr>
-                        <tr><td style=""padding:4px;border:1px solid #ccc""><b>Skipped</b></td><td style=""padding:4px;border:1px solid #ccc"">{skippedVms}</td></tr>
-                        <tr><td style=""padding:4px;border:1px solid #ccc""><b>VMs with warnings</b></td><td style=""padding:4px;border:1px solid #ccc"">{warnedVms}</td></tr>
-                        </table>
-                        {(string.IsNullOrWhiteSpace(errorOrNote) ? "" : $@"<p><b>Notes:</b><br/><pre style=""white-space:pre-wrap"">{System.Net.WebUtility.HtmlEncode(errorOrNote)}</pre></p>")}
-                        <p>— BareProx</p>";
+                            <h3>BareProx Backup {finalStatus}</h3>
+                            <p><b>Job:</b> #{jobId}{(!isManual && sched != null ? $"<br/><b>Schedule:</b> {System.Net.WebUtility.HtmlEncode(sched.Name)}" : "")}<br/>
+                            <b>Storage:</b> {System.Net.WebUtility.HtmlEncode(storageName)}<br/>
+                            <b>Label:</b> {System.Net.WebUtility.HtmlEncode(label)}<br/>
+                            <b>Snapshot:</b> {(string.IsNullOrWhiteSpace(snapshotName) ? "" : System.Net.WebUtility.HtmlEncode(snapshotName))}<br/>
+                            <b>When ({System.Net.WebUtility.HtmlEncode(tzName)}):</b> {nowApp:yyyy-MM-dd HH:mm:ss}<br/>
+                            <table style=""border-collapse:collapse;min-width:360px"">
+                              <tr><td style=""padding:4px;border:1px solid #ccc""><b>Total VMs</b></td><td style=""padding:4px;border:1px solid #ccc"">{totalVms}</td></tr>
+                              <tr><td style=""padding:4px;border:1px solid #ccc""><b>Skipped</b></td><td style=""padding:4px;border:1px solid #ccc"">{skippedVms}</td></tr>
+                              <tr><td style=""padding:4px;border:1px solid #ccc""><b>VMs with warnings</b></td><td style=""padding:4px;border:1px solid #ccc"">{warnedVms}</td></tr>
+                            </table>
+                            {(string.IsNullOrWhiteSpace(errorOrNote) ? "" : $@"<p><b>Notes:</b><br/><pre style=""white-space:pre-wrap"">{System.Net.WebUtility.HtmlEncode(errorOrNote)}</pre></p>")}
+                            <p>— BareProx</p>";
 
                 foreach (var r in to)
-                {
                     await _email.SendAsync(r, subj, html, ct);
-                }
             }
             catch (Exception ex)
             {
@@ -737,12 +850,17 @@ namespace BareProx.Services.Backup
             }
         }
 
-        private static int SevRank(string s) => s?.ToLowerInvariant() switch
+
+        // ---------- Helper: validate SelectedNetappVolumes row ----------
+        private static (SelectedNetappVolumes? row, string? error) ValidateSelectedVolumeRow(SelectedNetappVolumes? row, string? nameForMsg)
         {
-            "critical" => 4,
-            "error" => 3,
-            "warning" => 2,
-            _ => 1
-        };
+            if (row is null) return (null, null); // no explicit row -> proceed
+            if (row.Disabled == true)
+            {
+                var vol = string.IsNullOrWhiteSpace(nameForMsg) ? row.VolumeName : nameForMsg;
+                return (null, $"Volume '{vol}' on controller #{row.NetappControllerId} is not selected.");
+            }
+            return (row, null);
+        }
     }
 }

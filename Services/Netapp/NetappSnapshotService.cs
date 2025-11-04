@@ -64,7 +64,7 @@ namespace BareProx.Services
             using var scope = _logger.BeginScope(new Dictionary<string, object?>
             {
                 ["op"] = "CreateSnapshot",
-                ["clusterId"] = controllerId,
+                ["controllerId"] = controllerId,
                 ["storage"] = storageName,
                 ["label"] = snapmirrorLabel,
                 ["locking"] = snapLocking
@@ -631,6 +631,7 @@ namespace BareProx.Services
                 ?? throw new Exception($"NetApp controller {controllerId} not found.");
 
             var http = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+            if (!baseUrl.EndsWith("/")) baseUrl += "/";
 
             // --- 1) Resolve volume UUID (prefer provided) ---
             string uuid = volumeUuid ?? string.Empty;
@@ -847,6 +848,7 @@ namespace BareProx.Services
                 ?? throw new Exception($"NetApp controller {controllerId} not found.");
 
             var http = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+            if (!baseUrl.EndsWith("/")) baseUrl += "/";
 
             // --- Resolve volume UUID (prefer provided UUID) ---
             string? uuid = volumeUuid;

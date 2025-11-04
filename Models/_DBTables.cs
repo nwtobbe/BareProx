@@ -135,14 +135,14 @@ namespace BareProx.Models
 
         public string PasswordHash { get; set; } = null!;  // Store hashed password, NOT plain text!
     }
-    public class SelectedNetappVolume
+    public class SelectedNetappVolumes
     {
         public int Id { get; set; }
         public string Vserver { get; set; }
         public string VolumeName { get; set; }
         public string Uuid { get; set; }
         public string MountIp { get; set; }
-        public int ClusterId { get; set; }
+        // public int ClusterId { get; set; }
         public int NetappControllerId { get; set; }
 
         public long? SpaceSize { get; set; }         // maps to "space.size"
@@ -150,6 +150,7 @@ namespace BareProx.Models
         public long? SpaceUsed { get; set; }         // maps to "space.used"
         public string? ExportPolicyName { get; set; } // maps to "nas.export_policy.name"
         public bool? SnapshotLockingEnabled { get; set; } // maps to "snapshot_locking_enabled"
+        public bool? Disabled { get; set; }              // Is this volume disabled for selection?
     }
     public class NetappSnapshot
     {
@@ -213,6 +214,7 @@ namespace BareProx.Models
         public int ControllerId { get; set; }
         public string Name { get; set; }
         public string StorageName { get; set; }
+        public int? SelectedNetappVolumeId { get; set; }
         public string Schedule { get; set; }
         public string Frequency { get; set; }
         public TimeSpan? TimeOfDay { get; set; }
@@ -228,6 +230,11 @@ namespace BareProx.Models
         public bool EnableLocking { get; set; }
         public int? LockRetentionCount { get; set; }
         public string? LockRetentionUnit { get; set; }
+        // Notifications (new master switch)
+        public bool NotificationsEnabled { get; set; } = true;
+        public bool NotifyOnSuccess { get; set; }          // default false
+        public bool NotifyOnError { get; set; }            // default false
+        public string? NotificationEmails { get; set; }    // optional CSV override; null => use global/default
     }
 
     public class BackupRecord

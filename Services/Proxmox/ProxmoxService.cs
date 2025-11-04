@@ -89,27 +89,27 @@ namespace BareProx.Services.Proxmox
         }
 
 
-        public async Task<Dictionary<string, List<ProxmoxVM>>> GetEligibleBackupStorageWithVMsAsyncToCache(
-    ProxmoxCluster cluster,
-    int netappControllerId,
-    List<string>? onlyIncludeStorageNames = null,
-    CancellationToken ct = default)
-        {
-            var storageVmMap = onlyIncludeStorageNames != null
-                ? await _invCache.GetVmsByStorageListAsync(cluster, onlyIncludeStorageNames, ct)
-                : await GetFilteredStorageWithVMsAsync(cluster.Id, netappControllerId, ct);
+    //    public async Task<Dictionary<string, List<ProxmoxVM>>> GetEligibleBackupStorageWithVMsAsyncToCache(
+    //ProxmoxCluster cluster,
+    //int netappControllerId,
+    //List<string>? onlyIncludeStorageNames = null,
+    //CancellationToken ct = default)
+    //    {
+    //        var storageVmMap = onlyIncludeStorageNames != null
+    //            ? await _invCache.GetVmsByStorageListAsync(cluster, onlyIncludeStorageNames, ct)
+    //            : await GetFilteredStorageWithVMsAsync(cluster.Id, netappControllerId, ct);
 
-            return storageVmMap
-                .Where(kvp =>
-                    !kvp.Key.Contains("backup", StringComparison.OrdinalIgnoreCase) &&
-                    !kvp.Key.Contains("restore_", StringComparison.OrdinalIgnoreCase))
-                .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
-        }
+    //        return storageVmMap
+    //            .Where(kvp =>
+    //                !kvp.Key.Contains("backup", StringComparison.OrdinalIgnoreCase) &&
+    //                !kvp.Key.Contains("restore_", StringComparison.OrdinalIgnoreCase))
+    //            .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+    //    }
 
         public async Task<Dictionary<string, List<ProxmoxVM>>> GetFilteredStorageWithVMsAsync(
-            int clusterId,
-            int netappControllerId,
-            CancellationToken ct = default)
+     int clusterId,
+     int netappControllerId,
+     CancellationToken ct = default)
         {
             // 1) Load cluster + hosts
             var cluster = await _context.ProxmoxClusters
@@ -125,49 +125,69 @@ namespace BareProx.Services.Proxmox
                 var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/storage";
                 var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
                 using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-                foreach (var storage in doc.RootElement.GetProperty("data").EnumerateArray())
+                if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+                    continue;
+
+                foreach (var storage in data.EnumerateArray())
                 {
-                    if (storage.GetProperty("type").GetString() == "nfs")
-                        proxmoxStorageNames.Add(storage.GetProperty("storage").GetString()!);
+                    if (string.Equals(storage.GetProperty("type").GetString(), "nfs", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var name = storage.GetProperty("storage").GetString();
+                        if (!string.IsNullOrWhiteSpace(name))
+                            proxmoxStorageNames.Add(name);
+                    }
                 }
             }
 
-            // 3) Fetch all NetApp NFS volumes
+            // 3) Load *selected* NetApp volumes for this controller (Disabled != true)
+            var selectedEnabledForController = await _context.SelectedNetappVolumes
+                .AsNoTracking()
+                .Where(v => v.NetappControllerId == netappControllerId && v.Disabled != true)
+                .Select(v => v.VolumeName)
+                .ToListAsync(ct);
+
+            var selectedEnabledSet = new HashSet<string>(selectedEnabledForController, StringComparer.OrdinalIgnoreCase);
+
+            // 4) Fetch NetApp volumes (mount info) and keep only those that are selected & exist in Proxmox
             var netappVolumes = await _netappVolumeService.GetVolumesWithMountInfoAsync(netappControllerId, ct);
 
-            // 4) Only keep the intersection: NetApp volumes that Proxmox knows about
             var validVolumes = netappVolumes
-                .Where(v => proxmoxStorageNames.Contains(v.VolumeName))
                 .Select(v => v.VolumeName)
+                .Where(v => proxmoxStorageNames.Contains(v) && selectedEnabledSet.Contains(v))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
             // 5) Seed result dictionary
             var result = validVolumes.ToDictionary(
                 vol => vol,
-                vol => new List<ProxmoxVM>()
-            );
+                vol => new List<ProxmoxVM>(),
+                StringComparer.OrdinalIgnoreCase);
 
             // 6) For each host, list its VMs and scan their configs
+            var diskRegex = new Regex(@"^(scsi|virtio|ide|sata|efidisk|tpmstate)\d+$", RegexOptions.IgnoreCase);
+
             foreach (var host in _proxmoxHelpers.GetQueryableHosts(cluster))
             {
                 // a) list VMs
                 var vmListUrl = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/qemu";
                 var vmListResp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, vmListUrl, null, ct);
                 using var vmListDoc = JsonDocument.Parse(await vmListResp.Content.ReadAsStringAsync(ct));
-                var vmElems = vmListDoc.RootElement.GetProperty("data").EnumerateArray();
+                if (!vmListDoc.RootElement.TryGetProperty("data", out var vmArr) || vmArr.ValueKind != JsonValueKind.Array)
+                    continue;
 
-                foreach (var vmElem in vmElems)
+                foreach (var vmElem in vmArr.EnumerateArray())
                 {
-                    var vmId = vmElem.GetProperty("vmid").GetInt32();
-                    var vmName = vmElem.TryGetProperty("name", out var nm)
-                        ? nm.GetString()!
-                        : $"VM {vmId}";
+                    if (!vmElem.TryGetProperty("vmid", out var vmidEl) || vmidEl.ValueKind != JsonValueKind.Number)
+                        continue;
+
+                    var vmId = vmidEl.GetInt32();
+                    var vmName = vmElem.TryGetProperty("name", out var nm) ? (nm.GetString() ?? $"VM {vmId}") : $"VM {vmId}";
 
                     // fetch full config
                     var cfgJson = await GetVmConfigAsync(cluster, host.Hostname, vmId, ct);
                     using var cfgDoc = JsonDocument.Parse(cfgJson);
-                    var cfgData = cfgDoc.RootElement.GetProperty("config");
+                    if (!cfgDoc.RootElement.TryGetProperty("config", out var cfgData) || cfgData.ValueKind != JsonValueKind.Object)
+                        continue;
 
                     var vmDescriptor = new ProxmoxVM
                     {
@@ -180,26 +200,22 @@ namespace BareProx.Services.Proxmox
                     // b) scan every disk line
                     foreach (var prop in cfgData.EnumerateObject())
                     {
-                        if (!Regex.IsMatch(prop.Name, @"^(scsi|virtio|ide|sata|efidisk|tpmstate)\d+$", RegexOptions.IgnoreCase))
-                            continue;
+                        if (!diskRegex.IsMatch(prop.Name)) continue;
 
-                        var val = prop.Value.GetString() ?? "";
+                        var val = prop.Value.GetString() ?? string.Empty;
                         var parts = val.Split(':', 2);
                         if (parts.Length < 2) continue;
 
                         var storageName = parts[0];
-                        if (result.TryGetValue(storageName, out var list))
-                        {
-                            // dedupe
-                            if (!list.Any(x => x.Id == vmId))
-                                list.Add(vmDescriptor);
-                        }
+                        if (result.TryGetValue(storageName, out var list) && !list.Any(x => x.Id == vmId))
+                            list.Add(vmDescriptor);
                     }
                 }
             }
 
             return result;
         }
+
 
         public async Task<string> GetRawProxmoxVmConfigAsync(
             string host,
@@ -623,9 +639,9 @@ namespace BareProx.Services.Proxmox
 
 
         public async Task<Dictionary<string, List<ProxmoxVM>>> GetVmsByStorageListAsyncToCache(
-    ProxmoxCluster cluster,
-    List<string> storageNames,
-    CancellationToken ct = default)
+            ProxmoxCluster cluster,
+            List<string> storageNames,
+            CancellationToken ct = default)
         {
             var result = new Dictionary<string, List<ProxmoxVM>>();
 

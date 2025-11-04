@@ -4,6 +4,9 @@
 @{
     ViewData["Title"] = "Proxmox – Clusters";
     var hasSelection = Model.SelectedCluster != null;
+
+    var clusterCount = Model.Clusters?.Count() ?? 0;
+    var allowAddCluster = clusterCount == 0; // single-cluster mode
 }
 
 <style>
@@ -19,7 +22,7 @@
 
 <div class="d-flex align-items-center justify-content-between mb-3">
     <h2 class="mb-0">Proxmox – Clusters</h2>
-    <span class="text-muted">@((Model.Clusters?.Count() ?? 0)) total</span>
+    <span class="text-muted">@clusterCount total (single-cluster mode)</span>
 </div>
 
 @if (!string.IsNullOrWhiteSpace(Model.Message))
@@ -27,6 +30,16 @@
     <div class="alert alert-info alert-dismissible fade show" role="alert">
         @Model.Message
         <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    </div>
+}
+
+@if (clusterCount > 1)
+{
+    <div class="alert alert-warning" role="alert">
+        You have <strong>@clusterCount</strong> clusters configured. Only <strong>one</strong> Proxmox cluster is supported.
+        Please delete the extra clusters and keep a single one.
+        <br />
+        <strong>Warning:</strong> Deleting a cluster will break relationships if backups, schedules, or mappings exist.
     </div>
 }
 
@@ -119,35 +132,44 @@
 
         <hr class="my-4" />
         <h4 class="mb-3">Add New Cluster</h4>
-        <form asp-controller="Settings" asp-action="AddCluster" method="post" class="row g-3">
-            @Html.AntiForgeryToken()
-            <div class="col-md-4">
-                <label for="Name" class="form-label">Cluster Name</label>
-                <input type="text" name="Name" id="Name" class="form-control" required maxlength="64" />
+
+        @if (allowAddCluster)
+        {
+            <form asp-controller="Settings" asp-action="AddCluster" method="post" class="row g-3">
+                @Html.AntiForgeryToken()
+                <div class="col-md-4">
+                    <label for="Name" class="form-label">Cluster Name</label>
+                    <input type="text" name="Name" id="Name" class="form-control" required maxlength="64" />
+                </div>
+                <div class="col-md-4">
+                    <label for="Username" class="form-label">API Username</label>
+                    <input type="text" name="Username" id="Username" class="form-control" placeholder="root@pam" required />
+                </div>
+                <div class="col-md-4">
+                    <label for="Password" class="form-label">API Password</label>
+                    <input type="password" name="Password" id="Password" class="form-control" autocomplete="new-password" required />
+                </div>
+                <div class="col-12">
+                    <button type="submit" class="btn btn-success">Add Cluster</button>
+                </div>
+            </form>
+        }
+        else
+        {
+            <div class="alert alert-secondary">
+                Only <strong>one</strong> Proxmox cluster is supported. Delete the existing cluster to add another.
             </div>
-            <div class="col-md-4">
-                <label for="Username" class="form-label">API Username</label>
-                <input type="text" name="Username" id="Username" class="form-control" placeholder="root@pam" required />
-            </div>
-            <div class="col-md-4">
-                <label for="Password" class="form-label">API Password</label>
-                <input type="password" name="Password" id="Password" class="form-control" autocomplete="new-password" required />
-            </div>
-            <div class="col-12">
-                <button type="submit" class="btn btn-success">Add Cluster</button>
-            </div>
-        </form>
+        }
     </div>
 
     <!-- TAB 2: Edit & Hosts -->
     <div class="tab-pane fade" id="pane-edit" role="tabpanel" aria-labelledby="tab-edit">
-        @if (!hasSelection)
+        @if (!(Model.SelectedCluster is ProxmoxCluster m))
         {
             <div class="alert alert-secondary">Select a cluster (click a row) to manage it.</div>
         }
         else
         {
-            var m = Model.SelectedCluster!;
             <div class="row g-4">
                 <div class="col-lg-6">
                     <div class="card">
@@ -155,7 +177,7 @@
                         <div class="card-body">
                             <form asp-action="EditCluster" asp-controller="Settings" method="post">
                                 @Html.AntiForgeryToken()
-                                <input type="hidden" asp-for="@m.Id" name="Id" value="@m.Id" />
+                                <input type="hidden" name="Id" value="@m.Id" />
 
                                 <div class="mb-3">
                                     <label class="form-label">Cluster Name</label>
@@ -327,7 +349,6 @@
             if (btn && typeof bootstrap !== 'undefined') new bootstrap.Tab(btn).show();
           };
 
-          // Reveal hidden tabs if the server says we have a selection
           const hasSelection = @((Model.SelectedCluster != null).ToString().ToLower());
           if (hasSelection) {
             document.getElementById('nav-edit-hosts')?.classList.remove('d-none');
@@ -341,20 +362,19 @@
           // Make cluster rows clickable → select cluster and open Edit tab
           document.querySelectorAll('#clusterTable tbody tr.cluster-row').forEach(tr => {
             tr.addEventListener('click', function (e) {
-              // Ignore clicks on action buttons/links inside the row (Authenticate/Delete/Storage)
+              // Ignore clicks on inner buttons/links
               const target = e.target;
               if (target.closest('form') || target.closest('.btn') || target.closest('a.row-storage-link')) return;
               const url = this.getAttribute('data-edit-url');
               if (url) window.location = url;
             });
           });
-
         });
 
         // Storage search + select helpers
         (function(){
           const tb = document.getElementById('storageTable');
-          if (!tb) return; // storage tab not rendered yet
+          if (!tb) return;
 
           const q  = document.getElementById('storageSearch');
           const btnClear = document.getElementById('clearSearch');

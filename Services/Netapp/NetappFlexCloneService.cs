@@ -27,7 +27,6 @@ using Microsoft.EntityFrameworkCore;
 using System.Net;
 using Polly;
 using BareProx.Services.Netapp;
-using Newtonsoft.Json;
 
 namespace BareProx.Services.Netapp
 {

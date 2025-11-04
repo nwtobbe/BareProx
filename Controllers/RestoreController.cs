@@ -60,7 +60,6 @@ namespace BareProx.Controllers
                 .OrderByDescending(r => r.TimeStamp)
                 .ToListAsync(ct);
 
-            // Nothing to show
             if (backups.Count == 0)
                 return View(new List<RestoreVmGroupViewModel>());
 
@@ -76,8 +75,7 @@ namespace BareProx.Controllers
                     g => g.OrderByDescending(s => s.CreatedAt).First()
                 );
 
-            // 3) Build Hostname -> Cluster mapping (from ProxmoxHosts)
-            //    We only need Hostname, ClusterId, Cluster.Name for labeling.
+            // 3) Hostname -> Cluster mapping
             var hostRows = await _context.ProxmoxHosts
                 .AsNoTracking()
                 .Include(h => h.Cluster)
@@ -92,7 +90,7 @@ namespace BareProx.Controllers
                     StringComparer.OrdinalIgnoreCase
                 );
 
-            // 4) Flat list (each backup mapped to its actual cluster via HostName)
+            // 4) Flatten for view
             var flat = new List<RestoreViewModel>(backups.Count);
             foreach (var r in backups)
             {
@@ -106,7 +104,7 @@ namespace BareProx.Controllers
                 {
                     BackupId = r.Id,
                     JobId = r.JobId,
-                    VmName = r.VmName,                    // r.VmName is already a string
+                    VmName = r.VmName,
                     VmId = r.VMID.ToString(),
                     SnapshotName = r.SnapshotName,
                     VolumeName = r.StorageName,
@@ -121,7 +119,7 @@ namespace BareProx.Controllers
                 });
             }
 
-            // 5) Group by Cluster -> VM for the view
+            // 5) Group by Cluster -> VM
             var grouped = flat
                 .GroupBy(x => new { x.ClusterId, x.ClusterName, x.VmId, x.VmName })
                 .Select(g => new RestoreVmGroupViewModel
@@ -157,29 +155,92 @@ namespace BareProx.Controllers
             if (cluster == null)
                 return StatusCode(500, "Cluster not configured");
 
-            // pick original host by name (what we stored at backup time)
-            var originalHost = cluster.Hosts
-                .FirstOrDefault(h => h.Hostname == record.HostName);
-
-            // pick the most recent snapshot row for this job
+            // latest snapshot for this job
             var snap = await _context.NetappSnapshots
                 .AsNoTracking()
                 .Where(s => s.JobId == record.JobId)
                 .OrderByDescending(s => s.CreatedAt)
                 .FirstOrDefaultAsync(ct);
 
-            // decide which volume to restore from (primary vs secondary)
-            var actualVolume =
-                (snap?.ExistsOnSecondary == true &&
-                 target.Equals("Secondary", StringComparison.OrdinalIgnoreCase))
-                    ? snap.SecondaryVolume
-                    : record.StorageName;
+            // We’ll need enabled SelectedNetappVolumes for lookups/fallbacks
+            var selectedVolumes = await _context.SelectedNetappVolumes
+                .AsNoTracking()
+                .Where(v => v.Disabled != true)
+                .ToListAsync(ct);
+
+            // Helper: resolve volume + controller for target preference
+            (string volume, int resolvedControllerId) ResolveSource()
+            {
+                var wantSecondary = string.Equals(target, "Secondary", StringComparison.OrdinalIgnoreCase);
+
+                if (wantSecondary)
+                {
+                    // Prefer NetappSnapshots info if present & exists
+                    if (snap?.ExistsOnSecondary == true &&
+                        snap.SecondaryControllerId.HasValue &&
+                        !string.IsNullOrWhiteSpace(snap.SecondaryVolume))
+                    {
+                        return (snap.SecondaryVolume!, snap.SecondaryControllerId!.Value);
+                    }
+
+                    // Fallback: SnapMirror relation for this primary volume
+                    var rel = _context.SnapMirrorRelations
+                        .AsNoTracking()
+                        .FirstOrDefault(r =>
+                            r.SourceVolume == record.StorageName);
+
+                    if (rel != null)
+                    {
+                        // use destination end (if enabled)
+                        var enabled = selectedVolumes.Any(v =>
+                            v.NetappControllerId == rel.DestinationControllerId &&
+                            v.VolumeName == rel.DestinationVolume);
+
+                        if (enabled)
+                            return (rel.DestinationVolume, rel.DestinationControllerId);
+                    }
+                }
+                else
+                {
+                    // PRIMARY target
+                    if (snap?.ExistsOnPrimary == true &&
+                        snap.PrimaryControllerId > 0 &&
+                        !string.IsNullOrWhiteSpace(record.StorageName))
+                    {
+                        return (record.StorageName, snap.PrimaryControllerId);
+                    }
+
+                    // Fallback: SelectedNetappVolumes row for this volume on a primary controller
+                    var sv = selectedVolumes.FirstOrDefault(v =>
+                        v.VolumeName == record.StorageName);
+
+                    if (sv != null)
+                    {
+                        return (record.StorageName, sv.NetappControllerId);
+                    }
+                }
+
+                // Final fallback: original volume + incoming controllerId (if >0) else 0
+                return (record.StorageName, controllerId > 0 ? controllerId : 0);
+            }
+
+            var (actualVolume, resolvedControllerId) = ResolveSource();
+
+            // If we still lack a controller, try any enabled row for the chosen volume
+            if (resolvedControllerId == 0)
+            {
+                resolvedControllerId = selectedVolumes
+                    .FirstOrDefault(v => v.VolumeName == actualVolume)?.NetappControllerId ?? 0;
+            }
+
+            var originalHost = cluster.Hosts
+                .FirstOrDefault(h => string.Equals(h.Hostname, record.HostName, StringComparison.OrdinalIgnoreCase));
 
             var vm = new RestoreFormViewModel
             {
                 BackupId = record.Id,
                 ClusterId = clusterId,
-                ControllerId = controllerId,
+                ControllerId = resolvedControllerId > 0 ? resolvedControllerId : controllerId, // prefer resolved
                 Target = target,
                 VmId = record.VMID.ToString(),
                 VmName = record.VmName,
@@ -202,6 +263,18 @@ namespace BareProx.Controllers
                 })
                 .ToList();
 
+            // Soft warning if chosen end isn’t actually present
+            if (string.Equals(target, "Secondary", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!(snap?.ExistsOnSecondary ?? false))
+                    TempData["Warning"] = "No secondary snapshot found; using best-effort mapping via SnapMirror/SelectedVolumes.";
+            }
+            else
+            {
+                if (!(snap?.ExistsOnPrimary ?? false))
+                    TempData["Warning"] = "No primary snapshot flag found; using SelectedVolumes/controller mapping.";
+            }
+
             return View(vm);
         }
 
@@ -216,7 +289,7 @@ namespace BareProx.Controllers
             if (backup == null)
                 return RedirectToAction(nameof(Index));
 
-            // Load the selected cluster (NOT FirstOrDefault without filter)
+            // Load the selected cluster explicitly
             var cluster = await _context.ProxmoxClusters
                 .Include(c => c.Hosts)
                 .FirstOrDefaultAsync(c => c.Id == model.ClusterId, ct);
@@ -230,12 +303,15 @@ namespace BareProx.Controllers
             var origHost = cluster.Hosts
                 .FirstOrDefault(h => h.HostAddress == model.OriginalHostAddress);
 
-            bool origExists = origHost != null &&
-                await _proxmoxService.CheckIfVmExistsAsync(
+            bool origExists = false;
+            if (origHost != null && int.TryParse(model.VmId, out var vmIdParsed))
+            {
+                origExists = await _proxmoxService.CheckIfVmExistsAsync(
                     cluster,
                     origHost,
-                    int.Parse(model.VmId),
+                    vmIdParsed,
                     ct);
+            }
 
             if (model.RestoreType == RestoreType.ReplaceOriginal && !origExists)
                 model.RestoreType = RestoreType.CreateNew;
@@ -246,7 +322,6 @@ namespace BareProx.Controllers
             if (targetHost == null)
             {
                 ModelState.AddModelError(nameof(model.HostAddress), "Select a valid host");
-
                 model.HostOptions = cluster.Hosts
                     .Select(h => new SelectListItem
                     {
@@ -262,7 +337,6 @@ namespace BareProx.Controllers
                 string.IsNullOrWhiteSpace(model.NewVmName))
             {
                 ModelState.AddModelError(nameof(model.NewVmName), "Enter a name for the new VM");
-
                 model.HostOptions = cluster.Hosts
                     .Select(h => new SelectListItem
                     {

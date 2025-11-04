@@ -34,6 +34,7 @@ using Newtonsoft.Json.Linq;
 using System.Runtime.InteropServices;
 using TimeZoneConverter;
 using BareProx.Services.Proxmox;
+using System.Linq;
 
 namespace BareProx.Controllers
 {
@@ -239,7 +240,7 @@ namespace BareProx.Controllers
             var allowed = new HashSet<int> { 1440, 2880, 10080 };
             if (!allowed.Contains(vm.FrequencyMinutes))
             {
-                // fallback to 360 if something odd was posted
+                // fallback to weekly if something odd was posted
                 vm.FrequencyMinutes = 10080;
             }
 
@@ -661,9 +662,16 @@ namespace BareProx.Controllers
                 if (svms == null || !svms.Any())
                     return NotFound("No volume data found for this controller");
 
-                var selected = await _context.SelectedNetappVolumes
+                // Load ALL tracked rows, including disabled ones
+                var tracked = await _context.SelectedNetappVolumes
                     .Where(v => v.NetappControllerId == storageId)
                     .ToListAsync(ct);
+
+                // Field-based matcher (works with any vol object)
+                static bool Matches(SelectedNetappVolumes s, string? uuid, string? volName, string? mountIp) =>
+                    string.Equals(s.Uuid, uuid, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(s.VolumeName, volName, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(s.MountIp, mountIp, StringComparison.OrdinalIgnoreCase);
 
                 var treeDto = new NetappControllerTreeDto
                 {
@@ -671,16 +679,21 @@ namespace BareProx.Controllers
                     Svms = svms.Select(svm => new NetappSvmDto
                     {
                         Name = svm.Name,
-                        Volumes = svm.Volumes.Select(vol => new NetappVolumeDto
+                        Volumes = svm.Volumes.Select(vol =>
                         {
-                            VolumeName = vol.VolumeName,
-                            Uuid = vol.Uuid,
-                            MountIp = vol.MountIp,
-                            ClusterId = vol.ClusterId,
-                            IsSelected = selected.Any(s =>
-                                s.Uuid == vol.Uuid &&
-                                s.VolumeName == vol.VolumeName &&
-                                s.MountIp == vol.MountIp)
+                            var row = tracked.FirstOrDefault(s => Matches(s, vol.Uuid, vol.VolumeName, vol.MountIp));
+                            // Show all; checkbox only checked if tracked AND not disabled
+                            var isSelected = row != null && row.Disabled != true;
+
+                            return new NetappVolumeDto
+                            {
+                                VolumeName = vol.VolumeName,
+                                Uuid = vol.Uuid,
+                                MountIp = vol.MountIp,
+                                ClusterId = vol.ClusterId,
+                                IsSelected = isSelected,
+                                // Disabled = row?.Disabled ?? false // if you add this to the DTO
+                            };
                         }).ToList()
                     }).ToList()
                 };
@@ -696,9 +709,33 @@ namespace BareProx.Controllers
         [HttpGet]
         public async Task<IActionResult> GetSelectedNetappVolumes(int controllerId, CancellationToken ct)
         {
+            // Return only enabled UUIDs so pre-checks don't tick disabled ones
             var uuids = await _context.SelectedNetappVolumes
-                .Where(v => v.NetappControllerId == controllerId)
+                .Where(v => v.NetappControllerId == controllerId && v.Disabled != true)
                 .Select(v => v.Uuid)
+                .Where(u => u != null)
+                .Distinct()
+                .ToListAsync(ct);
+
+            return Json(uuids);
+        }
+
+        /// <summary>
+        /// Returns UUIDs of SelectedNetappVolumes that are in use by any BackupSchedule.SelectedNetappVolumeId
+        /// for the specified controller. Use these to force check + disable the corresponding checkboxes.
+        /// </summary>
+        [HttpGet]
+        public async Task<IActionResult> GetInUseSelectedVolumeUuids(int controllerId, CancellationToken ct)
+        {
+            var query =
+                from s in _context.BackupSchedules.AsNoTracking()
+                where s.SelectedNetappVolumeId != null
+                join v in _context.SelectedNetappVolumes.AsNoTracking()
+                    on s.SelectedNetappVolumeId equals v.Id
+                where v.NetappControllerId == controllerId
+                select v.Uuid;
+
+            var uuids = await query
                 .Where(u => u != null)
                 .Distinct()
                 .ToListAsync(ct);
@@ -730,24 +767,64 @@ namespace BareProx.Controllers
         [HttpPost]
         public async Task<IActionResult> SaveNetappSelectedVolumes([FromBody] List<NetappVolumeExportDto> volumes, CancellationToken ct)
         {
+            // NOTE: This assumes your payload carries the NetApp *controller id* in ClusterId.
+            // If you already have a separate ControllerId field, swap to that instead.
             var controllerId = volumes.FirstOrDefault()?.ClusterId ?? 0;
+            if (controllerId == 0)
+                return BadRequest("Missing controller id.");
 
-            var old = await _context.SelectedNetappVolumes
+            var existing = await _context.SelectedNetappVolumes
                 .Where(v => v.NetappControllerId == controllerId)
                 .ToListAsync(ct);
-            _context.SelectedNetappVolumes.RemoveRange(old);
 
-            var entities = volumes.Select(v => new SelectedNetappVolume
+            // Composite key (Uuid + VolumeName + MountIp)
+            static string Key(string? uuid, string? vol, string? ip) =>
+                $"{uuid ?? ""}||{vol ?? ""}||{ip ?? ""}".ToLowerInvariant();
+
+            var existingByKey = existing.ToDictionary(
+                e => Key(e.Uuid, e.VolumeName, e.MountIp),
+                e => e
+            );
+
+            var incomingKeys = new HashSet<string>(
+                volumes.Select(v => Key(v.Uuid, v.VolumeName, v.MountIp))
+            );
+
+            // 1) Upsert incoming: create if missing, update + enable if present
+            foreach (var v in volumes)
             {
-                Vserver = v.Vserver,
-                VolumeName = v.VolumeName,
-                Uuid = v.Uuid,
-                MountIp = v.MountIp,
-                ClusterId = v.ClusterId,
-                NetappControllerId = controllerId
-            });
+                var k = Key(v.Uuid, v.VolumeName, v.MountIp);
+                if (existingByKey.TryGetValue(k, out var row))
+                {
+                    row.Disabled = false; // re-enable
+                    row.Vserver = v.Vserver;
+                    row.VolumeName = v.VolumeName;
+                    row.Uuid = v.Uuid;
+                    row.MountIp = v.MountIp;            // keep mapping
+                    row.NetappControllerId = controllerId;   // ensure controller binding
+                }
+                else
+                {
+                    _context.SelectedNetappVolumes.Add(new SelectedNetappVolumes
+                    {
+                        Vserver = v.Vserver,
+                        VolumeName = v.VolumeName,
+                        Uuid = v.Uuid,
+                        MountIp = v.MountIp,
+                        NetappControllerId = controllerId,
+                        Disabled = false
+                    });
+                }
+            }
 
-            _context.SelectedNetappVolumes.AddRange(entities);
+            // 2) Any existing not in incoming should be marked Disabled = true (not deleted)
+            foreach (var e in existing)
+            {
+                var k = Key(e.Uuid, e.VolumeName, e.MountIp);
+                if (!incomingKeys.Contains(k) && e.Disabled != true)
+                    e.Disabled = true;
+            }
+
             await _context.SaveChangesAsync(ct);
 
             await _netappVolumeService.UpdateAllSelectedVolumesAsync(ct);

@@ -45,7 +45,7 @@ namespace BareProx.Models
         public List<ProxmoxVM> VMs { get; set; } = new();
         public int ClusterId { get; set; }
 
-        // renamed from StorageId:
+        public int? SelectedNetappVolumeId { get; set; }
         public int NetappControllerId { get; set; }
         public bool IsReplicable { get; set; }
         public bool SnapshotLockingEnabled { get; set; }  // New property for snapshot locking

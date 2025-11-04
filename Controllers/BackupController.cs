@@ -27,7 +27,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
-
+using Microsoft.Extensions.Logging; // for ILogger<>
 
 namespace BareProx.Controllers
 {
@@ -59,85 +59,71 @@ namespace BareProx.Controllers
             return View(schedules);
         }
 
+        // ---------- helpers ----------
+        private static string? NormalizeRecipients(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return null;
+            var parts = raw
+                .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(p => p.Trim())
+                .Where(p => !string.IsNullOrWhiteSpace(p))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            return parts.Length == 0 ? null : string.Join(",", parts);
+        }
+
+        private static int ToHours(int? count, string? unit)
+        {
+            var c = count.GetValueOrDefault(0);
+            if (c <= 0) return 0;
+            return unit switch
+            {
+                "Hours" => c,
+                "Days" => c * 24,
+                "Weeks" => c * 7 * 24,
+                _ => 0
+            };
+        }
+
+        private async Task<(bool configured, bool defaultOnSuccess, bool defaultOnError, string? defaultRecipients)>
+            GetEmailSettingsAsync(CancellationToken ct)
+        {
+            var es = await _context.EmailSettings.AsNoTracking().FirstOrDefaultAsync(ct);
+            if (es == null)
+                return (false, false, false, null);
+
+            // consider "configured" when enabled AND host present
+            var configured = es.Enabled == true && !string.IsNullOrWhiteSpace(es.SmtpHost);
+            var onSuccess = es.OnBackupSuccess == true;
+            var onError = es.OnBackupFailure == true;
+            var recipients = string.IsNullOrWhiteSpace(es.DefaultRecipients) ? null : NormalizeRecipients(es.DefaultRecipients);
+
+            return (configured, onSuccess, onError, recipients);
+        }
+
         // ---------- CREATE ----------
         [HttpGet]
         public async Task<IActionResult> CreateSchedule(CancellationToken ct)
         {
             var model = new CreateScheduleRequest();
 
-            // a) Fetch clusters + primary controllers
-            var clusters = await _context.ProxmoxClusters
-                .Include(c => c.Hosts)
-                .ToListAsync(ct);
+            // Email availability + defaults
+            var (emailConfigured, defSuccess, defError, defRecipients) = await GetEmailSettingsAsync(ct);
+            model.EmailConfigured = emailConfigured;
+            ViewBag.EmailConfigured = emailConfigured;
 
-            var primaryControllers = await _context.NetappControllers
-                .Where(n => n.IsPrimary)
-                .ToListAsync(ct);
+            // Master notifications default: on (if email is configured), otherwise off
+            model.NotificationsEnabled = emailConfigured;
+            model.NotifyOnSuccess = emailConfigured && defSuccess;
+            model.NotifyOnError = emailConfigured && defError;
 
-            // b) Build combined storage map & volume meta (with locking flag)
-            var combinedStorage = new Dictionary<string, List<ProxmoxVM>>(StringComparer.OrdinalIgnoreCase);
-            var volumeMeta = new Dictionary<string, VolumeMeta>(StringComparer.OrdinalIgnoreCase);
+            if (emailConfigured && !string.IsNullOrWhiteSpace(defRecipients))
+                model.NotificationEmails = defRecipients;
 
-            // Needed to determine SnapshotLockingEnabled
-            var selectedVolumes = await _context.SelectedNetappVolumes.ToListAsync(ct);
+            // FAST: filtered, parallelized, cached inventory
+            var (combinedStorage, volumeMeta, replicableVolumes) = await LoadInventoryForCreateEditAsync(ct);
 
-            foreach (var cluster in clusters)
-            {
-                foreach (var ctrl in primaryControllers)
-                {
-                    var map = await _invCache.GetEligibleBackupStorageWithVMsAsync(cluster, ctrl.Id, null, ct);
-                    if (map == null) continue;
-
-                    foreach (var kv in map)
-                    {
-                        if (!combinedStorage.TryGetValue(kv.Key, out var list))
-                        {
-                            list = new List<ProxmoxVM>();
-                            combinedStorage[kv.Key] = list;
-                        }
-                        list.AddRange(kv.Value);
-
-                        if (!volumeMeta.ContainsKey(kv.Key))
-                        {
-                            var volInfo = selectedVolumes.FirstOrDefault(
-                                v => v.VolumeName == kv.Key && v.NetappControllerId == ctrl.Id);
-
-                            volumeMeta[kv.Key] = new VolumeMeta
-                            {
-                                ClusterId = cluster.Id,
-                                ControllerId = ctrl.Id,
-                                SnapshotLockingEnabled = volInfo?.SnapshotLockingEnabled == true
-                            };
-                        }
-                    }
-                }
-            }
-
-            // Deduplicate VMs per storage (by Id) and sort by Name
-            foreach (var key in combinedStorage.Keys.ToList())
-            {
-                combinedStorage[key] = combinedStorage[key]
-                    .GroupBy(vm => vm.Id)
-                    .Select(g => g.First())
-                    .OrderBy(vm => vm.Name, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-            }
-
-            // c) Replicable volumes via SnapMirror
-            var relations = await _context.SnapMirrorRelations.ToListAsync(ct);
-            var replicableVolumes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var rel in relations)
-            {
-                var prim = selectedVolumes.FirstOrDefault(v =>
-                    v.NetappControllerId == rel.SourceControllerId && v.VolumeName == rel.SourceVolume);
-                var sec = selectedVolumes.FirstOrDefault(v =>
-                    v.NetappControllerId == rel.DestinationControllerId && v.VolumeName == rel.DestinationVolume);
-
-                if (prim != null && sec != null)
-                    replicableVolumes.Add(prim.VolumeName);
-            }
-
-            // d) Storage options (only those that actually have VMs)
+            // Storage options (only storages that have VMs)
             model.StorageOptions = combinedStorage
                 .Where(kvp => kvp.Value.Any())
                 .Select(kvp => kvp.Key)
@@ -145,30 +131,36 @@ namespace BareProx.Controllers
                 .Select(s => new SelectListItem { Text = s, Value = s })
                 .ToList();
 
-            // e) Per-storage VM lists for checkbox UI
+            // Per-storage VM lists
             model.VmsByStorage = combinedStorage.ToDictionary(
                 kvp => kvp.Key,
-                kvp => kvp.Value
-                    .Select(vm => new SelectListItem
-                    {
-                        Value = vm.Id.ToString(),
-                        Text = $"{vm.Id} — {vm.Name}"
-                    })
-                    .ToList(),
+                kvp => kvp.Value.Select(vm => new SelectListItem
+                {
+                    Value = vm.Id.ToString(),
+                    Text = $"{vm.Id} — {vm.Name}"
+                }).ToList(),
                 StringComparer.OrdinalIgnoreCase);
 
             model.AllVms = new List<SelectListItem>(); // legacy not used
             model.ReplicableVolumes = replicableVolumes;
             model.VolumeMeta = volumeMeta;
 
-            // Preselect first storage for immediate list
+            // Preselect first storage
             if (model.StorageOptions.Count > 0 && string.IsNullOrEmpty(model.StorageName))
                 model.StorageName = model.StorageOptions[0].Value;
 
+            // Initialize SelectedNetappVolumeId / Cluster / Controller from meta
+            if (!string.IsNullOrWhiteSpace(model.StorageName)
+                && volumeMeta.TryGetValue(model.StorageName, out var vmMeta)
+                && vmMeta.SelectedNetappVolumeId.HasValue)
+            {
+                model.SelectedNetappVolumeId = vmMeta.SelectedNetappVolumeId;
+                model.ClusterId = vmMeta.ClusterId;
+                model.ControllerId = vmMeta.ControllerId;
+            }
+
             return View(model);
         }
-
-
         // ---------- EDIT ----------
         [HttpGet]
         public async Task<IActionResult> EditSchedule(int id, CancellationToken ct)
@@ -176,73 +168,29 @@ namespace BareProx.Controllers
             var schedule = await _context.BackupSchedules.FindAsync(id, ct);
             if (schedule == null) return NotFound();
 
-            var clusters = await _context.ProxmoxClusters.Include(c => c.Hosts).ToListAsync(ct);
-            var primaryControllers = await _context.NetappControllers.Where(n => n.IsPrimary).ToListAsync(ct);
+            // email config + defaults
+            var (emailConfigured, _defSuccess, _defError, defRecipients) = await GetEmailSettingsAsync(ct);
+            ViewBag.EmailConfigured = emailConfigured;
 
-            var combinedStorage = new Dictionary<string, List<ProxmoxVM>>(StringComparer.OrdinalIgnoreCase);
-            var volumeMeta = new Dictionary<string, VolumeMeta>(StringComparer.OrdinalIgnoreCase);
-            var selectedVolumes = await _context.SelectedNetappVolumes.ToListAsync(ct);
+            // FAST: filtered, parallelized, cached inventory
+            var (combinedStorage, volumeMeta, replicableVolumes) = await LoadInventoryForCreateEditAsync(ct);
 
-            foreach (var cluster in clusters)
-            {
-                foreach (var controller in primaryControllers)
-                {
-                    var map = await _invCache.GetEligibleBackupStorageWithVMsAsync(cluster, controller.Id, null, ct);
-                    if (map == null) continue;
-
-                    foreach (var kv in map)
-                    {
-                        if (!combinedStorage.TryGetValue(kv.Key, out var list))
-                        {
-                            list = new List<ProxmoxVM>();
-                            combinedStorage[kv.Key] = list;
-                        }
-                        list.AddRange(kv.Value);
-
-                        if (!volumeMeta.ContainsKey(kv.Key))
-                        {
-                            var volInfo = selectedVolumes.FirstOrDefault(
-                                v => v.VolumeName == kv.Key && v.NetappControllerId == controller.Id);
-
-                            volumeMeta[kv.Key] = new VolumeMeta
-                            {
-                                ClusterId = cluster.Id,
-                                ControllerId = controller.Id,
-                                SnapshotLockingEnabled = volInfo?.SnapshotLockingEnabled == true
-                            };
-                        }
-                    }
-                }
-            }
-
-            // Replicable volumes
-            var relationships = await _context.SnapMirrorRelations.ToListAsync(ct);
-            var replicableVolumes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var rel in relationships)
-            {
-                var primary = selectedVolumes.FirstOrDefault(v =>
-                    v.NetappControllerId == rel.SourceControllerId && v.VolumeName == rel.SourceVolume);
-                var secondary = selectedVolumes.FirstOrDefault(v =>
-                    v.NetappControllerId == rel.DestinationControllerId && v.VolumeName == rel.DestinationVolume);
-
-                if (primary != null && secondary != null)
-                    replicableVolumes.Add(primary.VolumeName);
-            }
-
-            // Allowed storage names (must exist + have VMs)
-            var selectedVolumeNames = selectedVolumes
-                .Select(v => v.VolumeName)
+            // Only allow storages that are enabled AND have VMs
+            var enabledVolumeNames = (await _context.SelectedNetappVolumes
+                    .AsNoTracking()
+                    .Where(v => v.Disabled != true)
+                    .Select(v => v.VolumeName)
+                    .ToListAsync(ct))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
             var storageOptions = combinedStorage
-                .Where(kvp => selectedVolumeNames.Contains(kvp.Key) && kvp.Value.Any())
+                .Where(kvp => enabledVolumeNames.Contains(kvp.Key) && kvp.Value.Any())
                 .OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase)
                 .Select(kvp => new SelectListItem { Text = kvp.Key, Value = kvp.Key })
                 .ToList();
 
-            // Per-storage VM lists
             var vmsByStorage = combinedStorage
-                .Where(kvp => selectedVolumeNames.Contains(kvp.Key) && kvp.Value.Any())
+                .Where(kvp => enabledVolumeNames.Contains(kvp.Key) && kvp.Value.Any())
                 .ToDictionary(
                     kvp => kvp.Key,
                     kvp => kvp.Value
@@ -270,18 +218,29 @@ namespace BareProx.Controllers
                 LockRetentionCount = schedule.LockRetentionCount,
                 LockRetentionUnit = schedule.LockRetentionUnit,
 
+                // notifications (existing values; pre-fill recipients from global if empty)
+                NotificationsEnabled = schedule.NotificationsEnabled,
+                NotifyOnSuccess = schedule.NotifyOnSuccess,
+                NotifyOnError = schedule.NotifyOnError,
+                NotificationEmails = string.IsNullOrWhiteSpace(schedule.NotificationEmails)
+                    ? defRecipients
+                    : schedule.NotificationEmails,
+                EmailConfigured = emailConfigured,
+
+                SelectedNetappVolumeId = schedule.SelectedNetappVolumeId,
+
                 ExcludedVmIds = schedule.ExcludedVmIds?
                     .Split(',', StringSplitOptions.RemoveEmptyEntries).ToList()
                     ?? new List<string>(),
 
                 StorageOptions = storageOptions,
                 VmsByStorage = vmsByStorage,
-                AllVms = new List<SelectListItem>(), // legacy cleared
+                AllVms = new List<SelectListItem>(),
                 ReplicableVolumes = replicableVolumes,
 
                 VolumeMeta = volumeMeta,
-                ClusterId = volumeMeta.TryGetValue(schedule.StorageName, out var vmMeta) ? vmMeta.ClusterId : 0,
-                ControllerId = volumeMeta.TryGetValue(schedule.StorageName, out vmMeta) ? vmMeta.ControllerId : 0,
+                ClusterId = volumeMeta.TryGetValue(schedule.StorageName, out var vmMeta) ? vmMeta.ClusterId : schedule.ClusterId,
+                ControllerId = volumeMeta.TryGetValue(schedule.StorageName, out vmMeta) ? vmMeta.ControllerId : schedule.ControllerId,
 
                 SingleSchedule = new ScheduleEntry
                 {
@@ -308,9 +267,18 @@ namespace BareProx.Controllers
                 model.LockRetentionUnit = null;
             }
 
+            // If DB didn't have link, pre-fill from meta
+            if (model.SelectedNetappVolumeId == null
+                && volumeMeta.TryGetValue(model.StorageName, out var metaFromStorage)
+                && metaFromStorage.SelectedNetappVolumeId.HasValue)
+            {
+                model.SelectedNetappVolumeId = metaFromStorage.SelectedNetappVolumeId;
+            }
+
             ViewData["ScheduleId"] = id;
             return View("EditSchedule", model);
         }
+
 
         [HttpPost]
         [ValidateAntiForgeryToken]
@@ -337,26 +305,43 @@ namespace BareProx.Controllers
             {
                 await RehydrateCreateEditViewBitsAsync(model, ct);
                 TempData["ErrorMessage"] = "Please fill in all required schedule details.";
-                return View(model); // default CreateSchedule.cshtml
+                return View(model);
             }
 
             var s = model.SingleSchedule;
 
-            // 2) Server-side enforcement for App-Aware + Excludes
+            // 2) App-Aware + Excludes
             if (!model.IsApplicationAware)
             {
                 model.EnableIoFreeze = false;
                 model.UseProxmoxSnapshot = false;
                 model.WithMemory = false;
-                model.ExcludedVmIds = null; // ignore excludes when not app-aware
+                model.ExcludedVmIds = null;
             }
             else
             {
-                // "With memory" only when Proxmox snapshot is used
                 if (!model.UseProxmoxSnapshot) model.WithMemory = false;
             }
 
-            // 🔁 REHYDRATE lists/meta so we can validate excludes & locking (POST doesn't have them)
+            // 2b) notifications config check
+            var (emailConfigured, _, _, _) = await GetEmailSettingsAsync(ct);
+            ViewBag.EmailConfigured = emailConfigured;
+
+            // If email not configured, force master OFF
+            if (!emailConfigured)
+            {
+                model.NotificationsEnabled = false;
+            }
+
+            // If master OFF, scrub details
+            if (!model.NotificationsEnabled)
+            {
+                model.NotifyOnSuccess = false;
+                model.NotifyOnError = false;
+                model.NotificationEmails = null;
+            }
+
+            // 🔁 REHYDRATE if needed
             if (model.VmsByStorage == null || model.VmsByStorage.Count == 0 ||
                 model.VolumeMeta == null || model.VolumeMeta.Count == 0)
             {
@@ -388,7 +373,7 @@ namespace BareProx.Controllers
                 timeOfDay = parsedTime;
             }
 
-            // 5) Locking validation: allow only if volume supports it and constraints satisfied
+            // 5) Locking validation
             var volSupportsLocking = model.VolumeMeta != null &&
                                      model.VolumeMeta.TryGetValue(model.StorageName ?? string.Empty, out var vmeta) &&
                                      vmeta.SnapshotLockingEnabled;
@@ -404,7 +389,7 @@ namespace BareProx.Controllers
 
                 if (requestedLockHours > 0 &&
                     requestedLockHours < totalRetentionHours &&
-                    requestedLockHours <= (30 * 24)) // guardrail
+                    requestedLockHours <= (30 * 24))
                 {
                     lockingEnabled = true;
                     lockCount = model.LockRetentionCount;
@@ -412,10 +397,27 @@ namespace BareProx.Controllers
                 }
             }
 
+            // Infer SelectedNetappVolumeId if not posted
+            int? selectedVolumeId = model.SelectedNetappVolumeId;
+            if (selectedVolumeId == null &&
+                model.VolumeMeta != null &&
+                model.StorageName != null &&
+                model.VolumeMeta.TryGetValue(model.StorageName, out var meta) &&
+                meta.SelectedNetappVolumeId.HasValue)
+            {
+                selectedVolumeId = meta.SelectedNetappVolumeId;
+            }
+
             // 6) Build entity
+            // Precompute notification fields to avoid CS0019 (bool? vs bool)
+            var notifEnabled = model.NotificationsEnabled;
+            var notifyOnSuccessFlag = notifEnabled && (model.NotifyOnSuccess == true);
+            var notifyOnErrorFlag = notifEnabled && (model.NotifyOnError == true);
+            var notifyEmails = notifEnabled ? NormalizeRecipients(model.NotificationEmails) : null;
+
             var schedule = new BackupSchedule
             {
-                Name = model.Name, // ✅ from the Name input
+                Name = model.Name,
                 StorageName = model.StorageName,
                 IsEnabled = model.IsEnabled,
 
@@ -431,8 +433,8 @@ namespace BareProx.Controllers
                 WithMemory = model.WithMemory,
 
                 ExcludedVmIds = (model.ExcludedVmIds == null || model.ExcludedVmIds.Count == 0)
-                                ? null
-                                : string.Join(",", model.ExcludedVmIds.Distinct()),
+                                    ? null
+                                    : string.Join(",", model.ExcludedVmIds.Distinct()),
 
                 RetentionCount = s.RetentionCount,
                 RetentionUnit = s.RetentionUnit,
@@ -445,8 +447,18 @@ namespace BareProx.Controllers
                 // Locking
                 EnableLocking = lockingEnabled,
                 LockRetentionCount = lockCount,
-                LockRetentionUnit = lockUnit
+                LockRetentionUnit = lockUnit,
+
+                // Selected volume link
+                SelectedNetappVolumeId = selectedVolumeId,
+
+                // Notifications (gated by master)
+                NotificationsEnabled = notifEnabled,
+                NotifyOnSuccess = notifyOnSuccessFlag,
+                NotifyOnError = notifyOnErrorFlag,
+                NotificationEmails = notifyEmails
             };
+
 
             _context.BackupSchedules.Add(schedule);
             await _context.SaveChangesAsync(ct);
@@ -499,7 +511,23 @@ namespace BareProx.Controllers
                 if (!model.UseProxmoxSnapshot) model.WithMemory = false;
             }
 
-            // 🔁 REHYDRATE lists/meta so we can validate excludes & locking (POST doesn't have them)
+            // Email configured? if not, force master OFF
+            var (emailConfigured, _, _, _) = await GetEmailSettingsAsync(ct);
+            ViewBag.EmailConfigured = emailConfigured;
+            if (!emailConfigured)
+            {
+                model.NotificationsEnabled = false;
+            }
+
+            // If master OFF, scrub details
+            if (!model.NotificationsEnabled)
+            {
+                model.NotifyOnSuccess = false;
+                model.NotifyOnError = false;
+                model.NotificationEmails = null;
+            }
+
+            // 🔁 REHYDRATE lists/meta if needed
             if (model.VmsByStorage == null || model.VmsByStorage.Count == 0 ||
                 model.VolumeMeta == null || model.VolumeMeta.Count == 0)
             {
@@ -531,7 +559,7 @@ namespace BareProx.Controllers
                 timeOfDay = parsedTime;
             }
 
-            // 4) Locking validation (needs VolumeMeta)
+            // 4) Locking validation
             var volSupportsLocking = model.VolumeMeta != null &&
                                      model.VolumeMeta.TryGetValue(model.StorageName ?? string.Empty, out var vmeta) &&
                                      vmeta.SnapshotLockingEnabled;
@@ -555,8 +583,8 @@ namespace BareProx.Controllers
                 }
             }
 
-            // 5) Update entity
-            schedule.Name = model.Name; // ✅ from the Name input
+            // 5) Update entity fields
+            schedule.Name = model.Name;
             schedule.StorageName = model.StorageName;
             schedule.IsEnabled = model.IsEnabled;
 
@@ -586,6 +614,35 @@ namespace BareProx.Controllers
             schedule.LockRetentionCount = lockCount;
             schedule.LockRetentionUnit = lockUnit;
 
+            // SelectedNetappVolumeId if DB missing it
+            if (schedule.SelectedNetappVolumeId == null)
+            {
+                int? candidate = model.SelectedNetappVolumeId;
+
+                if (candidate == null &&
+                    model.VolumeMeta != null &&
+                    model.StorageName != null &&
+                    model.VolumeMeta.TryGetValue(model.StorageName, out var meta) &&
+                    meta.SelectedNetappVolumeId.HasValue)
+                {
+                    candidate = meta.SelectedNetappVolumeId;
+                }
+
+                if (candidate.HasValue)
+                {
+                    schedule.SelectedNetappVolumeId = candidate.Value;
+                }
+            }
+
+            // Notifications (respect master)
+            var notifEnabled = model.NotificationsEnabled;
+
+            schedule.NotificationsEnabled = notifEnabled;
+            schedule.NotifyOnSuccess = notifEnabled && (model.NotifyOnSuccess == true);
+            schedule.NotifyOnError = notifEnabled && (model.NotifyOnError == true);
+            schedule.NotificationEmails = notifEnabled ? NormalizeRecipients(model.NotificationEmails) : null;
+
+
             // 6) Save with transient retry (SQLite "database is locked")
             for (int i = 0; i < 3; i++)
             {
@@ -604,8 +661,6 @@ namespace BareProx.Controllers
             TempData["SuccessMessage"] = "Backup schedule updated successfully.";
             return RedirectToAction("Backup");
         }
-
-
 
         // ---------- DELETE ----------
         public IActionResult DeleteSchedule(int id)
@@ -645,6 +700,7 @@ namespace BareProx.Controllers
 
                     await scopedBackupService.StartBackupAsync(
                         request.StorageName,
+                        request.selectedNetappVolumeId,
                         request.IsApplicationAware,
                         request.Label,
                         request.ClusterId,
@@ -675,35 +731,36 @@ namespace BareProx.Controllers
             TempData["SuccessMessage"] = $"Backup for '{request.StorageName}' started in the background.";
             return RedirectToAction("ListVMs", "Proxmox");
         }
-        private static int ToHours(int? count, string? unit)
-        {
-            var c = count.GetValueOrDefault(0);
-            if (c <= 0) return 0;
-
-            return unit switch
-            {
-                "Hours" => c,
-                "Days" => c * 24,
-                "Weeks" => c * 7 * 24,
-                _ => 0
-            };
-        }
 
         /// <summary>
-        /// Rehydrates StorageOptions, VmsByStorage, VolumeMeta, ReplicableVolumes
+        /// Rehydrates StorageOptions, VmsByStorage, VolumeMeta (incl. SelectedNetappVolumeId), ReplicableVolumes
         /// so the view can render on POST-back with errors.
         /// </summary>
         private async Task RehydrateCreateEditViewBitsAsync(CreateScheduleRequest model, CancellationToken ct)
         {
+            var (emailConfigured, _, _, _) = await GetEmailSettingsAsync(ct);
+            model.EmailConfigured = emailConfigured;
+            ViewBag.EmailConfigured = emailConfigured;
+
             var clusters = await _context.ProxmoxClusters
                 .Include(c => c.Hosts)
+                .AsNoTracking()
                 .ToListAsync(ct);
 
             var primaryControllers = await _context.NetappControllers
+                .AsNoTracking()
                 .Where(n => n.IsPrimary)
                 .ToListAsync(ct);
 
-            var selectedVolumes = await _context.SelectedNetappVolumes.ToListAsync(ct);
+            // Only enabled rows
+            var selectedVolumes = await _context.SelectedNetappVolumes
+                .AsNoTracking()
+                .Where(v => v.Disabled != true)
+                .ToListAsync(ct);
+
+            var enabledKey = new HashSet<(int C, string V)>(
+                selectedVolumes.Select(v => (v.NetappControllerId, v.VolumeName)),
+                EqualityComparer<(int, string)>.Default);
 
             var combinedStorage = new Dictionary<string, List<ProxmoxVM>>(StringComparer.OrdinalIgnoreCase);
             var volumeMeta = new Dictionary<string, VolumeMeta>(StringComparer.OrdinalIgnoreCase);
@@ -717,40 +774,47 @@ namespace BareProx.Controllers
 
                     foreach (var kv in map)
                     {
-                        if (!combinedStorage.TryGetValue(kv.Key, out var list))
+                        var storage = kv.Key;
+
+                        if (!enabledKey.Contains((ctrl.Id, storage))) continue;
+
+                        if (!combinedStorage.TryGetValue(storage, out var list))
                         {
                             list = new List<ProxmoxVM>();
-                            combinedStorage[kv.Key] = list;
+                            combinedStorage[storage] = list;
                         }
                         list.AddRange(kv.Value);
 
-                        if (!volumeMeta.ContainsKey(kv.Key))
+                        if (!volumeMeta.ContainsKey(storage))
                         {
                             var volInfo = selectedVolumes.FirstOrDefault(
-                                v => v.VolumeName == kv.Key && v.NetappControllerId == ctrl.Id);
+                                v => v.VolumeName == storage && v.NetappControllerId == ctrl.Id);
 
-                            volumeMeta[kv.Key] = new VolumeMeta
+                            volumeMeta[storage] = new VolumeMeta
                             {
                                 ClusterId = cluster.Id,
                                 ControllerId = ctrl.Id,
-                                SnapshotLockingEnabled = volInfo?.SnapshotLockingEnabled == true
+                                SnapshotLockingEnabled = volInfo?.SnapshotLockingEnabled == true,
+                                SelectedNetappVolumeId = volInfo?.Id
                             };
                         }
                     }
                 }
             }
 
-            // Replicable volumes (SnapMirror)
-            var relations = await _context.SnapMirrorRelations.ToListAsync(ct);
+            // Replicable volumes
+            var relations = await _context.SnapMirrorRelations
+                .AsNoTracking()
+                .ToListAsync(ct);
+
             var replicableVolumes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var rel in relations)
             {
-                var prim = selectedVolumes.FirstOrDefault(v =>
-                    v.NetappControllerId == rel.SourceControllerId && v.VolumeName == rel.SourceVolume);
-                var sec = selectedVolumes.FirstOrDefault(v =>
-                    v.NetappControllerId == rel.DestinationControllerId && v.VolumeName == rel.DestinationVolume);
-                if (prim != null && sec != null)
-                    replicableVolumes.Add(prim.VolumeName);
+                if (enabledKey.Contains((rel.SourceControllerId, rel.SourceVolume)) &&
+                    enabledKey.Contains((rel.DestinationControllerId, rel.DestinationVolume)))
+                {
+                    replicableVolumes.Add(rel.SourceVolume);
+                }
             }
 
             model.StorageOptions = combinedStorage.Keys
@@ -773,10 +837,147 @@ namespace BareProx.Controllers
             model.VolumeMeta = volumeMeta;
             model.ReplicableVolumes = replicableVolumes;
 
-            // legacy
+            if (!string.IsNullOrWhiteSpace(model.StorageName)
+                && volumeMeta.TryGetValue(model.StorageName, out var vmMeta))
+            {
+                model.ClusterId = vmMeta.ClusterId;
+                model.ControllerId = vmMeta.ControllerId;
+                model.SelectedNetappVolumeId ??= vmMeta.SelectedNetappVolumeId;
+            }
+
             model.AllVms = new List<SelectListItem>();
         }
 
+
+        // HELPER
+        private static readonly TimeSpan InventoryMaxAge = TimeSpan.FromMinutes(10);
+        private const int MaxConcurrentInventoryCalls = 4;
+
+        private async Task<(Dictionary<string, List<ProxmoxVM>> combined,
+                           Dictionary<string, VolumeMeta> volumeMeta,
+                           HashSet<string> replicable)> LoadInventoryForCreateEditAsync(
+            CancellationToken ct)
+        {
+            // Clusters + primary controllers + enabled SelectedNetappVolumes
+            var clusters = await _context.ProxmoxClusters
+                .Include(c => c.Hosts)
+                .AsNoTracking()
+                .ToListAsync(ct);
+
+            var controllers = await _context.NetappControllers
+                .AsNoTracking()
+                .Where(n => n.IsPrimary)
+                .ToListAsync(ct);
+
+            var selectedVolumes = await _context.SelectedNetappVolumes
+                .AsNoTracking()
+                .Where(v => v.Disabled != true)
+                .ToListAsync(ct);
+
+            // Map {controllerId -> enabled volume names[]} to restrict lookups
+            var enabledByController = selectedVolumes
+                .GroupBy(v => v.NetappControllerId)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.Select(v => v.VolumeName)
+                          .Distinct(StringComparer.OrdinalIgnoreCase)
+                          .ToList(),
+                    EqualityComparer<int>.Default);
+
+            var enabledKey = new HashSet<(int C, string V)>(
+                selectedVolumes.Select(v => (v.NetappControllerId, v.VolumeName)));
+
+            var combinedStorage = new Dictionary<string, List<ProxmoxVM>>(StringComparer.OrdinalIgnoreCase);
+            var volumeMeta = new Dictionary<string, VolumeMeta>(StringComparer.OrdinalIgnoreCase);
+
+            // Small concurrency gate
+            using var gate = new SemaphoreSlim(MaxConcurrentInventoryCalls);
+
+            var tasks = new List<Task>();
+
+            foreach (var cluster in clusters)
+            {
+                foreach (var ctrl in controllers)
+                {
+                    if (!enabledByController.TryGetValue(ctrl.Id, out var wantedStorages) || wantedStorages.Count == 0)
+                        continue; // nothing enabled on this controller
+
+                    // Parallelized, filtered, cached (cheap path)
+                    tasks.Add(Task.Run(async () =>
+                    {
+                        await gate.WaitAsync(ct);
+                        try
+                        {
+                            var map = await _invCache.GetEligibleBackupStorageWithVMsAsync(
+                                cluster,
+                                ctrl.Id,
+                                wantedStorages,              // <— pass filter to take cheap path
+                                ct,
+                                maxAge: InventoryMaxAge,
+                                forceRefresh: false);
+
+                            if (map is null) return;
+
+                            lock (combinedStorage)
+                            {
+                                foreach (var kv in map)
+                                {
+                                    var storage = kv.Key;
+
+                                    // keep only explicitly enabled storages for this controller
+                                    if (!enabledKey.Contains((ctrl.Id, storage))) continue;
+
+                                    if (!combinedStorage.TryGetValue(storage, out var list))
+                                    {
+                                        list = new List<ProxmoxVM>();
+                                        combinedStorage[storage] = list;
+                                    }
+                                    list.AddRange(kv.Value);
+
+                                    if (!volumeMeta.ContainsKey(storage))
+                                    {
+                                        var volInfo = selectedVolumes.FirstOrDefault(
+                                            v => v.VolumeName.Equals(storage, StringComparison.OrdinalIgnoreCase) &&
+                                                 v.NetappControllerId == ctrl.Id);
+
+                                        volumeMeta[storage] = new VolumeMeta
+                                        {
+                                            ClusterId = cluster.Id,
+                                            ControllerId = ctrl.Id,
+                                            SnapshotLockingEnabled = volInfo?.SnapshotLockingEnabled == true,
+                                            SelectedNetappVolumeId = volInfo?.Id
+                                        };
+                                    }
+                                }
+                            }
+                        }
+                        finally { gate.Release(); }
+                    }, ct));
+                }
+            }
+
+            await Task.WhenAll(tasks);
+
+            // Dedup + sort VMs per storage
+            foreach (var k in combinedStorage.Keys.ToList())
+            {
+                combinedStorage[k] = combinedStorage[k]
+                    .GroupBy(vm => vm.Id)
+                    .Select(g => g.First())
+                    .OrderBy(vm => vm.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+
+            // Replicable via SnapMirror (both ends enabled)
+            var relations = await _context.SnapMirrorRelations.AsNoTracking().ToListAsync(ct);
+            var replicable = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var rel in relations)
+                if (enabledKey.Contains((rel.SourceControllerId, rel.SourceVolume)) &&
+                    enabledKey.Contains((rel.DestinationControllerId, rel.DestinationVolume)))
+                    replicable.Add(rel.SourceVolume);
+
+            return (combinedStorage, volumeMeta, replicable);
+        }
 
     }
 }

@@ -8,7 +8,7 @@
 
     var recentJobs = ViewBag.RecentJobs as IEnumerable<dynamic>;
     var proxmoxClusters = (ViewBag.ProxmoxClusters as IEnumerable<dynamic> ?? Enumerable.Empty<dynamic>())
-                          .OrderBy(c => (string)c.Name) // sort clusters by Name
+                          .OrderBy(c => (string)c.Name)
                           .ToList();
 
     // Demo placeholders until real data wired
@@ -66,7 +66,7 @@
                                 <td>@job.Type</td>
                                 <td>@job.RelatedVm</td>
                                 <td><span class="badge @badgeClass">@status</span></td>
-                                <td class="text-truncate" style="max-width:260px;">@job.ErrorMessage</td>
+                                <td class="text-truncate" style="max-width:260px;" title="@(job.ErrorMessage ?? "")">@job.ErrorMessage</td>
                             </tr>
                         }
                     }
@@ -84,12 +84,10 @@
     <!-- Proxmox Clusters -->
     @foreach (var cluster in proxmoxClusters)
     {
-        // Sort this cluster’s hosts by Name
         var hosts = ((IEnumerable<dynamic>)cluster.Hosts)
         .OrderBy(h => (string)h.Name)
         .ToList();
 
-        // Compute cluster badge based on how many are running
         var total = hosts.Count;
         var onlineCount = hosts.Count(h => (string)h.Status == "Running");
         var allOnline = total > 0 && onlineCount == total;
@@ -112,8 +110,16 @@
                     {
                         var isRunning = (string)host.Status == "Running";
                         var hostBadge = isRunning ? "bg-success" : "bg-danger";
+                        string lastMsg = (host.LastMessage as string) ?? string.Empty;
+
                         <li class="list-group-item d-flex justify-content-between align-items-center">
-                            <span>@host.Name</span>
+                            <span>
+                                @host.Name
+                                @if (!string.IsNullOrWhiteSpace(lastMsg))
+                                {
+                                    <small class="text-muted ms-2">— @lastMsg</small>
+                                }
+                            </span>
                             <span class="badge @hostBadge">@host.Status</span>
                         </li>
                     }
@@ -186,29 +192,53 @@
 
 @section Scripts {
     <script>
-        (async () => {
-          try {
-            const r = await fetch('/api/updates/status', { cache: 'no-store' });
-            if (!r.ok) return;
-            const d = await r.json();
-            if (!d || !d.isUpdateAvailable) return;
+          (async () => {
+            // Build URL safely (supports UsePathBase / reverse proxy)
+            const STATUS_URL = '@Url.Content("~/api/updates/status")';
+            try {
+              console.log("[BP] Update check →", STATUS_URL);
+              const r = await fetch(STATUS_URL, { cache: 'no-store', credentials: 'same-origin' });
+              if (!r.ok) {
+                console.warn("[BP] Update status HTTP not OK:", r.status, r.statusText);
+                return;
+              }
 
-            const commands = [
-              "sudo apt-get update",
-              "sudo apt-get dist-upgrade -y",
-              "docker compose down",
-              "docker image prune -f",
-              "docker compose pull",
-              "docker compose up -d"
-            ].join("\n");
+              const ct = (r.headers.get('content-type') || '').toLowerCase();
+              if (!ct.includes('application/json')) {
+                console.warn("[BP] Update status returned non-JSON (maybe login HTML). Content-Type:", ct);
+                return;
+              }
 
-            const html = `
+              const d = await r.json();
+              if (!d || !d.isUpdateAvailable) {
+                console.log("[BP] No update available");
+                return;
+              }
+
+              const commands =
+                "sudo apt-get update\n" +
+                "sudo apt-get dist-upgrade -y\n" +
+                "docker compose down\n" +
+                "docker image prune -f\n" +
+                "docker compose pull\n" +
+                "docker compose up -d";
+
+              // Optional date bit
+              var latestDateHtml = "";
+              if (d.latestDate) {
+                latestDateHtml = '<small class="text-muted ms-2">(' + String(d.latestDate) + ')</small>';
+              }
+
+              // Escape for innerHTML injection
+              var commandsEsc = commands.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+
+              const html = `
         <div class="alert alert-info d-flex align-items-center justify-content-between shadow-sm" role="alert">
           <div>
             <strong>Update available:</strong>
-            <span class="badge bg-primary">v${d.latestVersion}</span>
-            ${d.latestDate ? `<small class="text-muted ms-2">(${d.latestDate})</small>` : ``}
-            <span class="ms-2">You’re on <code>${d.currentVersion}</code>.</span>
+            <span class="badge bg-primary">v${String(d.latestVersion || "")}</span>
+            ${latestDateHtml}
+            <span class="ms-2">You’re on <code>${String(d.currentVersion || "")}</code>.</span>
           </div>
           <div class="ms-3">
             <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#whatsNewModal">
@@ -225,7 +255,7 @@
           <div class="modal-dialog modal-lg modal-dialog-scrollable">
             <div class="modal-content">
               <div class="modal-header">
-                <h5 class="modal-title" id="whatsNewLabel">What’s new in v${d.latestVersion}</h5>
+                <h5 class="modal-title" id="whatsNewLabel">What’s new in v${String(d.latestVersion || "")}</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
               </div>
               <div class="modal-body">${d.whatsNewHtml || "<p>No changelog entries found.</p>"}</div>
@@ -243,11 +273,8 @@
               </div>
               <div class="modal-body">
                 <p class="mb-2">Run these commands on the host where <code>docker-compose.yml</code> lives:</p>
-                <pre class="bg-light border rounded p-3 mb-3"><code id="bp-update-commands">${commands.replace(/&/g,"&amp;").replace(/</g,"&lt;")}</code></pre>
-
-                <!-- Add this button so your copy handler works -->
+                <pre class="bg-light border rounded p-3 mb-3"><code id="bp-update-commands">${commandsEsc}</code></pre>
                 <button type="button" class="btn btn-outline-secondary btn-sm" id="bp-copy-cmds">Copy commands</button>
-
                 <hr/>
                 <ul class="small text-muted mb-0">
                   <li>Run these in the directory containing your <code>docker-compose.yml</code>.</li>
@@ -257,11 +284,13 @@
               </div>
             </div>
           </div>
-        </div>
         </div>`;
 
-            const host = document.getElementById('update-banner-container');
-            if (host) {
+              const host = document.getElementById('update-banner-container');
+              if (!host) {
+                console.warn("[BP] #update-banner-container not found");
+                return;
+              }
               host.innerHTML = html;
 
               // Copy handler
@@ -279,8 +308,9 @@
                   }
                 });
               }
+            } catch (err) {
+              console.warn('[BP] Update status banner error', err);
             }
-          } catch { /* ignore */ }
-        })();
+          })();
     </script>
 }
