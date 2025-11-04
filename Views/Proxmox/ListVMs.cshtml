@@ -23,6 +23,7 @@
     var collapseId = $"store-{idx}-collapse";
     var headingId = $"store-{idx}-heading";
     var vmCount = s.VMs?.Count ?? 0;
+    var hasSelectedVol = s.SelectedNetappVolumeId.HasValue && s.SelectedNetappVolumeId.Value > 0;
 
     <div class="card mb-3 storage-card" data-storage-name="@s.StorageName">
         <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2" id="@headingId">
@@ -35,9 +36,23 @@
                         aria-controls="@collapseId">
                     <span class="collapse-label">Show VMs</span>
                 </button>
+
                 <strong>@s.StorageName</strong>
+
+                <!-- Gray: total -->
                 <span class="badge bg-secondary ms-1 total-count">@vmCount</span>
+
+                <!-- Blue: matches (visible only while searching) -->
                 <span class="badge bg-info d-none ms-1 match-count" title="Matching VMs in this storage">0</span>
+
+                <!-- Yellow: missing SelectedNetappVolumeId -->
+                @if (!hasSelectedVol)
+                {
+                    <span class="badge bg-warning text-dark ms-1"
+                          title="No SelectedNetapp volume is mapped for this storage.">
+                        No volume selected in NetApp-settings
+                    </span>
+                }
             </div>
 
             <div class="d-flex align-items-center gap-2">
@@ -48,6 +63,7 @@
                         data-storage="@s.StorageName"
                         data-cluster="@s.ClusterId"
                         data-controllerid="@s.NetappControllerId"
+                        data-selectedvolumeid="@(s.SelectedNetappVolumeId?.ToString() ?? "0")"
                         data-replicable="@s.IsReplicable.ToString().ToLower()"
                         data-snapshotlockingenabled="@(s.SnapshotLockingEnabled ? "true" : "false")">
                     Backup Now
@@ -93,6 +109,7 @@
             <input type="hidden" name="StorageName" id="modalStorageName" />
             <input type="hidden" name="ClusterId" id="modalClusterId" />
             <input type="hidden" name="ControllerId" id="modalControllerId" />
+            <input type="hidden" name="SelectedNetappVolumeId" id="modalSelectedVolumeId" />
             <input type="hidden" name="ScheduleId" value="999" />
 
             <div class="modal-content">
@@ -102,6 +119,12 @@
                 </div>
 
                 <div class="modal-body">
+                    <!-- Missing Selected Volume alert -->
+                    <div id="noSelectedVolAlert" class="alert alert-warning d-none" role="alert">
+                        No SelectedNetapp volume is configured for this storage.
+                        Open <strong>Settings → NetApp volumes</strong> and select a volume before running a backup.
+                    </div>
+
                     <!-- ==================== Backup Type ==================== -->
                     <div class="mb-3">
                         <label class="form-label">Backup Type</label><br />
@@ -237,6 +260,8 @@
                     </div>
 
                     <!-- ==================== Replicate to Secondary ==================== -->
+                    <!-- Hidden fallback so the server always gets a value -->
+                    <input type="hidden" name="ReplicateToSecondary" value="false" />
                     <div class="mb-3 form-check d-none" id="replicateCheckbox">
                         <input class="form-check-input"
                                type="checkbox"
@@ -277,7 +302,6 @@
             const searchInput = document.getElementById('vmSearch');
             const clearBtn = document.getElementById('vmSearchClear');
 
-            // Keep original row text for safe highlight resets
             document.querySelectorAll('.vm-row .vm-text').forEach(span => {
                 if (!span.dataset.original) span.dataset.original = span.textContent || '';
             });
@@ -308,13 +332,11 @@
             function applySearch() {
                 const term = normalize(searchInput?.value);
                 const anyTerm = !!term;
-
                 let globalMatches = 0;
 
                 document.querySelectorAll('.storage-card').forEach(card => {
                     const list = card.querySelector('.vm-list');
                     const collapseEl = card.querySelector('.collapse');
-
                     let matchesHere = 0;
 
                     if (list) {
@@ -333,47 +355,43 @@
                         });
                     }
 
-                    // Update per-storage match badge
+                    // Show match badge only while searching
                     const badge = card.querySelector('.match-count');
                     if (badge) {
-                        badge.textContent = matchesHere.toString();
-                        badge.classList.toggle('d-none', matchesHere === 0);
+                        if (anyTerm) {
+                            badge.textContent = matchesHere.toString();
+                            badge.classList.toggle('d-none', matchesHere === 0);
+                        } else {
+                            badge.classList.add('d-none');
+                        }
                     }
 
                     globalMatches += matchesHere;
 
-                    // Expand storages with matches; collapse others when searching
-                    if (anyTerm) {
-                        setCollapse(collapseEl, matchesHere > 0);
-                    } else {
-                        // On empty search, collapse by default
-                        setCollapse(collapseEl, false);
-                    }
+                    if (anyTerm) setCollapse(collapseEl, matchesHere > 0);
+                    else setCollapse(collapseEl, false);
                 });
 
-                // Optional: visual cue if no matches at all
                 if (searchInput) searchInput.classList.toggle('is-invalid', anyTerm && globalMatches === 0);
             }
 
-            if (searchInput) searchInput.addEventListener('input', () => debounce(applySearch));
-            if (clearBtn) {
-                clearBtn.addEventListener('click', () => {
-                    if (searchInput) searchInput.value = '';
-                    applySearch();
-                    searchInput?.focus();
-                });
-            }
+            searchInput?.addEventListener('input', () => debounce(applySearch));
+            clearBtn?.addEventListener('click', () => {
+                if (searchInput) searchInput.value = '';
+                applySearch();
+                searchInput?.focus();
+            });
 
             // Initialize: all collapsed
             applySearch();
 
-            // ----- Modal JS (null-safe) -----
+            // ----- Modal JS -----
             const labelSelect = document.getElementById("LabelSelect");
             const replicateBox = document.getElementById("replicateCheckbox");
             const replicateToggle = document.getElementById("ReplicateToSecondaryToggle");
             const backupModal = document.getElementById('backupModal');
 
-            // Locking controls + retention logic
+            // Locking + retention shared refs
             const lockingCheckboxContainer = document.getElementById("lockingCheckbox");
             const lockingCheckbox = document.getElementById("EnableLocking");
             const lockingRetentionContainer = document.getElementById("lockingRetention");
@@ -385,11 +403,9 @@
             function retentionInHours(count, unit) {
                 const c = parseInt(count, 10);
                 if (isNaN(c) || c < 1) return 0;
-                switch (unit) {
-                    case "Hours": return c;
-                    case "Days": return c * 24;
-                    case "Weeks": return c * 168;
-                }
+                if (unit === "Hours") return c;
+                if (unit === "Days")  return c * 24;
+                if (unit === "Weeks") return c * 168;
                 return 0;
             }
             function maxLockCount(totalHours, unit) {
@@ -443,22 +459,16 @@
                 }
             }
 
-            // Block invalid number keys
-            function blockInvalidNumberKeys(evt) {
-                if (["e","E","+","-","."].includes(evt.key)) evt.preventDefault();
-            }
-            retentionCountInput?.addEventListener("keydown", blockInvalidNumberKeys);
-            lockCountInput?.addEventListener("keydown", blockInvalidNumberKeys);
-
-            // Replicate visibility
             function updateReplicateVisibility(isReplicable) {
                 if (!labelSelect || !replicateBox || !replicateToggle) return;
-                const manual = labelSelect.value === "Manual";
-                replicateBox.classList.toggle("d-none", !isReplicable || manual);
-                if (!isReplicable || manual) replicateToggle.checked = false;
+                const isManual = (labelSelect.value === "Manual");
+                const show = !!isReplicable && !isManual;
+
+                replicateBox.classList.toggle("d-none", !show);
+                if (!show) replicateToggle.checked = false; // prevent stale value
+                replicateToggle.disabled = !show;
             }
 
-            // Modal open wiring
             if (backupModal){
                 backupModal.addEventListener('show.bs.modal', function (event) {
                     const btn = event.relatedTarget;
@@ -468,13 +478,29 @@
                     const canLock = btn.getAttribute('data-snapshotlockingenabled') === 'true';
 
                     // Hidden fields
-                    const storageEl = document.getElementById('modalStorageName');
-                    const clusterEl = document.getElementById('modalClusterId');
-                    const controllerEl = document.getElementById('modalControllerId');
+                    const storageEl     = document.getElementById('modalStorageName');
+                    const clusterEl     = document.getElementById('modalClusterId');
+                    const controllerEl  = document.getElementById('modalControllerId');
+                    const selectedVolEl = document.getElementById('modalSelectedVolumeId');
 
-                    if (storageEl) storageEl.value = btn.dataset.storage || '';
-                    if (clusterEl) clusterEl.value = btn.dataset.cluster || '';
-                    if (controllerEl) controllerEl.value = btn.dataset.controllerid || '';
+                    // Values from button
+                    const storageVal = btn.dataset.storage || '';
+                    const clusterVal = btn.dataset.cluster || '';
+                    const ctrlVal    = btn.dataset.controllerid || '';
+                    const selVolVal  = btn.dataset.selectedvolumeid || '0';
+
+                    // Assign
+                    if (storageEl)     storageEl.value     = storageVal;
+                    if (clusterEl)     clusterEl.value     = clusterVal;
+                    if (controllerEl)  controllerEl.value  = ctrlVal;
+                    if (selectedVolEl) selectedVolEl.value = selVolVal;
+
+                    // Warning if no SelectedNetappVolumeId
+                    const noSelVolAlert = document.getElementById('noSelectedVolAlert');
+                    const runBtn = document.querySelector('#backupNowForm .btn.btn-success');
+                    const missingSelectedVol = (selVolVal === '0' || selVolVal === '');
+                    if (noSelVolAlert) noSelVolAlert.classList.toggle('d-none', !missingSelectedVol);
+                    if (runBtn) runBtn.disabled = missingSelectedVol;
 
                     // Label & replicate
                     if (labelSelect) {
@@ -491,12 +517,41 @@
                         lockingRetentionContainer.classList.add("d-none");
                     }
 
-                    // Default retention
+                    // Defaults
                     if (retentionCountInput) retentionCountInput.value = 7;
                     if (retentionUnitSelect) retentionUnitSelect.value = "Days";
                     if (lockCountInput) lockCountInput.value = 1;
                     if (lockUnitSelect) lockUnitSelect.value = "Hours";
-                    recalcLockingOptions();
+
+                    // One-time recalc for limits
+                    (function recalcOnce(){
+                        if (!retentionCountInput || !retentionUnitSelect || !lockCountInput || !lockUnitSelect) return;
+                        const totalHours = retentionInHours(retentionCountInput.value, retentionUnitSelect.value);
+                        if (totalHours <= 1) return;
+                        let selectedUnit = lockUnitSelect.value;
+                        let validUnit = false;
+                        Array.from(lockUnitSelect.options).forEach(opt => {
+                            const unit = opt.value;
+                            const maxCnt = maxLockCount(totalHours, unit);
+                            opt.disabled = maxCnt < 1;
+                            if (!opt.disabled && unit === selectedUnit) {
+                                validUnit = true;
+                                lockCountInput.max = maxCnt;
+                                if (+lockCountInput.value > maxCnt) lockCountInput.value = maxCnt || 1;
+                                if (+lockCountInput.value < 1 || isNaN(+lockCountInput.value)) lockCountInput.value = 1;
+                            }
+                        });
+                        if (!validUnit) {
+                            const firstEnabled = Array.from(lockUnitSelect.options).find(o => !o.disabled);
+                            if (firstEnabled) {
+                                lockUnitSelect.value = firstEnabled.value;
+                                const maxCnt = maxLockCount(totalHours, firstEnabled.value);
+                                lockCountInput.max = maxCnt;
+                                const cur = parseInt(lockCountInput.value, 10);
+                                lockCountInput.value = isNaN(cur) ? 1 : Math.max(1, Math.min(cur, maxCnt));
+                            }
+                        }
+                    })();
 
                     // App-aware options
                     const appAwareOptions = document.getElementById("appAwareOptions");
@@ -505,14 +560,12 @@
                     const pveSnap = document.getElementById("UseProxmoxSnapshot");
                     const snapOpts = document.getElementById("proxmoxSnapshotOptions");
 
-                    // Reset to crash-consistent
                     document.getElementById("IsApplicationAwareFalse")?.click();
                     if (appAwareOptions) appAwareOptions.classList.add("d-none");
                     if (ioFreeze) ioFreeze.checked = false;
                     if (pveSnap) pveSnap.checked = false;
                     if (snapOpts) snapOpts.classList.add("d-none");
 
-                    // Attach once-per-open simple handlers
                     appAwareTrue?.addEventListener("change", () => {
                         appAwareOptions?.classList.toggle("d-none", !appAwareTrue.checked);
                     }, { once: true });
@@ -537,6 +590,28 @@
             retentionUnitSelect?.addEventListener("change", recalcLockingOptions);
             lockUnitSelect?.addEventListener("change", recalcLockingOptions);
             lockCountInput?.addEventListener("input", clampLockInput);
+
+            function blockInvalidNumberKeys(evt) {
+                if (["e","E","+","-","."].includes(evt.key)) evt.preventDefault();
+            }
+            retentionCountInput?.addEventListener("keydown", blockInvalidNumberKeys);
+            lockCountInput?.addEventListener("keydown", blockInvalidNumberKeys);
+
+            // ------- Ensure hidden fallback doesn't override a checked checkbox -------
+            const form = document.getElementById('backupNowForm');
+            form?.addEventListener('submit', function () {
+                const replicateToggle = document.getElementById('ReplicateToSecondaryToggle');
+                const hiddenFallback = form.querySelector('input[type="hidden"][name="ReplicateToSecondary"]');
+                const replicateBox = document.getElementById('replicateCheckbox');
+
+                const isShown = replicateBox && !replicateBox.classList.contains('d-none');
+                const isChecked = replicateToggle && replicateToggle.checked;
+
+                // If user chose to replicate, disable the hidden "false" so only "true" is posted
+                if (isShown && isChecked && hiddenFallback) {
+                    hiddenFallback.disabled = true;
+                }
+            });
         });
     </script>
 }

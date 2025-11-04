@@ -23,7 +23,6 @@ using BareProx.Models;
 using BareProx.Services.Netapp;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
-using Org.BouncyCastle.Pqc.Crypto.Lms;
 
 namespace BareProx.Services.Background
 {
@@ -45,6 +44,9 @@ namespace BareProx.Services.Background
             {
                 try
                 {
+                    // New: prune orphaned SelectedStorages before other cleanups
+                    await CleanupOrphanedSelectedStorages(stoppingToken);
+
                     await CleanupExpired(stoppingToken);
                     await TrackNetappSnapshots(stoppingToken);
                     await PruneOldOrStuckJobs(stoppingToken);
@@ -57,6 +59,50 @@ namespace BareProx.Services.Background
                 }
 
                 await Task.Delay(_interval, stoppingToken);
+            }
+        }
+
+        /// <summary>
+        /// Remove rows from SelectedStorages where ClusterId no longer exists in ProxmoxClusters.
+        /// </summary>
+        private async Task CleanupOrphanedSelectedStorages(CancellationToken ct)
+        {
+            using var scope = _services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+            // Find orphans via anti-join
+            var orphaned = await db.SelectedStorages
+                .Where(ss => !db.ProxmoxClusters.Any(pc => pc.Id == ss.ClusterId))
+                .ToListAsync(ct);
+
+            if (orphaned.Count == 0)
+            {
+                _logger.LogDebug("SelectedStorages cleanup: no orphaned rows found.");
+                return;
+            }
+
+            // Retry on SQLITE_BUSY like other routines
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                using var tx = await db.Database.BeginTransactionAsync(ct);
+                try
+                {
+                    db.SelectedStorages.RemoveRange(orphaned);
+                    var affected = await db.SaveChangesAsync(ct);
+                    await tx.CommitAsync(ct);
+
+                    _logger.LogInformation(
+                        "SelectedStorages cleanup: removed {Count} orphaned rows (no matching ProxmoxClusters).",
+                        affected
+                    );
+                    break;
+                }
+                catch (DbUpdateException ey) when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
+                {
+                    await tx.RollbackAsync(ct);
+                    if (attempt == 2) throw;
+                    await Task.Delay(500, ct);
+                }
             }
         }
 
@@ -320,8 +366,8 @@ namespace BareProx.Services.Background
 
             // 30d policy
             string[] failedStatuses = { "Failed", "Error", "Aborted", "Cancelled" };
-            string[] inProgressStatuses = { "Pending", "Queued", "Running", "InProgress", 
-                                            "Started", "Creating Proxmox snapshots", "Waiting for Proxmox snapshots", 
+            string[] inProgressStatuses = { "Pending", "Queued", "Running", "InProgress",
+                                            "Started", "Creating Proxmox snapshots", "Waiting for Proxmox snapshots",
                                             "Proxmox snapshots completed", "Paused VMs", "NetApp snapshot created", "Triggering SnapMirror update" };
 
             var toDeleteIds = await db.Jobs

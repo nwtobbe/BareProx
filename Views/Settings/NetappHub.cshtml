@@ -14,6 +14,20 @@
         #controllersTable tbody tr.row-link:hover {
             background-color: rgba(0,0,0,.03);
         }
+
+    /* visual hint for locked (in-use) volumes */
+    .volume-locked-hint {
+        font-size: .825rem;
+        opacity: .8;
+        margin-left: .35rem;
+        white-space: nowrap;
+    }
+
+    .volume-checkbox[disabled] + label,
+    .volume-checkbox[disabled] ~ .volume-label {
+        opacity: .85;
+        cursor: not-allowed !important;
+    }
 </style>
 
 <div class="d-flex align-items-center justify-content-between mb-3">
@@ -183,6 +197,7 @@
                         <div class="col-md-8">
                             <label class="form-label">Search</label>
                             <input id="volSearch" type="text" class="form-control" placeholder="Filter by SVM / volume / IP...">
+                            <div class="form-text">🔒 Volumes used by schedules are locked to prevent accidental removal.</div>
                         </div>
                     </div>
 
@@ -319,7 +334,7 @@
           if (location.hash === '#pane-vols')  showTab('#tab-vols');
         });
 
-        /* ----- Volumes: AJAX load + search + expand/collapse + re-select saved ----- */
+        /* ----- Volumes: AJAX load + search + expand/collapse + re-check saved + LOCK items in use ----- */
         (async function(){
           const cidEl = document.getElementById('netappControllerId');
           if (!cidEl) return;
@@ -327,12 +342,26 @@
           const controllerId = parseInt(cidEl.value, 10);
           const container = document.getElementById('volume-list-container');
 
-          // 1) Load the tree markup
+          // 1) Load the tree markup (server pre-checks IsSelected = (tracked && Disabled != true))
           const res = await fetch(`@Url.Action("GetVolumesTree", "Settings")?storageId=${controllerId}`, { credentials: "same-origin" });
           container.innerHTML = await res.text();
 
-          // 2) Fetch saved selections (expects JSON: array of strings (UUIDs) OR array of objects with Uuid/uuid)
-          let savedUuidSet = new Set();
+          // helper: ensure parent groups are expanded for a given checkbox
+          function expandParentsOf(el){
+            let node = el;
+            while (node) {
+              const col = node.closest?.('.collapse');
+              if (col) {
+                try {
+                  const inst = bootstrap.Collapse.getOrCreateInstance(col, { toggle: false });
+                  inst.show();
+                } catch {}
+              }
+              node = node.parentElement;
+            }
+          }
+
+          // 2) Mark previously enabled selections (Disabled != true on server)
           try {
             const selRes = await fetch(`@Url.Action("GetSelectedNetappVolumes", "Settings")?controllerId=${controllerId}`, { credentials: "same-origin" });
             if (selRes.ok) {
@@ -340,32 +369,60 @@
               const uuids = Array.isArray(data)
                 ? (typeof data[0] === 'string' ? data : data.map(x => x?.Uuid ?? x?.uuid))
                 : [];
-              savedUuidSet = new Set(uuids.filter(Boolean).map(u => String(u).toLowerCase()));
-            }
-          } catch { /* optional endpoint; ignore errors */ }
+              const saved = new Set(uuids.filter(Boolean).map(u => String(u).toLowerCase()));
 
-          // 3) Apply selection + expand ancestors so they’re visible
-          if (savedUuidSet.size > 0) {
-            container.querySelectorAll('.volume-checkbox').forEach(cb => {
-              const uuid = (cb.dataset.uuid || '').toLowerCase();
-              if (uuid && savedUuidSet.has(uuid)) {
-                cb.checked = true;
-
-                // Expand collapsed parents so the checked item is visible (Bootstrap 5 safe)
-                let el = cb;
-                while (el) {
-                  const col = el.closest?.('.collapse');
-                  if (col) {
-                    try {
-                      const inst = bootstrap.Collapse.getOrCreateInstance(col, { toggle: false });
-                      inst.show();
-                    } catch { /* noop */ }
+              if (saved.size > 0) {
+                container.querySelectorAll('.volume-checkbox').forEach(cb => {
+                  const uuid = (cb.dataset.uuid || '').toLowerCase();
+                  if (uuid && saved.has(uuid)) {
+                    cb.checked = true;
+                    expandParentsOf(cb);
                   }
-                  el = el.parentElement;
-                }
+                });
               }
-            });
-          }
+            }
+          } catch { /* non-fatal */ }
+
+          // 3) LOCK volumes that are referenced by any BackupSchedule.SelectedNetappVolumeId
+          try {
+            const inUseRes = await fetch(`@Url.Action("GetInUseSelectedVolumeUuids", "Settings")?controllerId=${controllerId}`, { credentials: "same-origin" });
+            if (inUseRes.ok) {
+              const inUseData = await inUseRes.json();
+              const inUse = new Set(
+                (Array.isArray(inUseData) ? inUseData : [])
+                  .filter(Boolean)
+                  .map(u => String(u).toLowerCase())
+              );
+
+              if (inUse.size > 0) {
+                container.querySelectorAll('.volume-checkbox').forEach(cb => {
+                  const uuid = (cb.dataset.uuid || '').toLowerCase();
+                  if (!uuid || !inUse.has(uuid)) return;
+
+                  // force checked & disable
+                  cb.checked = true;
+                  cb.disabled = true;
+                  cb.dataset.locked = "1";
+                  cb.title = "This volume is used by at least one backup schedule.";
+
+                  // add a tiny visual hint next to label (try common structures)
+                  let label = cb.nextElementSibling;
+                  if (!label || label.tagName !== 'LABEL') {
+                    // some templates put text in a span with .volume-label
+                    label = cb.closest('.form-check')?.querySelector('label, .volume-label') || null;
+                  }
+                  if (label && !label.querySelector('.volume-locked-hint')) {
+                    const hint = document.createElement('span');
+                    hint.className = 'volume-locked-hint text-muted';
+                    hint.innerText = '🔒 in use by schedule';
+                    label.appendChild(hint);
+                  }
+
+                  expandParentsOf(cb);
+                });
+              }
+            }
+          } catch { /* non-fatal */ }
 
           // --- search / expand / collapse logic ---
           const search = document.getElementById('volSearch');
@@ -385,7 +442,7 @@
               try {
                 const inst = bootstrap.Collapse.getOrCreateInstance(el, { toggle: false });
                 expand ? inst.show() : inst.hide();
-              } catch { /* noop */ }
+              } catch {}
             });
           }
 
@@ -393,6 +450,7 @@
           btnExpand?.addEventListener('click', () => toggleAll(true));
           btnCollapse?.addEventListener('click', () => toggleAll(false));
 
+          // 4) Save payload
           document.getElementById('saveVolumes')?.addEventListener('click', async () => {
             const boxes = container.querySelectorAll('.volume-checkbox:checked');
             const volumes = Array.from(boxes).map(cb => ({
@@ -400,7 +458,7 @@
               VolumeName: cb.dataset.volume,
               Uuid: cb.dataset.uuid,
               MountIp: cb.dataset.mountip,
-              ClusterId: parseInt(cb.dataset.clusterid),
+              ClusterId: parseInt(cb.dataset.clusterid), // carries controller id (by design)
               NetappControllerId: controllerId
             }));
             const resp = await fetch("@Url.Action("SaveNetappSelectedVolumes", "Settings")", {
@@ -426,7 +484,7 @@
           document.addEventListener('click', function(e){
             const btn = e.target.closest('.delete-ctrl-btn');
             if (!btn) return;
-            e.stopPropagation(); // don't trigger row navigation
+            e.stopPropagation();
             e.preventDefault();
 
             const id = btn.getAttribute('data-id');

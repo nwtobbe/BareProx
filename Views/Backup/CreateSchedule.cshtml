@@ -55,8 +55,12 @@
         </select>
         <div class="invalid-feedback">Please select a storage.</div>
     </div>
+
+    <!-- Hidden context fields populated from volumeMeta -->
     <input type="hidden" asp-for="ClusterId" id="ClusterId" />
     <input type="hidden" asp-for="ControllerId" id="ControllerId" />
+    <!-- NEW: SelectedNetappVolumeId -->
+    <input type="hidden" asp-for="SelectedNetappVolumeId" id="SelectedNetappVolumeId" />
 
     <!-- Backup Type -->
     <div class="mb-3">
@@ -485,7 +489,7 @@
           // Replication visibility
           function supportsReplicateFor(val){ return replicable.indexOf(val) !== -1; }
 
-          // Storage change (replication/locking + cluster/controller + exclude list)
+          // Storage change (replication/locking + cluster/controller + exclude list + SelectedNetappVolumeId)
           storageSel?.addEventListener('change', function(){
             const val = storageSel.value;
 
@@ -511,14 +515,18 @@
               recalcLockingOptions();
             }
 
-            // Cluster/Controller hidden fields
+            // Cluster/Controller/VolumeId hidden fields
             const clusterInput = document.getElementById('ClusterId');
             const controllerInput = document.getElementById('ControllerId');
+            const selectedVolIdInput = document.getElementById('SelectedNetappVolumeId');
+
             if (volumeMeta[val]) {
               clusterInput.value = volumeMeta[val].ClusterId;
               controllerInput.value = volumeMeta[val].ControllerId;
+              selectedVolIdInput.value = volumeMeta[val].SelectedNetappVolumeId ?? '';
             } else {
               clusterInput.value = ''; controllerInput.value = '';
+              selectedVolIdInput.value = '';
             }
 
             // Exclude list
@@ -539,7 +547,7 @@
 
           // Initial render (order matters)
           if (selectType?.value) renderFields(selectType.value); // creates dynamic fields + sets retention unit
-          storageSel?.dispatchEvent(new Event('change'));        // sets replication/locking + excludes + cluster/controller
+          storageSel?.dispatchEvent(new Event('change'));        // sets replication/locking + excludes + cluster/controller + SelectedNetappVolumeId
           updateProxSnapshotUI();                                // ensures "With Memory" visibility
           syncExcludeDisabledState();                            // ensure exclude block follows app-aware
 

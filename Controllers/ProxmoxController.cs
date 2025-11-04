@@ -129,19 +129,23 @@ namespace BareProx.Controllers
                 return View(new List<StorageWithVMsDto>());
             }
 
-            // 6) In parallel: fetch only relevant SnapMirror relations and selected volumes
-            //    (restrict to the storages we actually care about)
+            // 6) Fetch SnapMirror relations + SelectedNetappVolumes limited to relevant storages
             var relationsTask = _context.SnapMirrorRelations
                 .AsNoTracking()
                 .Where(r => selectedStorageSet.Contains(r.SourceVolume))
                 .Select(r => new { r.SourceControllerId, r.SourceVolume, r.DestinationControllerId, r.DestinationVolume })
                 .ToListAsync(ct);
 
-            // We need to validate both ends exist in SelectedNetappVolumes; restrict to the two controllerId sets implied by the relations + the primary controller.
             var selectedVolumesTask = _context.SelectedNetappVolumes
                 .AsNoTracking()
-                .Where(v => selectedStorageSet.Contains(v.VolumeName))
-                .Select(v => new { v.NetappControllerId, v.VolumeName, v.SnapshotLockingEnabled })
+                .Where(v => selectedStorageSet.Contains(v.VolumeName) && v.Disabled != true) // << skip disabled, include null
+                .Select(v => new
+                {
+                    v.Id,
+                    v.NetappControllerId,
+                    v.VolumeName,
+                    v.SnapshotLockingEnabled
+                })
                 .ToListAsync(ct);
 
             await Task.WhenAll(relationsTask, selectedVolumesTask);
@@ -149,10 +153,22 @@ namespace BareProx.Controllers
             var relations = relationsTask.Result;
             var selectedVolumes = selectedVolumesTask.Result;
 
-            // Build quick-lookup sets
-            var selectedVolKeys = new HashSet<(int C, string V)>(
-                selectedVolumes.Select(v => (v.NetappControllerId, v.VolumeName)),
-                EqualityComparer<(int, string)>.Default);
+            // Quick lookup: (controllerId, volumeName) -> SelectedNetappVolume.Id
+            // If multiple rows exist for the same key, we keep the first encountered (stable enough for UI purposes).
+            var selectedVolumeIdByKey = new Dictionary<(int ControllerId, string VolumeName), int>(EqualityComparer<(int, string)>.Default);
+            var lockByKey = new Dictionary<(int ControllerId, string VolumeName), bool>(EqualityComparer<(int, string)>.Default);
+            foreach (var v in selectedVolumes)
+            {
+                var key = (v.NetappControllerId, v.VolumeName);
+                if (!selectedVolumeIdByKey.ContainsKey(key))
+                    selectedVolumeIdByKey[key] = v.Id;
+
+                // Coalesce nullable -> bool
+                if (v.SnapshotLockingEnabled == true)
+                    lockByKey[key] = true;              // any true sets the key to true
+                else if (!lockByKey.ContainsKey(key))
+                    lockByKey[key] = false;             // initialize to false if not present
+            }
 
             // 7) Build DTOs (skip empty storages early)
             var model = new List<StorageWithVMsDto>(capacity: storageVmMap.Count);
@@ -161,6 +177,10 @@ namespace BareProx.Controllers
                 var storage = kv.Key;
                 var vms = kv.Value;
                 if (vms == null || vms.Count == 0) continue;
+
+                // Map the SelectedNetappVolumeId for the *primary* controller
+                selectedVolumeIdByKey.TryGetValue((netappController.Id, storage), out var maybeSelectedId);
+                var hasLocking = lockByKey.TryGetValue((netappController.Id, storage), out var enabled) && enabled;
 
                 model.Add(new StorageWithVMsDto
                 {
@@ -173,7 +193,9 @@ namespace BareProx.Controllers
                         HostAddress = vm.HostAddress
                     }).ToList(),
                     ClusterId = cluster.Id,
-                    NetappControllerId = netappController.Id
+                    NetappControllerId = netappController.Id,
+                    SelectedNetappVolumeId = maybeSelectedId == 0 ? (int?)null : maybeSelectedId, // ✅ expose to the view
+                    SnapshotLockingEnabled = hasLocking
                 });
             }
 
@@ -183,27 +205,17 @@ namespace BareProx.Controllers
                 return View(model);
             }
 
-            // 8) Compute replicability & snapshot locking flags in O(1) lookups
-            //    Replicable if a relation exists for the storage AND both ends are present in SelectedNetappVolumes.
-            var replicableSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var r in relations)
-            {
-                if (selectedVolKeys.Contains((r.SourceControllerId, r.SourceVolume)) &&
-                    selectedVolKeys.Contains((r.DestinationControllerId, r.DestinationVolume)))
-                {
-                    replicableSet.Add(r.SourceVolume);
-                }
-            }
-
-            var lockByKey = selectedVolumes
-                .GroupBy(v => (v.NetappControllerId, v.VolumeName), EqualityComparer<(int, string)>.Default)
-                .ToDictionary(g => g.Key, g => g.Any(x => x.SnapshotLockingEnabled == true),
-                              EqualityComparer<(int, string)>.Default);
+            // 8) Compute replicability: show checkbox if there is a SnapMirror relation for this storage.
+            //    (Do NOT require destination volume to be selected/enabled in settings.)
+            var replicableSources = new HashSet<string>(
+                relations.Select(r => r.SourceVolume),
+                StringComparer.OrdinalIgnoreCase
+            );
 
             foreach (var dto in model)
             {
-                dto.IsReplicable = replicableSet.Contains(dto.StorageName);
-                dto.SnapshotLockingEnabled = lockByKey.TryGetValue((dto.NetappControllerId, dto.StorageName), out var enabled) && enabled;
+                dto.IsReplicable = replicableSources.Contains(dto.StorageName);
+                // SnapshotLockingEnabled already set above from lockByKey
             }
 
             return View(model);

@@ -59,8 +59,12 @@
         <input type="hidden" name="StorageName" value="@Model.StorageName" />
         <div class="invalid-feedback">Please select a storage.</div>
     </div>
+
+    <!-- Hidden context fields -->
     <input type="hidden" asp-for="ClusterId" id="ClusterId" />
     <input type="hidden" asp-for="ControllerId" id="ControllerId" />
+    <!-- NEW: SelectedNetappVolumeId -->
+    <input type="hidden" asp-for="SelectedNetappVolumeId" id="SelectedNetappVolumeId" />
 
     <!-- Backup Type -->
     <div class="mb-3">
@@ -282,9 +286,14 @@
           const replicateBox = document.getElementById('replicateCheckbox');
           const replicable = (document.getElementById('replicableVolumes')?.value.split(',')||[]).filter(Boolean);
 
-          // Storage (disabled in Edit, but we still use its value)
+          // Storage (disabled in Edit)
           const storageSel = form?.querySelector('select[name="StorageName"]');
           const snapLabel  = document.getElementById('snapmirrorLabel');
+
+          // Hidden IDs
+          const clusterInput = document.getElementById('ClusterId');
+          const controllerInput = document.getElementById('ControllerId');
+          const selectedVolIdInput = document.getElementById('SelectedNetappVolumeId');
 
           // Helpers
           function validateScheduleName(input){ input.value = input.value.replace(/[^A-Za-z0-9_\-]/g,'').slice(0,input.maxLength||20); }
@@ -456,28 +465,25 @@
               updateExcludeCount();
             }
           }
-          // With-memory visibility driven by Proxmox Snapshot
           function syncWithMemory(){
             if (!proxSnapCb || !proxOpts) return;
-            if (proxSnapCb.checked) {
-              proxOpts.classList.remove('d-none');
-            } else {
-              proxOpts.classList.add('d-none');
-              withMemory && (withMemory.checked = false);
-            }
+            if (proxSnapCb.checked) { proxOpts.classList.remove('d-none'); }
+            else { proxOpts.classList.add('d-none'); withMemory && (withMemory.checked = false); }
           }
           ccRadio?.addEventListener('change', toggleAppAware);
           aaRadio?.addEventListener('change', toggleAppAware);
           ioFreezeCb?.addEventListener('change', ()=>{ if (ioFreezeCb.checked && proxSnapCb){ proxSnapCb.checked=false; syncWithMemory(); } });
           proxSnapCb?.addEventListener('change', ()=>{ if (proxSnapCb.checked && ioFreezeCb){ ioFreezeCb.checked=false; } syncWithMemory(); });
 
-          // Initial UI sync
+          // Initial UI + IDs (storage fixed in Edit)
           if (selectType?.value) renderFields(selectType.value);
-          // Locking / replication (storage fixed)
+
           (function initLockingReplicateAndIDs(){
-            const m = volumeMeta[storageSel?.value] || {};
-            document.getElementById('ClusterId').value = m.ClusterId || '';
-            document.getElementById('ControllerId').value = m.ControllerId || '';
+            const storage = storageSel?.value;
+            const m = (storage && volumeMeta && volumeMeta[storage]) ? volumeMeta[storage] : {};
+            if (clusterInput)   clusterInput.value   = m.ClusterId ?? '';
+            if (controllerInput)controllerInput.value= m.ControllerId ?? '';
+            if (selectedVolIdInput) selectedVolIdInput.value = (m.SelectedNetappVolumeId ?? '').toString();
             updateLockingUI();
             toggleReplicateBox();
           })();
@@ -497,7 +503,6 @@
               if (appErr) appErr.style.display='block';
               e.preventDefault(); e.stopPropagation();
             }
-            // final safety
             syncExcludeDisabledState();
             form.classList.add('was-validated');
           });

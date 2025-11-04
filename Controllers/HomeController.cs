@@ -18,81 +18,90 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
+using System.Reflection;
+using System.Text.RegularExpressions;
 using BareProx.Data;
 using BareProx.Services.Proxmox;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using System.Reflection;
 
-public class HomeController : Controller
+namespace BareProx.Controllers
 {
-    private readonly ApplicationDbContext _context;
-    private readonly ProxmoxService _proxmoxService;
+    public class HomeController : Controller
+    {
+        private readonly ApplicationDbContext _context;
+        private readonly ProxmoxService _proxmoxService;
 
-    public HomeController(
-        ApplicationDbContext context,
-        ProxmoxService proxmoxService)
-    {
-        _context = context;
-        _proxmoxService = proxmoxService;
-        _proxmoxService = proxmoxService;
-    }
-    public async Task<IActionResult> Index()
-    {
-        var since = DateTime.UtcNow.AddHours(-24);
-        ViewBag.RecentJobs = _context.Jobs
-            .Where(j => j.StartedAt > since && (j.Status == "Failed" || j.Status == "Cancelled"))
-            .OrderByDescending(j => j.StartedAt)
-            .Select(j => new {
-                j.StartedAt,
-                j.Type,
-                j.Status,
-                j.RelatedVm,
-                j.ErrorMessage
+        public HomeController(ApplicationDbContext context, ProxmoxService proxmoxService)
+        {
+            _context = context;
+            _proxmoxService = proxmoxService;
+        }
+
+        public async Task<IActionResult> Index()
+        {
+            var since = DateTime.UtcNow.AddHours(-24);
+
+            ViewBag.RecentJobs = await _context.Jobs
+                .Where(j => j.StartedAt > since && (j.Status == "Failed" || j.Status == "Cancelled"))
+                .OrderByDescending(j => j.StartedAt)
+                .Select(j => new
+                {
+                    j.StartedAt,
+                    j.Type,
+                    j.Status,
+                    j.RelatedVm,
+                    j.ErrorMessage
+                })
+                .ToListAsync();
+
+            // Helper to strip trailing ", storage ... active" (or any "storage ..." tail) from LastStatusMessage
+            static string TrimStorageTail(string? s)
+            {
+                if (string.IsNullOrWhiteSpace(s)) return string.Empty;
+                return Regex.Replace(s, @"\s*,?\s*storage\s+.*$", "", RegexOptions.IgnoreCase).Trim();
+            }
+
+            // Load clusters and hosts
+            var clusters = await _context.ProxmoxClusters
+                .Include(c => c.Hosts)
+                .ToListAsync();
+
+            // Project for the view
+            var proxmoxClusters = clusters.Select(cluster => new
+            {
+                Name = cluster.Name,
+                Status = cluster.LastStatus ?? "Unknown",
+                Hosts = cluster.Hosts
+                    .OrderBy(h => (h.Hostname ?? h.HostAddress))
+                    .Select(h => new
+                    {
+                        Name = h.Hostname ?? h.HostAddress,
+                        Status = (h.IsOnline == true) ? "Running" : "Offline",
+                        LastMessage = TrimStorageTail(h.LastStatusMessage)
+                    })
+                    .ToList()
             })
             .ToList();
 
-        // **Proxmox real data**
-        // 1) Load clusters + hosts in one go
-        var clusters = await _context.ProxmoxClusters
-            .Include(c => c.Hosts)
-            .ToListAsync();
+            ViewBag.ProxmoxClusters = proxmoxClusters;
 
-        // 2) Project into your dynamic list
-        var proxmoxClusters = clusters.Select(cluster => new
+            return View();
+        }
+
+        public IActionResult About()
         {
-            Name = cluster.Name,
-            Status = cluster.LastStatus ?? "Unknown",   // e.g. "Cluster healthy (all nodes online)" or error text
-            Hosts = cluster.Hosts
-                .OrderBy(h => (h.Hostname ?? h.HostAddress))
-                .Select(h => new
-                {
-                    Name = h.Hostname ?? h.HostAddress,
-                    Status = (h.IsOnline == true) ? "Running" : "Offline"
-                })
-                .ToList()
-        })
-        .ToList();
+            var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString();
+            var licensePath = Path.Combine(Directory.GetCurrentDirectory(), "LICENSE");
+            var licenseText = System.IO.File.Exists(licensePath)
+                ? System.IO.File.ReadAllText(licensePath)
+                : "License file not found.";
 
-        ViewBag.ProxmoxClusters = proxmoxClusters;
+            ViewData["Version"] = version;
+            ViewData["LicenseText"] = licenseText;
+            return View();
+        }
 
-        // your existing NetApp assignments...
-        return View();
+        public IActionResult Help() => View();
     }
-
-    public IActionResult About()
-    {
-        var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString();
-        var licensePath = Path.Combine(Directory.GetCurrentDirectory(), "LICENSE");
-        var licenseText = System.IO.File.Exists(licensePath)
-            ? System.IO.File.ReadAllText(licensePath)
-            : "License file not found.";
-
-        ViewData["Version"] = version;
-        ViewData["LicenseText"] = licenseText;
-        return View();
-    }
-    public IActionResult Help() => View();
-
 }
-

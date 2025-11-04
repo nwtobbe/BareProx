@@ -87,6 +87,7 @@ namespace BareProx.Services.Backup
 
         public async Task<bool> StartBackupAsync(
             string storageName,
+            int? selectedNetappVolumeId,
             bool isApplicationAware,
             string label,
             int clusterId,
@@ -132,6 +133,47 @@ namespace BareProx.Services.Backup
                     payloadJson: $"{{\"storageName\":\"{storageName}\",\"label\":\"{label}\",\"excludedCount\":{excludedSet.Count}}}",
                     ct);
 
+                // ---- Resolve SelectedNetappVolumeId / Disabled enforcement ----
+                // If a specific selected volume row is provided, override the effective (storageName, controller).
+                // In all cases, if the resolved row (or the implicit row for controller+volume) is disabled => fail fast.
+                using (var db0 = await _dbf.CreateDbContextAsync(ct))
+                {
+                    if (selectedNetappVolumeId.HasValue && selectedNetappVolumeId.Value > 0)
+                    {
+                        var row = await db0.SelectedNetappVolumes
+                                           .AsNoTracking()
+                                           .FirstOrDefaultAsync(v => v.Id == selectedNetappVolumeId.Value, ct);
+
+                        var check = ValidateSelectedVolumeRow(row, null);
+                        if (check.error is not null)
+                            return await FailAndNotifyAsync(jobId, storageName, label, check.error, ct);
+
+                        if (check.row is null)
+                            return await FailAndNotifyAsync(jobId, storageName, label, "SelectedNetappVolumeId not found.", ct);
+
+                        // Override effective inputs for the rest of the job
+                        storageName = check.row.VolumeName;
+                        netappControllerId = check.row.NetappControllerId;
+                    }
+                    else
+                    {
+                        // No ID given: if there is a mapping row for (controller, storage) and it's disabled -> fail.
+                        var row = await db0.SelectedNetappVolumes
+                                           .AsNoTracking()
+                                           .FirstOrDefaultAsync(v =>
+                                               v.NetappControllerId == netappControllerId &&
+                                               v.VolumeName == storageName, ct);
+
+                        var check = ValidateSelectedVolumeRow(row, storageName);
+                        if (check.error is not null)
+                            return await FailAndNotifyAsync(jobId, storageName, label, check.error, ct);
+
+                        // Optionally lock to the found row:
+                        // if (check.row is not null) selectedNetappVolumeId = check.row.Id;
+                    }
+                }
+                // ---- END resolve/validate ----
+
                 using (var db = await _dbf.CreateDbContextAsync(ct))
                 {
                     cluster = await db.ProxmoxClusters
@@ -155,9 +197,54 @@ namespace BareProx.Services.Backup
                     _logger.LogWarning(ex, "Could not determine snapshot-as-volume-chain state for storage '{Storage}'. Defaulting to false.", storageName);
                 }
 
-                var storageWithVms = await _invCache.GetEligibleBackupStorageWithVMsAsync(cluster, netappControllerId, null, ct);
-                if (!storageWithVms.TryGetValue(storageName, out vms) || vms == null || !vms.Any())
-                    return await FailAndNotifyAsync(jobId, storageName, label, $"No VMs found in storage '{storageName}'.", ct);
+                // IMPORTANT: pass a storage filter so the cache takes the cheap path (pure Proxmox listing)
+                // This avoids requiring SelectedNetappVolumes mapping just to find VMs for a manual run.
+                var storageWithVms = await _invCache.GetEligibleBackupStorageWithVMsAsync(
+                    cluster,
+                    netappControllerId,
+                    new[] { storageName },   // <-- forces cheap path for *this* storage
+                    ct);
+
+                // Still nothing? Log why and fail with a helpful hint.
+                if (!storageWithVms.TryGetValue(storageName, out vms) || vms is null || vms.Count == 0)
+                {
+                    _logger.LogWarning("No VMs returned for storage '{Storage}' (controllerId={Controller}). " +
+                                       "Manual run uses cheap path; this usually means the storage is empty " +
+                                       "or we can't map any VMs to it from Proxmox.",
+                                       storageName, netappControllerId);
+
+                    // Best-effort sanity check: force a fresh, raw Proxmox listing for just this storage
+                    try
+                    {
+                        var raw = await _invCache.GetVmsByStorageListAsync(
+                            cluster,
+                            new[] { storageName },
+                            ct,
+                            maxAge: TimeSpan.Zero,
+                            forceRefresh: true);
+
+                        if (raw.TryGetValue(storageName, out var direct) && direct is { Count: > 0 })
+                        {
+                            _logger.LogInformation("Direct Proxmox listing found {Count} VM(s) on '{Storage}', " +
+                                                   "but eligible set still empty. Likely NetApp selection/mapping " +
+                                                   "is filtering them out when controllerId={Controller}.",
+                                                   direct.Count, storageName, netappControllerId);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("Direct Proxmox listing also found no VMs on '{Storage}'.", storageName);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Sanity check (raw Proxmox listing) failed for storage '{Storage}'.", storageName);
+                    }
+
+                    return await FailAndNotifyAsync(jobId, storageName, label,
+                        $"No VMs found in storage '{storageName}'. " +
+                        $"(Tip: ensure the Proxmox storage name is correct and mounted on at least one online host.)",
+                        ct);
+                }
 
                 if (cluster.Hosts == null || !cluster.Hosts.Any())
                     return await FailAndNotifyAsync(jobId, storageName, label, "Cluster not properly configured.", ct);
@@ -744,5 +831,17 @@ namespace BareProx.Services.Backup
             "warning" => 2,
             _ => 1
         };
+
+        // ---------- Helper: validate SelectedNetappVolumes row ----------
+        private static (SelectedNetappVolumes? row, string? error) ValidateSelectedVolumeRow(SelectedNetappVolumes? row, string? nameForMsg)
+        {
+            if (row is null) return (null, null); // no explicit row -> proceed
+            if (row.Disabled == true)
+            {
+                var vol = string.IsNullOrWhiteSpace(nameForMsg) ? row.VolumeName : nameForMsg;
+                return (null, $"Volume '{vol}' on controller #{row.NetappControllerId} is not selected.");
+            }
+            return (row, null);
+        }
     }
 }

@@ -7,6 +7,19 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.0.2511.0413] - 2025-11-04
 
+### Added
+- Check for in use selected storage on netapp controllers
+
+### Changed
+- Page NetApp Settings. Selection of volumes
+- Page Home. Host info
+
+### Fixed
+- Changes in db for NetApp Selected volumes
+
+
+## [1.0.2511.0413] - 2025-11-04
+
 ### Fixed
 - Migration not honoring the selected host
 - Multiple netapp controllers causing confusion.

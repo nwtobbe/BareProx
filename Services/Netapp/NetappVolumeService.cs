@@ -452,6 +452,15 @@ namespace BareProx.Services
                 ["volume"] = volumeName
             });
 
+
+            // Require "restore_" prefix to avoid accidental deletes
+            if (string.IsNullOrWhiteSpace(volumeName) ||
+                !volumeName.StartsWith("restore_", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning("Refusing to delete volume '{Volume}'. Name must start with 'restore_'.", volumeName);
+                return false;
+            }
+
             var controller = await _context.NetappControllers
                 .AsNoTracking()
                 .FirstOrDefaultAsync(c => c.Id == controllerId, ct);

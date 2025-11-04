@@ -135,7 +135,7 @@ namespace BareProx.Models
 
         public string PasswordHash { get; set; } = null!;  // Store hashed password, NOT plain text!
     }
-    public class SelectedNetappVolume
+    public class SelectedNetappVolumes
     {
         public int Id { get; set; }
         public string Vserver { get; set; }
@@ -150,6 +150,7 @@ namespace BareProx.Models
         public long? SpaceUsed { get; set; }         // maps to "space.used"
         public string? ExportPolicyName { get; set; } // maps to "nas.export_policy.name"
         public bool? SnapshotLockingEnabled { get; set; } // maps to "snapshot_locking_enabled"
+        public bool? Disabled { get; set; }              // Is this volume disabled for selection?
     }
     public class NetappSnapshot
     {
@@ -213,6 +214,7 @@ namespace BareProx.Models
         public int ControllerId { get; set; }
         public string Name { get; set; }
         public string StorageName { get; set; }
+        public int? SelectedNetappVolumeId { get; set; }
         public string Schedule { get; set; }
         public string Frequency { get; set; }
         public TimeSpan? TimeOfDay { get; set; }
