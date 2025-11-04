@@ -7,6 +7,16 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.0.2511.0413] - 2025-11-04
 
+### Changed
+- Page Settings NetApp. Small helptext for volumes
+
+### Fixed
+- Update check
+
+
+
+## [1.0.2511.0413] - 2025-11-04
+
 ### Added
 - Check for in use selected storage on netapp controllers
 
