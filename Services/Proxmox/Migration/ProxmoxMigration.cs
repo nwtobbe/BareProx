@@ -1,13 +1,39 @@
-﻿using BareProx.Models;
+﻿/*
+ * BareProx - Backup and Restore Automation for Proxmox using NetApp
+ *
+ * Copyright (C) 2025 Tobias Modig
+ *
+ * This file is part of BareProx.
+ *
+ * BareProx is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * BareProx is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+using BareProx.Models;
 using BareProx.Services.Helpers;                 // ProxmoxSshException
 using BareProx.Services.Proxmox.Authentication;
 using BareProx.Services.Proxmox.Helpers;
 using BareProx.Services.Proxmox.Ops;
 using Microsoft.Extensions.Logging;
 using Renci.SshNet;
-using System.Text;
-using System.Text.Json;
-using System.Text.RegularExpressions;
 
 namespace BareProx.Services.Proxmox.Migration
 {
@@ -31,9 +57,14 @@ namespace BareProx.Services.Proxmox.Migration
         }
 
         // ───────────────────── VMID availability (API + conf file existence) ─────────────────────
-        public async Task<bool> IsVmidAvailableAsync(int vmid, CancellationToken ct = default)
+        public async Task<bool> IsVmidAvailableAsync(string node, int vmid, CancellationToken ct = default)
         {
-            var (cluster, host) = await GetAnyClusterAndHostAsync(ct);
+            var resolved = await ResolveClusterAndHostAsync(node, ct)
+                ?? throw new InvalidOperationException($"Node '{node}' not found in any configured cluster.");
+
+            var (cluster, host) = resolved;
+
+            // Cluster-wide VM list (if VMID exists anywhere, treat as unavailable)
             var url = $"https://{host.HostAddress}:8006/api2/json/cluster/resources?type=vm";
             var resp = await _ops.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
             var json = await resp.Content.ReadAsStringAsync(ct);
@@ -50,14 +81,14 @@ namespace BareProx.Services.Proxmox.Migration
                 }
             }
 
-            // Also consider existing conf file:
-            return !await FileExistsAsync($"/etc/pve/qemu-server/{vmid}.conf", ct);
+            // Also consider existing conf file on the target node:
+            return !await FileExistsAsync(node, $"/etc/pve/qemu-server/{vmid}.conf", ct);
         }
 
-        // ───────────────────── File/dir helpers (SSH) ─────────────────────
-        public async Task EnsureDirectoryAsync(string absPath, CancellationToken ct = default)
+        // ───────────────────── File/dir helpers (SSH; node-scoped) ─────────────────────
+        public async Task EnsureDirectoryAsync(string node, string absPath, CancellationToken ct = default)
         {
-            var (_, host, sshUser, sshPass) = await GetSshTargetAsync(ct);
+            var (cluster, host, sshUser, sshPass) = await GetSshTargetAsync(node, ct);
             using var ssh = new SshClient(host.HostAddress, sshUser, sshPass);
             ssh.Connect();
             var cmd = ssh.CreateCommand($"mkdir -p -- {EscapeBash(absPath)}");
@@ -66,9 +97,9 @@ namespace BareProx.Services.Proxmox.Migration
             ssh.Disconnect();
         }
 
-        public async Task<string> ReadTextFileAsync(string absPath, CancellationToken ct = default)
+        public async Task<string> ReadTextFileAsync(string node, string absPath, CancellationToken ct = default)
         {
-            var (_, host, sshUser, sshPass) = await GetSshTargetAsync(ct);
+            var (cluster, host, sshUser, sshPass) = await GetSshTargetAsync(node, ct);
             using var ssh = new SshClient(host.HostAddress, sshUser, sshPass);
             ssh.Connect();
             using var cmd = ssh.CreateCommand($"cat -- {EscapeBash(absPath)}");
@@ -77,9 +108,10 @@ namespace BareProx.Services.Proxmox.Migration
             return text ?? string.Empty;
         }
 
-        public async Task WriteTextFileAsync(string absPath, string content, CancellationToken ct = default)
+        public async Task WriteTextFileAsync(string node, string absPath, string content, CancellationToken ct = default)
         {
-            var (_, host, sshUser, sshPass) = await GetSshTargetAsync(ct);
+            var (cluster, host, sshUser, sshPass) = await GetSshTargetAsync(node, ct);
+
             absPath = ToPosix(absPath);
             var dir = GetDirPosix(absPath);
 
@@ -101,9 +133,9 @@ namespace BareProx.Services.Proxmox.Migration
             ssh.Disconnect();
         }
 
-        private async Task<bool> FileExistsAsync(string absPath, CancellationToken ct = default)
+        public async Task<bool> FileExistsAsync(string node, string absPath, CancellationToken ct = default)
         {
-            var (_, host, sshUser, sshPass) = await GetSshTargetAsync(ct);
+            var (cluster, host, sshUser, sshPass) = await GetSshTargetAsync(node, ct);
             using var ssh = new SshClient(host.HostAddress, sshUser, sshPass);
             ssh.Connect();
             using var cmd = ssh.CreateCommand($"test -e {EscapeBash(absPath)} && echo OK || echo NO");
@@ -112,10 +144,10 @@ namespace BareProx.Services.Proxmox.Migration
             return result.Trim().Equals("OK", StringComparison.OrdinalIgnoreCase);
         }
 
-        // ───────────────────── QEMU helpers (SSH/API mix) ─────────────────────
-        public async Task<int?> FirstFreeVirtioSlotAsync(int vmid, CancellationToken ct = default)
+        // ───────────────────── QEMU helpers (SSH/API mix; node-scoped) ─────────────────────
+        public async Task<int?> FirstFreeVirtioSlotAsync(string node, int vmid, CancellationToken ct = default)
         {
-            var text = await ReadTextFileAsync($"/etc/pve/qemu-server/{vmid}.conf", ct);
+            var text = await ReadTextFileAsync(node, $"/etc/pve/qemu-server/{vmid}.conf", ct);
             var used = new HashSet<int>();
             foreach (Match m in Regex.Matches(text ?? string.Empty, @"^\s*virtio(?<n>\d+):", RegexOptions.Multiline))
                 if (int.TryParse(m.Groups["n"]?.Value, out var n)) used.Add(n);
@@ -123,9 +155,9 @@ namespace BareProx.Services.Proxmox.Migration
             return null;
         }
 
-        public async Task AddDummyDiskAsync(int vmid, string storage, int slot, int sizeGiB, CancellationToken ct = default)
+        public async Task AddDummyDiskAsync(string node, int vmid, string storage, int slot, int sizeGiB, CancellationToken ct = default)
         {
-            var (_, host, sshUser, sshPass) = await GetSshTargetAsync(ct);
+            var (cluster, host, sshUser, sshPass) = await GetSshTargetAsync(node, ct);
             var cmdText = $"qm set {vmid} --virtio{slot} {EscapeBash($"{storage}:{sizeGiB}")}";
             using var ssh = new SshClient(host.HostAddress, sshUser, sshPass);
             ssh.Connect();
@@ -137,9 +169,9 @@ namespace BareProx.Services.Proxmox.Migration
             if (rc != 0) throw new ProxmoxSshException(cmdText, rc, err);
         }
 
-        public async Task AddEfiDiskAsync(int vmid, string storage, CancellationToken ct = default)
+        public async Task AddEfiDiskAsync(string node, int vmid, string storage, CancellationToken ct = default)
         {
-            var (_, host, sshUser, sshPass) = await GetSshTargetAsync(ct);
+            var (cluster, host, sshUser, sshPass) = await GetSshTargetAsync(node, ct);
             var target = $"{storage}:0";
             var cmdText = $"qm set {vmid} --efidisk0 {EscapeBash(target)}";
             using var ssh = new SshClient(host.HostAddress, sshUser, sshPass);
@@ -152,17 +184,22 @@ namespace BareProx.Services.Proxmox.Migration
             if (rc != 0) throw new ProxmoxSshException(cmdText, rc, err);
         }
 
-        public async Task SetCdromAsync(int vmid, string volidOrName, CancellationToken ct = default)
+        public async Task SetCdromAsync(string node, int vmid, string volidOrName, CancellationToken ct = default)
         {
+            var resolved = await ResolveClusterAndHostAsync(node, ct)
+                ?? throw new InvalidOperationException($"Node '{node}' not found in any configured cluster.");
+
+            var (cluster, host) = resolved;
+
+            // Accept plain ISO name or full volid
             var volid = volidOrName.Contains(':', StringComparison.Ordinal) ? volidOrName : $"local:iso/{volidOrName}";
-            var (cluster, host) = await GetAnyClusterAndHostAsync(ct);
+
             var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/qemu/{vmid}/config";
             var form = new FormUrlEncodedContent(new Dictionary<string, string> { ["cdrom"] = volid });
             await _ops.SendWithRefreshAsync(cluster, HttpMethod.Post, url, form, ct);
         }
 
-        // ───────────────────── Moved from ProxmoxService (migration-related lookups) ─────────────────────
-
+        // ───────────────────── Capabilities / inventory (API; node-scoped) ─────────────────────
         // GET /api2/json/nodes/{node}/network
         public async Task<IReadOnlyList<PveNetworkIf>> GetNodeNetworksAsync(string node, CancellationToken ct = default)
         {
@@ -197,10 +234,10 @@ namespace BareProx.Services.Proxmox.Migration
             }
         }
 
-        // GET /api2/json/cluster/sdn/vnets
+        // GET /api2/json/cluster/sdn/vnets (cluster endpoint; just pick host within same cluster as node if found,
+        // otherwise first cluster as a fallback to still return something)
         public async Task<IReadOnlyList<PveSdnVnet>> GetSdnVnetsAsync(CancellationToken ct = default)
         {
-            // Use any available cluster/host to hit the cluster endpoint
             var clusters = await _helpers.LoadAllClustersAsync(ct);
             var cluster = clusters.FirstOrDefault();
             if (cluster == null || cluster.Hosts.Count == 0)
@@ -318,15 +355,15 @@ namespace BareProx.Services.Proxmox.Migration
                 var list = new List<PveStorageListItem>();
                 foreach (var s in data.EnumerateArray())
                 {
-                    var storage = s.TryGetProperty("storage", out var st) ? st.GetString() : null;
-                    if (string.IsNullOrWhiteSpace(storage)) continue;
+                    var storageName = s.TryGetProperty("storage", out var st) ? st.GetString() : null;
+                    if (string.IsNullOrWhiteSpace(storageName)) continue;
 
                     var content = s.TryGetProperty("content", out var c) ? c.GetString() : null;
                     var type = s.TryGetProperty("type", out var t) ? t.GetString() : null;
 
                     list.Add(new PveStorageListItem
                     {
-                        Storage = storage,
+                        Storage = storageName,
                         Content = content,
                         Type = type
                     });
@@ -341,20 +378,7 @@ namespace BareProx.Services.Proxmox.Migration
 
         // ───────────────────── internals ─────────────────────
 
-        private async Task<(ProxmoxCluster Cluster, ProxmoxHost Host)> GetAnyClusterAndHostAsync(CancellationToken ct)
-        {
-            var clusters = await _helpers.LoadAllClustersAsync(ct);
-            var first = clusters.FirstOrDefault();
-            if (first is null || first.Hosts.Count == 0)
-                throw new InvalidOperationException("No Proxmox cluster/host configured.");
-
-            var host = first.Hosts.First();
-            return (first, host);
-        }
-
-        /// <summary>
-        /// Resolve cluster+host by node string (matches Hostname or HostAddress). Returns null if not found.
-        /// </summary>
+        /// <summary>Resolve cluster+host by node string (matches Hostname or HostAddress). Returns null if not found.</summary>
         private async Task<(ProxmoxCluster Cluster, ProxmoxHost Host)?> ResolveClusterAndHostAsync(string node, CancellationToken ct)
         {
             var clusters = await _helpers.LoadAllClustersAsync(ct);
@@ -365,14 +389,19 @@ namespace BareProx.Services.Proxmox.Migration
                     x.HostAddress.Equals(node, StringComparison.OrdinalIgnoreCase));
                 if (h != null) return (c, h);
             }
-
-            // Fallback: nothing matched → null (caller returns empty lists)
             return null;
         }
 
-        private async Task<(ProxmoxCluster Cluster, ProxmoxHost Host, string SshUser, string SshPass)> GetSshTargetAsync(CancellationToken ct)
+        /// <summary>
+        /// Returns SSH connection tuple (cluster, host, sshUser, sshPass) for the specified node.
+        /// Throws if node cannot be resolved.
+        /// </summary>
+        private async Task<(ProxmoxCluster Cluster, ProxmoxHost Host, string SshUser, string SshPass)> GetSshTargetAsync(string node, CancellationToken ct)
         {
-            var (cluster, host) = await GetAnyClusterAndHostAsync(ct);
+            var resolved = await ResolveClusterAndHostAsync(node, ct)
+                ?? throw new InvalidOperationException($"Node '{node}' not found in any configured cluster.");
+
+            var (cluster, host) = resolved;
             var sshUser = cluster.Username.Split('@')[0];
             var sshPass = _enc.Decrypt(cluster.PasswordHash);
             return (cluster, host, sshUser, sshPass);
@@ -388,6 +417,7 @@ namespace BareProx.Services.Proxmox.Migration
         }
 
         private static string ToPosix(string p) => (p ?? "").Replace('\\', '/');
+
         private static string GetDirPosix(string p)
         {
             p = ToPosix(p);
@@ -395,6 +425,7 @@ namespace BareProx.Services.Proxmox.Migration
             if (i < 0) return "/";
             return i == 0 ? "/" : p[..i];
         }
+
         private static string EscapeBash(string s) => "'" + (s ?? string.Empty).Replace("'", "'\"'\"'") + "'";
     }
 }

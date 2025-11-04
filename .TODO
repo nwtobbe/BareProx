@@ -4,3 +4,9 @@ Fix intermittent copy export failue
 real certs
 check retention
 verify svm:s
+
+db cleanup
+multi netapps
+snapshots for migration
+
+what happens if a vm is selected for skip in a job and gets removed

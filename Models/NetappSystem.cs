@@ -174,12 +174,23 @@ namespace BareProx.Models
         public int ClusterId { get; set; }
     }
 
-    public class NetappMountInfo
+    public sealed class NetappMountInfo
     {
         public string VolumeName { get; set; } = string.Empty;
-        public string VserverName { get; set; }
-        public string MountIp { get; set; } = string.Empty;
+        public string VserverName { get; set; } = string.Empty;
+
+        // Full "IP:/junction" string you compose for mounts
         public string MountPath { get; set; } = string.Empty;
+
+        // The IP address used for the mount (helpful for matching against Proxmox)
+        public string? MountIp { get; set; }
+
+        // NEW: which NetApp controller this entry belongs to
+        public int NetappControllerId { get; set; }
+
+        // Optional extras (keep if useful; safe to leave out if you don't use them)
+        public string? Uuid { get; set; }
+        public string? JunctionPath { get; set; }
     }
 
     public class VserverDto

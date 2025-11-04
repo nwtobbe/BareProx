@@ -362,6 +362,7 @@ if (isConfigured)
     builder.Services.AddScoped<IRestoreService, RestoreService>();
     builder.Services.AddScoped<IProxmoxFileScanner, ProxmoxFileScanner>();
     builder.Services.AddSingleton<IMigrationQueueRunner, MigrationQueueRunner>();
+    builder.Services.AddScoped<IStorageSnapshotCoordinator, StorageSnapshotCoordinator>();
     builder.Services.AddScoped<IMigrationExecutor, ProxmoxMigrationExecutor>();
     builder.Services.AddScoped<BareProx.Services.Proxmox.Migration.IProxmoxMigration,BareProx.Services.Proxmox.Migration.ProxmoxMigration>();
     builder.Services.AddScoped<IProxmoxOpsService, ProxmoxOpsService>();

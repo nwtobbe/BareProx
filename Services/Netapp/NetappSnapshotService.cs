@@ -18,44 +18,42 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
-using System.Globalization;
-using System.Text;
-using System.Text.Json;
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services.Netapp;
 using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
+using System.Collections.Concurrent;
+using System.Globalization;
+using System.Text;
+using System.Text.Json;
 
 namespace BareProx.Services
 {
     public class NetappSnapshotService : INetappSnapshotService
     {
-        private readonly ApplicationDbContext _context;
+        private readonly IDbContextFactory<ApplicationDbContext> _dbf;   // NEW
         private readonly INetappAuthService _authService;
         private readonly ILogger<NetappSnapshotService> _logger;
         private readonly IAppTimeZoneService _tz;
-        private readonly INetappVolumeService _netappVolumeService;
 
         public NetappSnapshotService(
-            ApplicationDbContext context,
+            IDbContextFactory<ApplicationDbContext> dbf,                 // NEW
             IAppTimeZoneService tz,
             INetappAuthService authService,
-            ILogger<NetappSnapshotService> logger,
-            INetappVolumeService netappVolumeService)
+            ILogger<NetappSnapshotService> logger)
         {
-            _context = context;
+            _dbf = dbf;
             _tz = tz;
             _authService = authService;
             _logger = logger;
-            _netappVolumeService = netappVolumeService;
         }
 
         // ---------------------------------------------------------------------
         // Create
         // ---------------------------------------------------------------------
         public async Task<SnapshotResult> CreateSnapshotAsync(
-            int clusterId,
+            int controllerId,
             string storageName,
             string snapmirrorLabel,
             bool snapLocking = false,
@@ -66,7 +64,7 @@ namespace BareProx.Services
             using var scope = _logger.BeginScope(new Dictionary<string, object?>
             {
                 ["op"] = "CreateSnapshot",
-                ["clusterId"] = clusterId,
+                ["clusterId"] = controllerId,
                 ["storage"] = storageName,
                 ["label"] = snapmirrorLabel,
                 ["locking"] = snapLocking
@@ -76,14 +74,20 @@ namespace BareProx.Services
 
             try
             {
-                var volumes = await _netappVolumeService.GetVolumesWithMountInfoAsync(clusterId, ct);
-                var volume = volumes.FirstOrDefault(v =>
-                    v.VolumeName.Equals(storageName, StringComparison.OrdinalIgnoreCase));
+                // --- Look up the mapping row from DB (has Uuid/Vserver/NetappControllerId) ---
+                using var db = await _dbf.CreateDbContextAsync(ct);
 
-                if (volume == null)
+                var map = await db.SelectedNetappVolumes
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x =>
+                        x.NetappControllerId == controllerId &&
+                        x.VolumeName == storageName, ct);
+
+                if (map is null)
                 {
-                    _logger.LogWarning("No matching NetApp volume found for storage '{Storage}'.", storageName);
-                    return new SnapshotResult { Success = false, ErrorMessage = $"No matching NetApp volume for storage '{storageName}'." };
+                    var msg = $"No mapping for storage '{storageName}' on controller {controllerId}.";
+                    _logger.LogWarning(msg);
+                    return new SnapshotResult { Success = false, ErrorMessage = msg };
                 }
 
                 // 1) Timestamp (app tz) used in name only
@@ -120,7 +124,7 @@ namespace BareProx.Services
                         _ => throw new ArgumentException($"Unknown unit '{lockRetentionUnit}'")
                     };
 
-                    var complianceBase = await ResolveComplianceClockBaseAsync(storageName, ct)
+                    var complianceBase = await ResolveComplianceClockBaseAsync(controllerId, map.VolumeName, map.Uuid, map.Vserver, ct)
                                          ?? creationTimeLocal;
 
                     var expiryWallClock = DateTime.SpecifyKind(complianceBase.Add(offset), DateTimeKind.Unspecified);
@@ -145,7 +149,13 @@ namespace BareProx.Services
                 }
 
                 // 4) POST
-                await SendSnapshotRequestAsync(volume.VolumeName, body, ct);
+                await SendSnapshotRequestAsync(
+                                               controllerId: controllerId,
+                                               volumeName: map.VolumeName,
+                                               body: body,
+                                               volumeUuid: map.Uuid,
+                                               svmName: map.Vserver,   // or map.VserverName depending on your entity
+                                               ct: ct);
 
                 _logger.LogInformation("NetApp snapshot created successfully: {SnapshotName}.", snapshotName);
                 return new SnapshotResult { Success = true, SnapshotName = snapshotName };
@@ -165,150 +175,264 @@ namespace BareProx.Services
         // ---------------------------------------------------------------------
         // List (by controller + volume)
         // ---------------------------------------------------------------------
-        public async Task<List<string>> GetSnapshotsAsync(int ControllerId, string volumeName, CancellationToken ct = default)
+        public async Task<List<string>> GetSnapshotsAsync(int controllerId, string volumeName, CancellationToken ct = default)
         {
             using var scope = _logger.BeginScope(new Dictionary<string, object?>
             {
                 ["op"] = "ListSnapshots",
-                ["controllerId"] = ControllerId,
+                ["controllerId"] = controllerId,
                 ["volume"] = volumeName
             });
 
             _logger.LogDebug("Listing snapshots.");
 
-            var controller = await _context.NetappControllers
-                .AsNoTracking()
-                .FirstOrDefaultAsync(c => c.Id == ControllerId, ct);
+            await using var db = await _dbf.CreateDbContextAsync(ct);
 
-            if (controller == null)
-            {
-                _logger.LogError("No NetappController record for ID {Id}.", ControllerId);
-                throw new Exception("NetApp controller not found.");
-            }
+            var controller = await db.NetappControllers
+                .AsNoTracking()
+                .FirstOrDefaultAsync(c => c.Id == controllerId, ct)
+                ?? throw new Exception($"NetApp controller not found (id={controllerId}).");
+
+            // ❗ EF-safe predicate (let DB collation handle case-insensitivity)
+            var map = await db.SelectedNetappVolumes
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x =>
+                    x.NetappControllerId == controllerId &&
+                    x.VolumeName == volumeName, ct);
 
             var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+            if (!baseUrl.EndsWith("/")) baseUrl += "/";
 
-            // Volume UUID
-            var volLookupUrl = $"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volumeName)}";
-            var volResp = await client.GetAsync(volLookupUrl, ct);
-            if (!volResp.IsSuccessStatusCode)
+            // Resolve volume UUID (prefer mapping)
+            string? volumeUuid = map?.Uuid;
+            if (string.IsNullOrWhiteSpace(volumeUuid))
             {
+                var query = string.IsNullOrWhiteSpace(map?.Vserver)
+                    ? $"storage/volumes?name={Uri.EscapeDataString(volumeName)}&fields=uuid,name,svm.name"
+                    : $"storage/volumes?name={Uri.EscapeDataString(volumeName)}&svm.name={Uri.EscapeDataString(map!.Vserver)}&fields=uuid,name,svm.name";
+
+                var volResp = await client.GetAsync(baseUrl + query, ct);
                 var body = await volResp.Content.ReadAsStringAsync(ct);
-                _logger.LogWarning("Volume lookup failed: {Status} {Body}", volResp.StatusCode, body);
-            }
-            volResp.EnsureSuccessStatusCode();
+                if (!volResp.IsSuccessStatusCode)
+                    _logger.LogWarning("Volume lookup failed: {Status} {Body}", volResp.StatusCode, body);
+                volResp.EnsureSuccessStatusCode();
 
-            using var volDoc = JsonDocument.Parse(await volResp.Content.ReadAsStringAsync(ct));
-            var volRecs = volDoc.RootElement.GetProperty("records");
-            if (volRecs.GetArrayLength() == 0)
+                using var volDoc = JsonDocument.Parse(body);
+                var volRecs = volDoc.RootElement.GetProperty("records");
+                if (volRecs.GetArrayLength() == 0)
+                {
+                    _logger.LogInformation("Volume '{Volume}' not found.", volumeName);
+                    return new List<string>();
+                }
+                if (volRecs.GetArrayLength() > 1 && string.IsNullOrWhiteSpace(map?.Vserver))
+                {
+                    _logger.LogWarning("Multiple volumes named '{Volume}' on controller {ControllerId}; specify SVM or ensure mapping includes Vserver.",
+                        volumeName, controllerId);
+                    return new List<string>();
+                }
+
+                volumeUuid = volRecs[0].GetProperty("uuid").GetString();
+                if (string.IsNullOrWhiteSpace(volumeUuid))
+                {
+                    _logger.LogWarning("NetApp API returned empty UUID for volume '{Volume}'.", volumeName);
+                    return new List<string>();
+                }
+            }
+
+            // Fetch snapshots (follow pagination)
+            var snapshotNames = new List<string>();
+            string? nextHref = $"storage/volumes/{volumeUuid}/snapshots?fields=name";
+            while (!string.IsNullOrEmpty(nextHref))
             {
-                _logger.LogInformation("Volume '{Volume}' not found.", volumeName);
-                return new List<string>();
+                var resp = await client.GetAsync(baseUrl + nextHref, ct);
+                var txt = await resp.Content.ReadAsStringAsync(ct);
+                if (!resp.IsSuccessStatusCode)
+                    _logger.LogWarning("Snapshot list page failed: {Status} {Body}", resp.StatusCode, txt);
+                resp.EnsureSuccessStatusCode();
+
+                using var doc = JsonDocument.Parse(txt);
+                var root = doc.RootElement;
+
+                if (root.TryGetProperty("records", out var recs) && recs.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var e in recs.EnumerateArray())
+                    {
+                        var name = e.TryGetProperty("name", out var nProp) ? nProp.GetString() : null;
+                        if (!string.IsNullOrWhiteSpace(name)) snapshotNames.Add(name!);
+                    }
+                }
+
+                // _links.next.href if more pages
+                if (root.TryGetProperty("_links", out var links) &&
+                    links.TryGetProperty("next", out var next) &&
+                    next.TryGetProperty("href", out var hrefProp))
+                {
+                    nextHref = hrefProp.GetString();
+                }
+                else
+                {
+                    nextHref = null;
+                }
             }
-
-            var volumeUuid = volRecs[0].GetProperty("uuid").GetString();
-
-            // Snapshots
-            var snapUrl = $"{baseUrl}storage/volumes/{volumeUuid}/snapshots?fields=name";
-            var snapResp = await client.GetAsync(snapUrl, ct);
-            if (!snapResp.IsSuccessStatusCode)
-            {
-                var body = await snapResp.Content.ReadAsStringAsync(ct);
-                _logger.LogWarning("Snapshot list failed: {Status} {Body}", snapResp.StatusCode, body);
-            }
-            snapResp.EnsureSuccessStatusCode();
-
-            using var snapDoc = JsonDocument.Parse(await snapResp.Content.ReadAsStringAsync(ct));
-            var snapshotNames = snapDoc.RootElement
-                .GetProperty("records")
-                .EnumerateArray()
-                .Select(e => e.GetProperty("name").GetString() ?? string.Empty)
-                .Where(name => !string.IsNullOrEmpty(name))
-                .ToList();
 
             _logger.LogDebug("Found {Count} snapshots on volume {Volume}.", snapshotNames.Count, volumeName);
             return snapshotNames;
         }
 
-        // ---------------------------------------------------------------------
-        // List (batch) for UI tree
-        // ---------------------------------------------------------------------
-        public async Task<List<VolumeSnapshotTreeDto>> GetSnapshotsForVolumesAsync(HashSet<string> volumeNames, CancellationToken ct = default)
-        {
-            using var scope = _logger.BeginScope(new Dictionary<string, object?>
-            {
-                ["op"] = "ListSnapshotsForVolumes",
-                ["count"] = volumeNames?.Count
-            });
 
-            _logger.LogDebug("Listing snapshots for {Count} volumes.", volumeNames?.Count ?? 0);
 
-            var controller = await _context.NetappControllers.AsNoTracking().FirstOrDefaultAsync(ct);
-            if (controller == null)
-            {
-                _logger.LogError("No NetApp controller found.");
-                throw new Exception("No NetApp controller found.");
-            }
+        //// ---------------------------------------------------------------------
+        //// List (batch) for UI tree
+        //// ---------------------------------------------------------------------
+        //public async Task<List<VolumeSnapshotTreeDto>> GetSnapshotsForVolumesAsync(
+        //     int controllerId,
+        //     HashSet<string> volumeNames,
+        //     CancellationToken ct = default)
+        //{
+        //    using var scope = _logger.BeginScope(new Dictionary<string, object?>
+        //    {
+        //        ["op"] = "ListSnapshotsForVolumes",
+        //        ["controllerId"] = controllerId,
+        //        ["count"] = volumeNames?.Count
+        //    });
 
-            var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+        //    var result = new List<VolumeSnapshotTreeDto>();
+        //    if (volumeNames is null || volumeNames.Count == 0)
+        //        return result;
 
-            var volumesUrl = $"{baseUrl}storage/volumes?fields=name,uuid,svm.name";
-            var volumesResp = await client.GetAsync(volumesUrl, ct);
-            if (!volumesResp.IsSuccessStatusCode)
-            {
-                var body = await volumesResp.Content.ReadAsStringAsync(ct);
-                _logger.LogWarning("Volumes fetch failed: {Status} {Body}", volumesResp.StatusCode, body);
-            }
-            volumesResp.EnsureSuccessStatusCode();
+        //    await using var db = await _dbf.CreateDbContextAsync(ct);
 
-            using var volumesDoc = JsonDocument.Parse(await volumesResp.Content.ReadAsStringAsync(ct));
-            var volumeRecords = volumesDoc.RootElement.GetProperty("records");
+        //    var controller = await db.NetappControllers
+        //        .AsNoTracking()
+        //        .FirstOrDefaultAsync(c => c.Id == controllerId, ct)
+        //        ?? throw new Exception($"No NetApp controller #{controllerId} found.");
 
-            var result = new List<VolumeSnapshotTreeDto>();
+        //    var http = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
 
-            foreach (var vol in volumeRecords.EnumerateArray())
-            {
-                var name = vol.GetProperty("name").GetString() ?? "";
-                if (!volumeNames.Contains(name))
-                    continue;
+        //    // 1) Pull mapping rows for these volumes on this controller (for UUID/SVM).
+        //    var maps = await db.SelectedNetappVolumes
+        //        .AsNoTracking()
+        //        .Where(x => x.NetappControllerId == controllerId && volumeNames.Contains(x.VolumeName))
+        //        .Select(x => new { x.VolumeName, x.Uuid, Vserver = x.Vserver })
+        //        .ToListAsync(ct);
 
-                var uuid = vol.GetProperty("uuid").GetString() ?? "";
-                var svm = vol.GetProperty("svm").GetProperty("name").GetString() ?? "";
+        //    var mapByName = maps.ToDictionary(m => m.VolumeName, StringComparer.OrdinalIgnoreCase);
 
-                var snapUrl = $"{baseUrl}storage/volumes/{uuid}/snapshots?fields=name";
-                var snapResp = await client.GetAsync(snapUrl, ct);
-                if (!snapResp.IsSuccessStatusCode)
-                {
-                    var body = await snapResp.Content.ReadAsStringAsync(ct);
-                    _logger.LogWarning("Snapshot list failed for volume {Volume}: {Status} {Body}", name, snapResp.StatusCode, body);
-                    continue;
-                }
+        //    // 2) Resolve (uuid, svm) for each requested name (prefer mapping; fallback to ONTAP per volume).
+        //    async Task<(string name, string? uuid, string? svm)> ResolveAsync(string name)
+        //    {
+        //        if (mapByName.TryGetValue(name, out var m) && !string.IsNullOrWhiteSpace(m.Uuid))
+        //            return (name, m.Uuid, m.Vserver);
 
-                using var snapDoc = JsonDocument.Parse(await snapResp.Content.ReadAsStringAsync(ct));
-                var snapshots = snapDoc.RootElement
-                    .GetProperty("records")
-                    .EnumerateArray()
-                    .Select(e => e.GetProperty("name").GetString() ?? "")
-                    .Where(n => !string.IsNullOrWhiteSpace(n))
-                    .ToList();
+        //        // Fallback: lookup by name (+ svm if we know it from mapping without uuid)
+        //        var svm = mapByName.TryGetValue(name, out var m2) ? m2.Vserver : null;
+        //        var query = string.IsNullOrWhiteSpace(svm)
+        //            ? $"storage/volumes?name={Uri.EscapeDataString(name)}&fields=uuid,svm.name"
+        //            : $"storage/volumes?name={Uri.EscapeDataString(name)}&svm.name={Uri.EscapeDataString(svm)}&fields=uuid,svm.name";
 
-                _logger.LogDebug("Volume {Volume}: {Count} snapshots.", name, snapshots.Count);
+        //        var resp = await http.GetAsync(baseUrl + query, ct);
+        //        var txt = await resp.Content.ReadAsStringAsync(ct);
+        //        if (!resp.IsSuccessStatusCode)
+        //        {
+        //            _logger.LogWarning("Volume lookup failed (controller {ControllerId}, volume {Volume}): {Status} {Body}",
+        //                controllerId, name, resp.StatusCode, txt);
+        //            return (name, null, svm);
+        //        }
 
-                result.Add(new VolumeSnapshotTreeDto
-                {
-                    Vserver = svm,
-                    VolumeName = name,
-                    Snapshots = snapshots
-                });
-            }
+        //        using var doc = JsonDocument.Parse(txt);
+        //        if (!doc.RootElement.TryGetProperty("records", out var recs) || recs.GetArrayLength() == 0)
+        //            return (name, null, svm);
 
-            return result;
-        }
+        //        if (recs.GetArrayLength() > 1 && string.IsNullOrWhiteSpace(svm))
+        //        {
+        //            _logger.LogWarning("Multiple volumes named '{Volume}' on controller {ControllerId}; specify SVM or ensure mapping has Vserver.",
+        //                name, controllerId);
+        //            return (name, null, svm);
+        //        }
+
+        //        var uuid = recs[0].GetProperty("uuid").GetString();
+        //        var resolvedSvm = recs[0].GetProperty("svm").GetProperty("name").GetString();
+
+        //        return (name, string.IsNullOrWhiteSpace(uuid) ? null : uuid, resolvedSvm);
+        //    }
+
+        //    // Resolve all inputs (with a little concurrency).
+        //    var resolved = new List<(string name, string? uuid, string? svm)>(volumeNames.Count);
+        //    var sem = new SemaphoreSlim(6);
+        //    var tasks = volumeNames.Select(async name =>
+        //    {
+        //        await sem.WaitAsync(ct);
+        //        try { resolved.Add(await ResolveAsync(name)); }
+        //        finally { sem.Release(); }
+        //    });
+        //    await Task.WhenAll(tasks);
+
+        //    // 3) Fetch snapshots per resolved UUID.
+        //    async Task<VolumeSnapshotTreeDto?> FetchSnapshotsAsync((string name, string? uuid, string? svm) v)
+        //    {
+        //        if (string.IsNullOrWhiteSpace(v.uuid))
+        //        {
+        //            _logger.LogInformation("Skipping volume {Volume}: UUID unresolved.", v.name);
+        //            return null;
+        //        }
+
+        //        var url = $"{baseUrl}storage/volumes/{v.uuid}/snapshots?fields=name";
+        //        var resp = await http.GetAsync(url, ct);
+        //        var txt = await resp.Content.ReadAsStringAsync(ct);
+        //        if (!resp.IsSuccessStatusCode)
+        //        {
+        //            _logger.LogWarning("Snapshot list failed (controller {ControllerId}, volume {Volume}, uuid {Uuid}): {Status} {Body}",
+        //                controllerId, v.name, v.uuid, resp.StatusCode, txt);
+        //            return null;
+        //        }
+
+        //        using var doc = JsonDocument.Parse(txt);
+        //        var snaps = doc.RootElement.GetProperty("records")
+        //            .EnumerateArray()
+        //            .Select(e => e.GetProperty("name").GetString() ?? "")
+        //            .Where(n => !string.IsNullOrWhiteSpace(n))
+        //            .ToList();
+
+        //        _logger.LogDebug("Volume {Volume}: {Count} snapshots.", v.name, snaps.Count);
+
+        //        return new VolumeSnapshotTreeDto
+        //        {
+        //            Vserver = v.svm ?? "",
+        //            VolumeName = v.name,
+        //            Snapshots = snaps
+        //        };
+        //    }
+
+        //    var trees = new ConcurrentBag<VolumeSnapshotTreeDto>();
+        //    var snapTasks = resolved.Select(async v =>
+        //    {
+        //        await sem.WaitAsync(ct);
+        //        try
+        //        {
+        //            var dto = await FetchSnapshotsAsync(v);
+        //            if (dto != null) trees.Add(dto);
+        //        }
+        //        finally { sem.Release(); }
+        //    });
+        //    await Task.WhenAll(snapTasks);
+
+        //    // Preserve a stable order based on input names
+        //    var order = volumeNames.Select((n, i) => new { n, i })
+        //                           .ToDictionary(x => x.n, x => x.i, StringComparer.OrdinalIgnoreCase);
+
+        //    return trees.OrderBy(t => order.TryGetValue(t.VolumeName, out var i) ? i : int.MaxValue)
+        //                .ToList();
+        //}
+
 
         // ---------------------------------------------------------------------
         // Delete
         // ---------------------------------------------------------------------
-        public async Task<DeleteSnapshotResult> DeleteSnapshotAsync(int controllerId, string volumeName, string snapshotName, CancellationToken ct = default)
+        public async Task<DeleteSnapshotResult> DeleteSnapshotAsync(
+      int controllerId,
+      string volumeName,
+      string snapshotName,
+      CancellationToken ct = default)
         {
             using var scope = _logger.BeginScope(new Dictionary<string, object?>
             {
@@ -320,74 +444,142 @@ namespace BareProx.Services
 
             _logger.LogInformation("Deleting snapshot.");
 
-            var result = new DeleteSnapshotResult();
-
-            var controller = await _context.NetappControllers.AsNoTracking().FirstOrDefaultAsync(c => c.Id == controllerId, ct);
-            if (controller == null)
-            {
-                _logger.LogWarning("Controller {ControllerId} not found.", controllerId);
-                result.ErrorMessage = $"NetApp controller #{controllerId} not found.";
-                return result;
-            }
-
-            var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
-
             try
             {
-                // Volume UUID
-                var volResp = await httpClient.GetAsync($"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volumeName)}", ct);
-                if (!volResp.IsSuccessStatusCode)
+                await using var db = await _dbf.CreateDbContextAsync(ct);
+
+                var controller = await db.NetappControllers
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(c => c.Id == controllerId, ct);
+
+                if (controller is null)
                 {
-                    var body = await volResp.Content.ReadAsStringAsync(ct);
-                    _logger.LogWarning("Volume lookup failed: {Status} {Body}", volResp.StatusCode, body);
+                    var em = $"NetApp controller #{controllerId} not found.";
+                    _logger.LogWarning(em);
+                    return new DeleteSnapshotResult { ErrorMessage = em };
                 }
-                volResp.EnsureSuccessStatusCode();
 
-                using var volDoc = JsonDocument.Parse(await volResp.Content.ReadAsStringAsync(ct));
-                var volRecs = volDoc.RootElement.GetProperty("records");
-                if (volRecs.GetArrayLength() == 0)
+                // ❗ EF-safe predicate (no StringComparison in DB)
+                var map = await db.SelectedNetappVolumes
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x =>
+                        x.NetappControllerId == controllerId &&
+                        x.VolumeName == volumeName, ct);
+
+                var http = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+                if (!baseUrl.EndsWith("/")) baseUrl += "/";
+
+                // 1) Resolve volume UUID (mapping first, fallback to API by name [+ optional svm])
+                string? volumeUuid = map?.Uuid;
+                if (string.IsNullOrWhiteSpace(volumeUuid))
                 {
-                    _logger.LogWarning("Volume '{Volume}' not found.", volumeName);
-                    result.ErrorMessage = $"Volume '{volumeName}' not found.";
-                    return result;
+                    var query = string.IsNullOrWhiteSpace(map?.Vserver)
+                        ? $"storage/volumes?name={Uri.EscapeDataString(volumeName)}&fields=uuid,name,svm.name"
+                        : $"storage/volumes?name={Uri.EscapeDataString(volumeName)}&svm.name={Uri.EscapeDataString(map!.Vserver)}&fields=uuid,name,svm.name";
+
+                    var volResp = await http.GetAsync(baseUrl + query, ct);
+                    var volTxt = await volResp.Content.ReadAsStringAsync(ct);
+                    if (!volResp.IsSuccessStatusCode)
+                        _logger.LogWarning("Volume lookup failed (controller {ControllerId}): {Status} {Body}",
+                            controllerId, volResp.StatusCode, volTxt);
+                    volResp.EnsureSuccessStatusCode();
+
+                    using var volDoc = JsonDocument.Parse(volTxt);
+                    var volRecs = volDoc.RootElement.GetProperty("records");
+
+                    if (volRecs.GetArrayLength() == 0)
+                    {
+                        var em = $"Volume '{volumeName}' not found (controller={controllerId}).";
+                        _logger.LogWarning(em);
+                        return new DeleteSnapshotResult { ErrorMessage = em };
+                    }
+                    if (volRecs.GetArrayLength() > 1 && string.IsNullOrWhiteSpace(map?.Vserver))
+                    {
+                        var em = $"Multiple volumes named '{volumeName}' found; specify SVM or ensure mapping row has Vserver.";
+                        _logger.LogWarning(em);
+                        return new DeleteSnapshotResult { ErrorMessage = em };
+                    }
+
+                    volumeUuid = volRecs[0].GetProperty("uuid").GetString();
+                    if (string.IsNullOrWhiteSpace(volumeUuid))
+                    {
+                        var em = $"NetApp API returned empty UUID for volume '{volumeName}'.";
+                        _logger.LogWarning(em);
+                        return new DeleteSnapshotResult { ErrorMessage = em };
+                    }
                 }
-                var volumeUuid = volRecs[0].GetProperty("uuid").GetString()!;
 
-                // Snapshot UUID
-                var snapResp = await httpClient.GetAsync($"{baseUrl}storage/volumes/{volumeUuid}/snapshots?fields=name,uuid", ct);
-                if (!snapResp.IsSuccessStatusCode)
+                // 2) Find snapshot UUID by name (handle pagination)
+                string? nextHref = $"storage/volumes/{volumeUuid}/snapshots?fields=name,uuid";
+                string? snapshotUuid = null;
+
+                while (!string.IsNullOrEmpty(nextHref) && snapshotUuid is null)
                 {
-                    var body = await snapResp.Content.ReadAsStringAsync(ct);
-                    _logger.LogWarning("Snapshot list failed: {Status} {Body}", snapResp.StatusCode, body);
+                    var snapResp = await http.GetAsync(baseUrl + nextHref, ct);
+                    var snapTxt = await snapResp.Content.ReadAsStringAsync(ct);
+                    if (!snapResp.IsSuccessStatusCode)
+                        _logger.LogWarning("Snapshot list page failed: {Status} {Body}", snapResp.StatusCode, snapTxt);
+                    snapResp.EnsureSuccessStatusCode();
+
+                    using var snapDoc = JsonDocument.Parse(snapTxt);
+                    var root = snapDoc.RootElement;
+
+                    if (root.TryGetProperty("records", out var recs) && recs.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var e in recs.EnumerateArray())
+                        {
+                            var name = e.TryGetProperty("name", out var nProp) ? nProp.GetString() : null;
+                            if (name is not null && string.Equals(name, snapshotName, StringComparison.Ordinal))
+                            {
+                                snapshotUuid = e.TryGetProperty("uuid", out var uProp) ? uProp.GetString() : null;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (snapshotUuid is null &&
+                        root.TryGetProperty("_links", out var links) &&
+                        links.TryGetProperty("next", out var next) &&
+                        next.TryGetProperty("href", out var hrefProp))
+                    {
+                        nextHref = hrefProp.GetString();
+                    }
+                    else
+                    {
+                        nextHref = null;
+                    }
                 }
-                snapResp.EnsureSuccessStatusCode();
 
-                using var snapDoc = JsonDocument.Parse(await snapResp.Content.ReadAsStringAsync(ct));
-                var snapRecs = snapDoc.RootElement
-                    .GetProperty("records")
-                    .EnumerateArray()
-                    .FirstOrDefault(e => e.GetProperty("name").GetString() == snapshotName);
-
-                if (snapRecs.ValueKind != JsonValueKind.Object)
+                if (string.IsNullOrWhiteSpace(snapshotUuid))
                 {
-                    _logger.LogInformation("Snapshot '{Snapshot}' not found on volume '{Volume}'.", snapshotName, volumeName);
-                    result.ErrorMessage = $"Snapshot '{snapshotName}' not found on volume '{volumeName}'.";
-                    return result;
+                    var em = $"Snapshot '{snapshotName}' not found on volume '{volumeName}'.";
+                    _logger.LogInformation(em);
+                    return new DeleteSnapshotResult { ErrorMessage = em };
                 }
-                var snapshotUuid = snapRecs.GetProperty("uuid").GetString()!;
 
-                // Delete
-                var deleteResp = await httpClient.DeleteAsync($"{baseUrl}storage/volumes/{volumeUuid}/snapshots/{snapshotUuid}", ct);
-                if (!deleteResp.IsSuccessStatusCode)
+                // 3) Delete (handle 202 Accepted job)
+                var delUrl = $"{baseUrl}storage/volumes/{volumeUuid}/snapshots/{snapshotUuid}";
+                var delResp = await http.DeleteAsync(delUrl, ct);
+                var delTxt = await delResp.Content.ReadAsStringAsync(ct);
+
+                if ((int)delResp.StatusCode == 202)
                 {
-                    var body = await deleteResp.Content.ReadAsStringAsync(ct);
-                    _logger.LogWarning("Snapshot delete failed: {Status} {Body}", deleteResp.StatusCode, body);
-                    result.ErrorMessage = $"Failed to delete snapshot: {deleteResp.StatusCode} - {body}";
-                    return result;
+                    // Accepted; ONTAP will finish in background
+                    _logger.LogInformation("Snapshot delete accepted (async job).");
+                    return new DeleteSnapshotResult { Success = true };
+                }
+
+                if (!delResp.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning("Snapshot delete failed: {Status} {Body}", delResp.StatusCode, delTxt);
+                    return new DeleteSnapshotResult
+                    {
+                        ErrorMessage = $"Failed to delete snapshot: {delResp.StatusCode} - {delTxt}"
+                    };
                 }
 
                 _logger.LogInformation("Snapshot deleted successfully.");
-                result.Success = true;
+                return new DeleteSnapshotResult { Success = true };
             }
             catch (OperationCanceledException)
             {
@@ -397,11 +589,11 @@ namespace BareProx.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Exception while deleting snapshot.");
-                result.ErrorMessage = $"Exception: {ex.Message}";
+                return new DeleteSnapshotResult { ErrorMessage = $"Exception: {ex.Message}" };
             }
-
-            return result;
         }
+
+
 
         // ---------------------------------------------------------------------
         // Helpers
@@ -411,160 +603,316 @@ namespace BareProx.Services
         /// Resolve the correct SnapLock compliance clock base time for the volume's home node.
         /// Returns Unspecified-kind DateTime representing node wall-clock time.
         /// </summary>
-        private async Task<DateTime?> ResolveComplianceClockBaseAsync(string volumeName, CancellationToken ct)
+        /// <summary>
+        /// Resolve the SnapLock compliance-clock base time (node wall-clock) for a volume
+        /// on a specific NetApp controller. Returns an Unspecified-kind DateTime.
+        /// </summary>
+        private async Task<DateTime?> ResolveComplianceClockBaseAsync(
+            int controllerId,
+            string volumeName,
+            string? volumeUuid = null,
+            string? svmName = null,
+            CancellationToken ct = default)
         {
             using var scope = _logger.BeginScope(new Dictionary<string, object?>
             {
                 ["op"] = "ResolveComplianceClock",
-                ["volume"] = volumeName
+                ["controllerId"] = controllerId,
+                ["volume"] = volumeName,
+                ["uuidArg"] = volumeUuid,
+                ["svmArg"] = svmName
             });
 
-            var controller = await _context.NetappControllers.AsNoTracking().FirstOrDefaultAsync(ct)
-                             ?? throw new Exception("NetApp controller not found.");
+            await using var db = await _dbf.CreateDbContextAsync(ct);
+
+            var controller = await db.NetappControllers
+                .AsNoTracking()
+                .FirstOrDefaultAsync(c => c.Id == controllerId, ct)
+                ?? throw new Exception($"NetApp controller {controllerId} not found.");
 
             var http = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
 
-            // 1) Volume lookup → UUID + first aggregate UUID
-            var volLookup = await http.GetAsync($"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volumeName)}&fields=uuid,aggregates.uuid", ct);
-            if (!volLookup.IsSuccessStatusCode)
+            // --- 1) Resolve volume UUID (prefer provided) ---
+            string uuid = volumeUuid ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(uuid))
             {
-                var body = await volLookup.Content.ReadAsStringAsync(ct);
-                _logger.LogWarning("Volume lookup failed: {Status} {Body}", volLookup.StatusCode, body);
-            }
-            volLookup.EnsureSuccessStatusCode();
+                var query = string.IsNullOrWhiteSpace(svmName)
+                    ? $"storage/volumes?name={Uri.EscapeDataString(volumeName)}&fields=uuid,aggregates.uuid,svm.name,name"
+                    : $"storage/volumes?name={Uri.EscapeDataString(volumeName)}&svm.name={Uri.EscapeDataString(svmName)}&fields=uuid,aggregates.uuid,svm.name,name";
 
-            using var volDoc = JsonDocument.Parse(await volLookup.Content.ReadAsStringAsync(ct));
-            var volRecs = volDoc.RootElement.GetProperty("records");
-            if (volRecs.GetArrayLength() == 0)
-            {
-                _logger.LogWarning("Volume {Volume} not found.", volumeName);
+                var volResp = await http.GetAsync(baseUrl + query, ct);
+                var volTxt = await volResp.Content.ReadAsStringAsync(ct);
+                if (!volResp.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning("Volume lookup failed (controller {ControllerId}): {Status} {Body}",
+                        controllerId, volResp.StatusCode, volTxt);
+                }
+                volResp.EnsureSuccessStatusCode();
+
+                using var volDoc = JsonDocument.Parse(volTxt);
+                if (!volDoc.RootElement.TryGetProperty("records", out var volRecs) || volRecs.GetArrayLength() == 0)
+                {
+                    _logger.LogWarning("Volume {Volume} not found on controller {ControllerId}.", volumeName, controllerId);
+                    return null;
+                }
+                if (volRecs.GetArrayLength() > 1 && string.IsNullOrWhiteSpace(svmName))
+                {
+                    _logger.LogWarning("Multiple volumes named {Volume}; specify SVM or pass UUID.", volumeName);
+                    return null;
+                }
+                uuid = volRecs[0].GetProperty("uuid").GetString() ?? "";
+                if (string.IsNullOrWhiteSpace(uuid))
+                {
+                    _logger.LogWarning("NetApp API returned empty UUID for volume {Volume}.", volumeName);
+                    return null;
+                }
+
+                // If we didn’t request aggregates yet, we’ll re-fetch below; but we already asked for aggregates.uuid.
+                // So we can reuse this element for aggregate extraction.
+                // fall through with volElem set:
+                var volElem = volRecs[0];
+
+                // --- 2) Extract first aggregate UUID from the same response if present ---
+                if (!volElem.TryGetProperty("aggregates", out var aggrArr) ||
+                    aggrArr.ValueKind != JsonValueKind.Array || aggrArr.GetArrayLength() == 0)
+                {
+                    // If missing (older ONTAP/fields), fetch volume by UUID to get aggregates
+                    var volByUuidResp = await http.GetAsync($"{baseUrl}storage/volumes/{uuid}?fields=aggregates.uuid", ct);
+                    var volByUuidTxt = await volByUuidResp.Content.ReadAsStringAsync(ct);
+                    if (!volByUuidResp.IsSuccessStatusCode)
+                        _logger.LogWarning("Volume-by-UUID fetch failed: {Status} {Body}", volByUuidResp.StatusCode, volByUuidTxt);
+                    volByUuidResp.EnsureSuccessStatusCode();
+
+                    using var volByUuidDoc = JsonDocument.Parse(volByUuidTxt);
+                    if (!volByUuidDoc.RootElement.TryGetProperty("aggregates", out aggrArr) ||
+                        aggrArr.ValueKind != JsonValueKind.Array || aggrArr.GetArrayLength() == 0)
+                    {
+                        _logger.LogWarning("Volume {Volume} has no aggregates.", volumeName);
+                        return null;
+                    }
+                }
+
+                var aggrUuid = aggrArr[0].GetProperty("uuid").GetString();
+                if (string.IsNullOrWhiteSpace(aggrUuid))
+                {
+                    _logger.LogWarning("Aggregate UUID missing for volume {Volume}.", volumeName);
+                    return null;
+                }
+
+                // --- 3) Aggregate → home node UUID ---
+                var aggrResp = await http.GetAsync($"{baseUrl}storage/aggregates/{aggrUuid}?fields=home_node.uuid,home_node.name", ct);
+                var aggrTxt = await aggrResp.Content.ReadAsStringAsync(ct);
+                if (!aggrResp.IsSuccessStatusCode)
+                    _logger.LogWarning("Aggregate fetch failed: {Status} {Body}", aggrResp.StatusCode, aggrTxt);
+                aggrResp.EnsureSuccessStatusCode();
+
+                using var aggrDoc = JsonDocument.Parse(aggrTxt);
+                var homeNode = aggrDoc.RootElement.GetProperty("home_node");
+                var nodeUuid = homeNode.GetProperty("uuid").GetString();
+                if (string.IsNullOrWhiteSpace(nodeUuid))
+                {
+                    _logger.LogWarning("home_node.uuid missing for aggregate {AggregateUuid}.", aggrUuid);
+                    return null;
+                }
+
+                // --- 4) Compliance clock for that node ---
+                var ccResp = await http.GetAsync($"{baseUrl}storage/snaplock/compliance-clocks?node.uuid={Uri.EscapeDataString(nodeUuid)}&fields=time,node.name,node.uuid", ct);
+                var ccTxt = await ccResp.Content.ReadAsStringAsync(ct);
+                if (!ccResp.IsSuccessStatusCode)
+                    _logger.LogWarning("Compliance clock fetch failed: {Status} {Body}", ccResp.StatusCode, ccTxt);
+                ccResp.EnsureSuccessStatusCode();
+
+                using var ccDoc = JsonDocument.Parse(ccTxt);
+                var ccRecs = ccDoc.RootElement.GetProperty("records");
+                if (ccRecs.GetArrayLength() == 0)
+                {
+                    _logger.LogWarning("No compliance clock record for node {NodeUuid}.", nodeUuid);
+                    return null;
+                }
+
+                var timeProp = ccRecs[0].GetProperty("time");
+                var timeStr = timeProp.GetString();
+
+                if (string.IsNullOrWhiteSpace(timeStr)) return null;
+
+                // ONTAP returns wall-clock like "yyyy-MM-dd HH:mm:ss" (sometimes ISO8601). Handle both.
+                if (DateTime.TryParseExact(timeStr, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed) ||
+                    DateTime.TryParse(timeStr, CultureInfo.InvariantCulture, DateTimeStyles.None, out parsed))
+                {
+                    return DateTime.SpecifyKind(parsed, DateTimeKind.Unspecified);
+                }
+
+                _logger.LogWarning("Unable to parse compliance clock '{Time}' for node {NodeUuid}.", timeStr, nodeUuid);
                 return null;
             }
-
-            var vol = volRecs[0];
-            if (!vol.TryGetProperty("aggregates", out var aggrArr) ||
-                aggrArr.ValueKind != JsonValueKind.Array || aggrArr.GetArrayLength() == 0)
+            else
             {
-                _logger.LogWarning("Volume {Volume} has no aggregates.", volumeName);
+                // We had UUID already; fetch aggregates -> node -> clock using UUID path
+                // --- 2) Volume by UUID → aggregates ---
+                var volByUuidResp = await http.GetAsync($"{baseUrl}storage/volumes/{uuid}?fields=aggregates.uuid", ct);
+                var volByUuidTxt = await volByUuidResp.Content.ReadAsStringAsync(ct);
+                if (!volByUuidResp.IsSuccessStatusCode)
+                    _logger.LogWarning("Volume-by-UUID fetch failed: {Status} {Body}", volByUuidResp.StatusCode, volByUuidTxt);
+                volByUuidResp.EnsureSuccessStatusCode();
+
+                using var volByUuidDoc = JsonDocument.Parse(volByUuidTxt);
+                if (!volByUuidDoc.RootElement.TryGetProperty("aggregates", out var aggrArr) ||
+                    aggrArr.ValueKind != JsonValueKind.Array || aggrArr.GetArrayLength() == 0)
+                {
+                    _logger.LogWarning("Volume {Volume} has no aggregates.", volumeName);
+                    return null;
+                }
+
+                var aggrUuid = aggrArr[0].GetProperty("uuid").GetString();
+                if (string.IsNullOrWhiteSpace(aggrUuid))
+                {
+                    _logger.LogWarning("Aggregate UUID missing for volume {Volume}.", volumeName);
+                    return null;
+                }
+
+                // --- 3) Aggregate → home node UUID ---
+                var aggrResp = await http.GetAsync($"{baseUrl}storage/aggregates/{aggrUuid}?fields=home_node.uuid,home_node.name", ct);
+                var aggrTxt = await aggrResp.Content.ReadAsStringAsync(ct);
+                if (!aggrResp.IsSuccessStatusCode)
+                    _logger.LogWarning("Aggregate fetch failed: {Status} {Body}", aggrResp.StatusCode, aggrTxt);
+                aggrResp.EnsureSuccessStatusCode();
+
+                using var aggrDoc = JsonDocument.Parse(aggrTxt);
+                var homeNode = aggrDoc.RootElement.GetProperty("home_node");
+                var nodeUuid = homeNode.GetProperty("uuid").GetString();
+                if (string.IsNullOrWhiteSpace(nodeUuid))
+                {
+                    _logger.LogWarning("home_node.uuid missing for aggregate {AggregateUuid}.", aggrUuid);
+                    return null;
+                }
+
+                // --- 4) Compliance clock for that node ---
+                var ccResp = await http.GetAsync($"{baseUrl}storage/snaplock/compliance-clocks?node.uuid={Uri.EscapeDataString(nodeUuid)}&fields=time,node.name,node.uuid", ct);
+                var ccTxt = await ccResp.Content.ReadAsStringAsync(ct);
+                if (!ccResp.IsSuccessStatusCode)
+                    _logger.LogWarning("Compliance clock fetch failed: {Status} {Body}", ccResp.StatusCode, ccTxt);
+                ccResp.EnsureSuccessStatusCode();
+
+                using var ccDoc = JsonDocument.Parse(ccTxt);
+                var ccRecs = ccDoc.RootElement.GetProperty("records");
+                if (ccRecs.GetArrayLength() == 0)
+                {
+                    _logger.LogWarning("No compliance clock record for node {NodeUuid}.", nodeUuid);
+                    return null;
+                }
+
+                var timeStr = ccRecs[0].GetProperty("time").GetString();
+                if (string.IsNullOrWhiteSpace(timeStr)) return null;
+
+                if (DateTime.TryParseExact(timeStr, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed) ||
+                    DateTime.TryParse(timeStr, CultureInfo.InvariantCulture, DateTimeStyles.None, out parsed))
+                {
+                    return DateTime.SpecifyKind(parsed, DateTimeKind.Unspecified);
+                }
+
+                _logger.LogWarning("Unable to parse compliance clock '{Time}' for node {NodeUuid}.", timeStr, nodeUuid);
                 return null;
             }
-
-            var aggrUuid = aggrArr[0].GetProperty("uuid").GetString();
-            if (string.IsNullOrEmpty(aggrUuid))
-            {
-                _logger.LogWarning("Aggregate UUID missing for volume {Volume}.", volumeName);
-                return null;
-            }
-
-            // 2) Aggregate → home node UUID
-            var aggrResp = await http.GetAsync($"{baseUrl}storage/aggregates/{aggrUuid}?fields=home_node.uuid,home_node.name", ct);
-            if (!aggrResp.IsSuccessStatusCode)
-            {
-                var body = await aggrResp.Content.ReadAsStringAsync(ct);
-                _logger.LogWarning("Aggregate fetch failed: {Status} {Body}", aggrResp.StatusCode, body);
-            }
-            aggrResp.EnsureSuccessStatusCode();
-
-            using var aggrDoc = JsonDocument.Parse(await aggrResp.Content.ReadAsStringAsync(ct));
-            var homeNode = aggrDoc.RootElement.GetProperty("home_node");
-            var nodeUuid = homeNode.GetProperty("uuid").GetString();
-
-            if (string.IsNullOrEmpty(nodeUuid))
-            {
-                _logger.LogWarning("home_node.uuid missing for aggregate {AggregateUuid}.", aggrUuid);
-                return null;
-            }
-
-            // 3) Compliance clock for that node (request fields=time)
-            var ccResp = await http.GetAsync($"{baseUrl}storage/snaplock/compliance-clocks?node.uuid={Uri.EscapeDataString(nodeUuid)}&fields=time,node.name,node.uuid", ct);
-            if (!ccResp.IsSuccessStatusCode)
-            {
-                var body = await ccResp.Content.ReadAsStringAsync(ct);
-                _logger.LogWarning("Compliance clock fetch failed: {Status} {Body}", ccResp.StatusCode, body);
-            }
-            ccResp.EnsureSuccessStatusCode();
-
-            using var ccDoc = JsonDocument.Parse(await ccResp.Content.ReadAsStringAsync(ct));
-            var ccRecs = ccDoc.RootElement.GetProperty("records");
-
-            if (ccRecs.GetArrayLength() == 0)
-            {
-                _logger.LogWarning("No compliance clock record for node {NodeUuid}.", nodeUuid);
-                return null;
-            }
-
-            var cc = ccRecs[0];
-            if (!cc.TryGetProperty("time", out var timeProp) || timeProp.ValueKind != JsonValueKind.String)
-            {
-                _logger.LogWarning("Compliance clock time missing for node {NodeUuid}.", nodeUuid);
-                return null;
-            }
-
-            var timeStr = timeProp.GetString();
-            if (string.IsNullOrWhiteSpace(timeStr))
-                return null;
-
-            // ONTAP REST returns "yyyy-MM-dd HH:mm:ss" (wall-clock)
-            if (DateTime.TryParseExact(timeStr, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
-                return DateTime.SpecifyKind(parsed, DateTimeKind.Unspecified);
-
-            if (DateTime.TryParse(timeStr, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed2))
-                return DateTime.SpecifyKind(parsed2, DateTimeKind.Unspecified);
-
-            _logger.LogWarning("Unable to parse compliance clock '{Time}' for node {NodeUuid}.", timeStr, nodeUuid);
-            return null;
         }
 
+
+        /// <summary>
+        /// Posts a snapshot create request to ONTAP for the given volume.
+        /// Prefer passing a UUID. If UUID is null/empty, we look up by name (and svm.name if provided).
+        /// </summary>
         private async Task SendSnapshotRequestAsync(
+            int controllerId,
             string volumeName,
             SnapshotCreateBody body,
+            string? volumeUuid,
+            string? svmName,
             CancellationToken ct = default)
         {
             using var scope = _logger.BeginScope(new Dictionary<string, object?>
             {
                 ["op"] = "PostSnapshot",
+                ["controllerId"] = controllerId,
                 ["volume"] = volumeName,
-                ["name"] = body?.Name,
+                ["uuidArg"] = volumeUuid,
+                ["svmArg"] = svmName,
+                ["snapName"] = body?.Name,
                 ["label"] = body?.SnapMirrorLabel
             });
 
-            var controller = await _context.NetappControllers.AsNoTracking().FirstOrDefaultAsync(ct)
-                             ?? throw new Exception("NetApp controller not found.");
+            // Resolve controller via factory-scoped DbContext
+            await using var db = await _dbf.CreateDbContextAsync(ct);
+            var controller = await db.NetappControllers
+                .AsNoTracking()
+                .FirstOrDefaultAsync(c => c.Id == controllerId, ct)
+                ?? throw new Exception($"NetApp controller {controllerId} not found.");
 
-            var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+            var http = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
 
-            // Lookup volume UUID by name
-            var lookupUrl = $"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volumeName)}";
-            var lookupResponse = await httpClient.GetAsync(lookupUrl, ct);
-            if (!lookupResponse.IsSuccessStatusCode)
+            // --- Resolve volume UUID (prefer provided UUID) ---
+            string? uuid = volumeUuid;
+
+            if (string.IsNullOrWhiteSpace(uuid))
             {
-                var bodyStr = await lookupResponse.Content.ReadAsStringAsync(ct);
-                _logger.LogWarning("Volume lookup failed: {Status} {Body}", lookupResponse.StatusCode, bodyStr);
+                // Build lookup with optional svm filter
+                var query = string.IsNullOrWhiteSpace(svmName)
+                    ? $"storage/volumes?name={Uri.EscapeDataString(volumeName)}&fields=uuid,svm.name,name"
+                    : $"storage/volumes?name={Uri.EscapeDataString(volumeName)}&svm.name={Uri.EscapeDataString(svmName)}&fields=uuid,svm.name,name";
+
+                var lookupUrl = baseUrl + query;
+                var lookupResp = await http.GetAsync(lookupUrl, ct);
+                var lookupTxt = await lookupResp.Content.ReadAsStringAsync(ct);
+
+                if (!lookupResp.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning("Volume lookup failed (controller {ControllerId}): {Status} {Body}",
+                        controllerId, lookupResp.StatusCode, lookupTxt);
+                }
+                lookupResp.EnsureSuccessStatusCode();
+
+                using var lookupDoc = JsonDocument.Parse(lookupTxt);
+                if (!lookupDoc.RootElement.TryGetProperty("records", out var records) || records.ValueKind != JsonValueKind.Array)
+                    throw new Exception("Unexpected NetApp API response format for volume lookup.");
+
+                if (records.GetArrayLength() == 0)
+                    throw new Exception($"Volume '{volumeName}' not found in NetApp API (controller={controllerId}, svm={svmName ?? "?"}).");
+
+                if (records.GetArrayLength() > 1 && string.IsNullOrWhiteSpace(svmName))
+                    throw new Exception($"Multiple volumes named '{volumeName}' found (controller={controllerId}). Specify SVM or pass UUID.");
+
+                uuid = records[0].GetProperty("uuid").GetString();
+                if (string.IsNullOrWhiteSpace(uuid))
+                    throw new Exception($"NetApp API returned empty UUID for volume '{volumeName}'.");
             }
-            lookupResponse.EnsureSuccessStatusCode();
+            else
+            {
+                // Optional verification of the UUID; useful during migrations/debugging.
+                var verifyUrl = $"{baseUrl}storage/volumes/{uuid}?fields=uuid,svm.name,name";
+                var verifyResp = await http.GetAsync(verifyUrl, ct);
+                var verifyTxt = await verifyResp.Content.ReadAsStringAsync(ct);
 
-            var lookupJson = await lookupResponse.Content.ReadAsStringAsync(ct);
-            using var lookupDoc = JsonDocument.Parse(lookupJson);
-            var records = lookupDoc.RootElement.GetProperty("records");
+                if (!verifyResp.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning("Volume UUID verify failed (controller {ControllerId}, uuid {Uuid}): {Status} {Body}",
+                        controllerId, uuid, verifyResp.StatusCode, verifyTxt);
+                    verifyResp.EnsureSuccessStatusCode();
+                }
+            }
 
-            if (records.GetArrayLength() == 0)
-                throw new Exception($"Volume '{volumeName}' not found in NetApp API.");
-
-            var uuid = records[0].GetProperty("uuid").GetString();
-
-            // POST snapshot using UUID
+            // --- POST snapshot ---
             var snapshotUrl = $"{baseUrl}storage/volumes/{uuid}/snapshots";
-            var jsonPayload = JsonConvert.SerializeObject(body);
+            var jsonPayload = Newtonsoft.Json.JsonConvert.SerializeObject(body);
             _logger.LogDebug("POST {Url} payload: {Payload}", snapshotUrl, jsonPayload);
 
-            var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-            var response = await httpClient.PostAsync(snapshotUrl, content, ct);
-            if (!response.IsSuccessStatusCode)
-            {
-                var resp = await response.Content.ReadAsStringAsync(ct);
-                _logger.LogWarning("Snapshot POST failed: {Status} {Body}", response.StatusCode, resp);
-            }
-            response.EnsureSuccessStatusCode();
+            using var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+            var resp = await http.PostAsync(snapshotUrl, content, ct);
+            var respTxt = await resp.Content.ReadAsStringAsync(ct);
+
+            if (!resp.IsSuccessStatusCode)
+                _logger.LogWarning("Snapshot POST failed (controller {ControllerId}, volUuid {Uuid}): {Status} {Body}",
+                    controllerId, uuid, resp.StatusCode, respTxt);
+
+            resp.EnsureSuccessStatusCode();
         }
+
     }
 }

@@ -20,15 +20,16 @@
 
 namespace BareProx.Services.Migration
 {
+    using System;
+    using System.Collections.Generic;
+    using System.Linq;
+    using System.Text.Json;
+    using System.Threading;
+    using System.Threading.Tasks;
     using BareProx.Data;
     using BareProx.Models;
     using Microsoft.EntityFrameworkCore;
     using Microsoft.Extensions.Logging;
-    using System.Text.Json;
-    using System.Collections.Generic;
-    using System.Linq;
-    using System.Threading;
-    using System.Threading.Tasks;
 
     public interface IMigrationQueueRunner
     {
@@ -36,24 +37,12 @@ namespace BareProx.Services.Migration
         Task<bool> StartAsync(CancellationToken ct = default);
     }
 
-    /// <summary>
-    /// Optional service you can implement to perform datastore snapshots once per run.
-    /// If not registered, snapshotting is skipped with a warning.
-    /// </summary>
     public interface IStorageSnapshotCoordinator
     {
-        /// <summary>
-        /// Ensure a snapshot exists for each storage before we mutate anything.
-        /// SHOULD throw on failure to abort the run safely.
-        /// </summary>
         Task EnsureSnapshotsAsync(IReadOnlyCollection<string> storages, CancellationToken ct);
+        Task EnsureSnapshotsByVolumeIdsAsync(IReadOnlyCollection<int> selectedNetappVolumeIds, CancellationToken ct);
     }
 
-    /// <summary>
-    /// Single-concurrency queue runner: plans datastore snapshots, then
-    /// picks the next "Queued" item, marks it "Processing",
-    /// calls IMigrationExecutor, then "Done"/"Failed".
-    /// </summary>
     public sealed class MigrationQueueRunner : IMigrationQueueRunner
     {
         private readonly IServiceScopeFactory _scopeFactory;
@@ -91,80 +80,154 @@ namespace BareProx.Services.Migration
 
             try
             {
-                List<int> candidateIds; // IDs frozen at run start
+                List<int> candidateIds;
+                List<MigrationQueueItem> itemsAtStart;
 
-                // ===== 1) PLAN & TAKE DATASTORE SNAPSHOTS (once per storage) =====
+                // ===== 1) PLAN & TAKE SNAPSHOTS (once per run) =====
                 using (var planScope = _scopeFactory.CreateScope())
                 {
                     var db = planScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
 
-                    // Wait briefly for something to be queued (user may hit "Run" first, then queue)
-                    var deadline = DateTime.UtcNow.AddSeconds(12);
-                    List<MigrationQueueItem> itemsAtStart;
-                    do
+                    // Read current selection (used for fallback mapping & logging)
+                    var selection = await db.MigrationSelections
+                        .AsNoTracking()
+                        .FirstOrDefaultAsync(ct);
+
+                    if (selection == null)
+                        throw new InvalidOperationException("No MigrationSelection found. Configure cluster/host/storage first.");
+
+                    // Prefer authoritative: SelectedNetappVolumeId(s) across selections
+                    var selectedVolIds = await db.MigrationSelections
+                        .AsNoTracking()
+                        .Where(ms => ms.SelectedNetappVolumeId != null)
+                        .Select(ms => ms.SelectedNetappVolumeId!.Value)
+                        .Distinct()
+                        .ToListAsync(ct);
+
+                    // Gather queued items (may wait a bit if we need to derive storages)
+                    itemsAtStart = await db.Set<MigrationQueueItem>()
+                        .Where(x => x.Status == "Queued")
+                        .OrderBy(x => x.CreatedAtUtc)
+                        .ThenBy(x => x.Id)
+                        .ToListAsync(ct);
+
+                    if (selectedVolIds.Count == 0 && itemsAtStart.Count == 0)
                     {
-                        ct.ThrowIfCancellationRequested();
-
-                        itemsAtStart = await db.Set<MigrationQueueItem>()
-                            .Where(x => x.Status == "Queued")
-                            .OrderBy(x => x.CreatedAtUtc)
-                            .ThenBy(x => x.Id)
-                            .ToListAsync(ct);
-
-                        if (itemsAtStart.Count > 0) break;
-                        await Task.Delay(400, ct);
-                    } while (DateTime.UtcNow < deadline);
+                        var deadline = DateTime.UtcNow.AddSeconds(60);
+                        _log.LogInformation("Run {RunId}: waiting for queued items to derive storages (up to 60s).", runId);
+                        while (DateTime.UtcNow < deadline && itemsAtStart.Count == 0)
+                        {
+                            ct.ThrowIfCancellationRequested();
+                            await Task.Delay(1000, ct);
+                            itemsAtStart = await db.Set<MigrationQueueItem>()
+                                .Where(x => x.Status == "Queued")
+                                .OrderBy(x => x.CreatedAtUtc)
+                                .ThenBy(x => x.Id)
+                                .ToListAsync(ct);
+                        }
+                    }
 
                     candidateIds = itemsAtStart.Select(x => x.Id).ToList();
 
-                    var storages = itemsAtStart
-                        .SelectMany(ExtractStoragesFromItem)
-                        .Where(s => !string.IsNullOrWhiteSpace(s))
-                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
-                        .ToList();
-
-                    if (storages.Count == 0)
+                    try
                     {
-                        _log.LogInformation("Run {RunId}: no storages detected from queued items; skipping snapshot step.", runId);
+                        var snapper = planScope.ServiceProvider.GetRequiredService<IStorageSnapshotCoordinator>();
+
+                        // CASE A: Snapshot by SelectedNetappVolumeId
+                        if (selectedVolIds.Count > 0)
+                        {
+                            _log.LogInformation(
+                                "Run {RunId}: creating NetApp snapshots via SelectedNetappVolume ids: {Ids}",
+                                runId, string.Join(", ", selectedVolIds));
+
+                            await snapper.EnsureSnapshotsByVolumeIdsAsync(selectedVolIds, ct);
+                            await LogSnapshotEventForItems(db, candidateIds,
+                                "Snapshots ensured by SelectedNetappVolumeId.", runId, ct);
+
+                            _log.LogInformation("Run {RunId}: NetApp snapshots ensured via SelectedNetappVolume ids.", runId);
+                        }
+                        else
+                        {
+                            // CASE B: Derive storages from queued items' DisksJson
+                            var storagesFromItems = itemsAtStart
+                                .SelectMany(ExtractStoragesFromItem)
+                                .Where(s => !string.IsNullOrWhiteSpace(s))
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
+                                .ToList();
+
+                            // CASE C: Fallback to selection.StorageIdentifier mapping if nothing derived
+                            if (storagesFromItems.Count == 0 && !string.IsNullOrWhiteSpace(selection.StorageIdentifier))
+                            {
+                                var mapped = await db.SelectedNetappVolumes
+                                    .AsNoTracking()
+                                    .Where(v => v.VolumeName == selection.StorageIdentifier)
+                                    .Select(v => v.VolumeName)
+                                    .Distinct()
+                                    .ToListAsync(ct);
+
+                                storagesFromItems = mapped
+                                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                                    .ToList();
+
+                                if (storagesFromItems.Count > 0)
+                                {
+                                    _log.LogInformation("Run {RunId}: falling back to StorageIdentifier mapping: {Storages}",
+                                        runId, string.Join(", ", storagesFromItems));
+                                }
+                            }
+
+                            if (storagesFromItems.Count == 0)
+                            {
+                                _log.LogWarning("Run {RunId}: snapshot step skipped — no SelectedNetappVolumeId and no storages could be derived.", runId);
+                                await LogSnapshotEventForItems(db, candidateIds,
+                                    "Snapshot step skipped (no storages could be derived).", runId, ct);
+                            }
+                            else
+                            {
+                                _log.LogInformation(
+                                    "Run {RunId}: creating datastore snapshots for Proxmox storages: {Storages}",
+                                    runId, string.Join(", ", storagesFromItems));
+
+                                await snapper.EnsureSnapshotsAsync(storagesFromItems, ct);
+                                await LogSnapshotEventForItems(db, candidateIds,
+                                    $"Snapshots ensured for storages: {string.Join(", ", storagesFromItems)}", runId, ct);
+
+                                _log.LogInformation("Run {RunId}: datastore snapshots ensured from derived storages.", runId);
+                            }
+                        }
                     }
-                    else
+                    catch (InvalidOperationException ex) // likely missing DI registration
                     {
-                        // Make snapshotting required so we don't silently skip it
-                        try
-                        {
-                            var snapper = planScope.ServiceProvider.GetRequiredService<IStorageSnapshotCoordinator>();
-                            _log.LogInformation("Run {RunId}: creating datastore snapshots for: {Storages}", runId, string.Join(", ", storages));
-
-                            await snapper.EnsureSnapshotsAsync(storages, ct);
-
-                            _log.LogInformation("Run {RunId}: datastore snapshots ensured.", runId);
-                        }
-                        catch (InvalidOperationException ex) // thrown if not registered
-                        {
-                            _log.LogWarning(ex, "Run {RunId}: IStorageSnapshotCoordinator not registered; skipping datastore snapshots.", runId);
-                        }
-                        catch (OperationCanceledException)
-                        {
-                            _log.LogWarning("Run {RunId}: snapshot planning canceled; aborting run before any VM work.", runId);
-                            throw;
-                        }
-                        catch (Exception ex)
-                        {
-                            _log.LogError(ex, "Run {RunId}: datastore snapshot step failed; aborting run to keep state consistent.", runId);
-                            return; // safer not to proceed
-                        }
+                        _log.LogWarning(ex,
+                            "Run {RunId}: IStorageSnapshotCoordinator not registered; skipping snapshot step.",
+                            runId);
+                        await LogSnapshotEventForItems(db, candidateIds,
+                            "Snapshot step skipped (IStorageSnapshotCoordinator not registered).", runId, ct);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        _log.LogWarning("Run {RunId}: snapshot planning canceled; aborting before VM work.", runId);
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.LogError(ex,
+                            "Run {RunId}: snapshot step failed; aborting run to keep state consistent.",
+                            runId);
+                        await LogSnapshotEventForItems(db, candidateIds,
+                            $"Snapshot step failed: {ex.Message}", runId, ct, level: "Error");
+                        return;
                     }
                 }
 
-                // ===== 2) PROCESS ONLY THE FROZEN SET (still requiring Status == "Queued") =====
+                // ===== 2) PROCESS FROZEN SET =====
                 while (!ct.IsCancellationRequested)
                 {
                     using var scope = _scopeFactory.CreateScope();
                     var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
                     var exec = scope.ServiceProvider.GetRequiredService<IMigrationExecutor>();
 
-                    // Pick next item: must be in frozen set AND still Queued
                     var item = await db.Set<MigrationQueueItem>()
                         .Where(x => candidateIds.Contains(x.Id) && x.Status == "Queued")
                         .OrderBy(x => x.CreatedAtUtc)
@@ -174,10 +237,9 @@ namespace BareProx.Services.Migration
                     if (item == null)
                     {
                         _log.LogInformation("Migration queue: frozen batch complete (run {RunId})", runId);
-                        break; // no more from the frozen set
+                        break;
                     }
 
-                    // Mark processing
                     item.Status = "Processing";
                     db.MigrationQueueLogs.Add(new MigrationQueueLog
                     {
@@ -191,6 +253,7 @@ namespace BareProx.Services.Migration
 
                     try
                     {
+                        // Single-signature executor: resolves node & default storage internally from MigrationSelections
                         await exec.ExecuteAsync(item, ct);
 
                         var dbItem = await db.Set<MigrationQueueItem>().FirstAsync(x => x.Id == item.Id, ct);
@@ -208,7 +271,7 @@ namespace BareProx.Services.Migration
                     catch (OperationCanceledException)
                     {
                         var dbItem = await db.Set<MigrationQueueItem>().FirstAsync(x => x.Id == item.Id, ct);
-                        dbItem.Status = "Queued"; // return to queue on cancel
+                        dbItem.Status = "Queued";
                         db.MigrationQueueLogs.Add(new MigrationQueueLog
                         {
                             ItemId = item.Id,
@@ -235,7 +298,6 @@ namespace BareProx.Services.Migration
                         await db.SaveChangesAsync(ct);
 
                         _log.LogError(ex, "Run {RunId} item {ItemId} failed.", runId, item.Id);
-                        // continue to next from the frozen set
                     }
                 }
             }
@@ -245,7 +307,6 @@ namespace BareProx.Services.Migration
             }
         }
 
-        // ---- Helpers ----
 
         /// <summary>
         /// Extract distinct Proxmox storage names from a queued item (based on DisksJson).
@@ -263,7 +324,13 @@ namespace BareProx.Services.Migration
                     return Array.Empty<string>();
 
                 var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                string[] keys = { "storage", "Storage", "datastore", "Datastore", "targetStorage", "TargetStorage", "dstStorage", "storageName", "StorageName" };
+                string[] keys = {
+                    "storage","Storage",
+                    "datastore","Datastore",
+                    "targetStorage","TargetStorage",
+                    "dstStorage",
+                    "storageName","StorageName"
+                };
 
                 foreach (var el in doc.RootElement.EnumerateArray())
                 {
@@ -280,13 +347,39 @@ namespace BareProx.Services.Migration
                     }
                 }
 
-                return set; // distinct storages
+                return set;
             }
             catch
             {
-                // bad JSON? just treat as no storages
                 return Array.Empty<string>();
             }
+        }
+
+        private static async Task LogSnapshotEventForItems(
+            ApplicationDbContext db,
+            IReadOnlyList<int> itemIds,
+            string message,
+            string runId,
+            CancellationToken ct,
+            string level = "Info")
+        {
+            if (itemIds == null || itemIds.Count == 0) return;
+
+            var now = DateTime.UtcNow;
+
+            foreach (var id in itemIds)
+            {
+                db.MigrationQueueLogs.Add(new MigrationQueueLog
+                {
+                    ItemId = id,
+                    Step = "Snapshot",
+                    Level = level,                  // "Info" | "Warning" | "Error"
+                    Message = $"{message} (run {runId})",
+                    Utc = now
+                });
+            }
+
+            await db.SaveChangesAsync(ct);
         }
     }
 }
