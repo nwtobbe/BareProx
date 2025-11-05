@@ -18,12 +18,13 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
-
 using Markdig;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -57,12 +58,12 @@ namespace BareProx.Services.Updates
 
         public async Task<UpdateInfo> CheckAsync(CancellationToken ct = default)
         {
-            // Read settings from appsettings.json
-            // If not present or disabled -> do nothing.
+            // Read settings from appsettings.json; if missing/disabled -> no action.
             bool enabled = _cfg.GetValue<bool?>("Updates:Enabled") ?? false;
             int freqMin = _cfg.GetValue<int?>("Updates:FrequencyMinutes") ?? 0;
 
             var current = GetCurrentVersionString();
+
             if (!enabled || freqMin <= 0)
             {
                 _log.LogDebug("UpdateChecker: disabled or missing settings (Enabled={Enabled}, FrequencyMinutes={Freq}). No action.", enabled, freqMin);
@@ -73,18 +74,31 @@ namespace BareProx.Services.Updates
             var ttlMinutes = Math.Clamp(freqMin, 10, 7 * 24 * 60);
             var cacheTtl = TimeSpan.FromMinutes(ttlMinutes);
 
-            if (!TryParseVersion(current, out var currentV)) currentV = new Version(0, 0, 0, 0);
+            if (!TryParseVersion(current, out var currentV))
+                currentV = new Version(0, 0, 0, 0);
 
-            var latest = await _cache.GetOrCreateAsync($"updates.latest:{VersionInfoRawUrl}", async entry =>
+            // Fetch latest (cached)
+            string? latest = await _cache.GetOrCreateAsync($"updates.latest:{VersionInfoRawUrl}", async entry =>
             {
                 entry.AbsoluteExpirationRelativeToNow = cacheTtl;
                 _log.LogDebug("UpdateChecker: fetching latest version (TTL {TTL}).", cacheTtl);
-                return await FetchLatestVersionAsync(ct);
-            }) ?? current;
+                return await FetchLatestVersionAsync(ct); // may return null when fetch/parse fails
+            });
 
-            if (!TryParseVersion(latest, out var latestV)) latestV = currentV;
+            if (string.IsNullOrWhiteSpace(latest))
+            {
+                _log.LogWarning("UpdateChecker: latest version unresolved (fetch/parse failed). Using current={Current} for UI continuity.", current);
+                latest = current;
+            }
 
-            var isNewer = CompareVersions(latestV, currentV) > 0;
+            if (!TryParseVersion(latest, out var latestV))
+                latestV = currentV;
+
+            var cmp = CompareVersions(latestV, currentV);
+            var isNewer = cmp > 0;
+
+            _log.LogInformation("UpdateChecker: compare current={Curr} latest={Lat} -> cmp={Cmp}",
+                current, latest, cmp);
 
             string whatsNewHtml = string.Empty;
             string? latestDate = null;
@@ -118,20 +132,29 @@ namespace BareProx.Services.Updates
 
             // Fallback: assembly version
             var v = asm.GetName().Version?.ToString();
-            //return "1.0.2510.2013"; //For Debug
             return string.IsNullOrWhiteSpace(v) ? "0.0.0" : v;
         }
 
         private async Task<string?> FetchLatestVersionAsync(CancellationToken ct)
         {
             var content = await FetchStringAsync(VersionInfoRawUrl, ct);
-            if (string.IsNullOrWhiteSpace(content)) return null;
+            if (string.IsNullOrWhiteSpace(content))
+                return null;
 
             var m = Regex.Match(content,
                 @"Assembly(?:File)?Version\(\s*""(?<v>\d+\.\d+\.\d+(?:\.\d+)?)""\s*\)",
                 RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
 
-            return m.Success ? m.Groups["v"].Value : null;
+            if (!m.Success)
+            {
+                _log.LogWarning("UpdateChecker: version attribute not found in VersionInfo.cs (len={Len}). First 120 chars: {Preview}",
+                    content.Length, (content.Length > 120 ? content.Substring(0, 120) + "…" : content).Replace("\r", "\\r").Replace("\n", "\\n"));
+                return null;
+            }
+
+            var latest = m.Groups["v"].Value;
+            _log.LogInformation("UpdateChecker: parsed latest={Latest} from VersionInfo.cs", latest);
+            return latest;
         }
 
         private async Task<string> FetchStringAsync(string url, CancellationToken ct)
@@ -139,13 +162,44 @@ namespace BareProx.Services.Updates
             try
             {
                 var client = _http.CreateClient(nameof(UpdateChecker));
-                client.Timeout = TimeSpan.FromSeconds(8);
+                client.Timeout = TimeSpan.FromSeconds(15);
                 client.DefaultRequestHeaders.UserAgent.ParseAdd("BareProx-UpdateChecker/1.0");
-                return await client.GetStringAsync(url, ct);
+                client.DefaultRequestHeaders.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue
+                {
+                    NoCache = true
+                };
+
+                // Force HTTP/1.1 to avoid occasional HTTP/2 quirks behind proxies/load balancers
+                using var req = new HttpRequestMessage(HttpMethod.Get, url)
+                {
+                    Version = new Version(1, 1)
+                };
+
+                using var resp = await client.SendAsync(req, ct);
+
+                var code = (int)resp.StatusCode;
+                var etag = resp.Headers.ETag?.Tag;
+                resp.Headers.TryGetValues("Age", out var ageVals);
+                var age = ageVals?.FirstOrDefault();
+                resp.Headers.TryGetValues("Date", out var dateVals);
+                var srvDate = dateVals?.FirstOrDefault();
+
+                if (!resp.IsSuccessStatusCode)
+                {
+                    _log.LogWarning("UpdateChecker: HTTP {Code} for {Url} (ETag={ETag}, Age={Age}, Date={Date})",
+                        code, url, etag ?? "-", age ?? "-", srvDate ?? "-");
+                    return string.Empty;
+                }
+
+                var s = await resp.Content.ReadAsStringAsync(ct);
+                var firstLine = (s.Split('\n').FirstOrDefault() ?? string.Empty).Trim();
+                _log.LogInformation("UpdateChecker: fetched {Bytes} bytes from {Url} (ETag={ETag}, Age={Age}, Date={Date}). First line: {Line}",
+                    s.Length, url, etag ?? "-", age ?? "-", srvDate ?? "-", firstLine);
+                return s;
             }
             catch (Exception ex)
             {
-                _log.LogDebug(ex, "Failed to fetch {Url}", url);
+                _log.LogWarning(ex, "UpdateChecker: fetch failed: {Url}", url);
                 return string.Empty;
             }
         }
@@ -155,6 +209,7 @@ namespace BareProx.Services.Updates
             v = new Version(0, 0, 0, 0);
             if (string.IsNullOrWhiteSpace(s)) return false;
 
+            // Support informational versions with suffixes by taking the numeric prefix.
             var core = Regex.Match(s, @"^\s*(\d+\.\d+\.\d+(?:\.\d+)?)").Groups[1].Value;
             if (string.IsNullOrEmpty(core)) return false;
 
