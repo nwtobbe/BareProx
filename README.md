@@ -207,14 +207,15 @@ And don’t forget to select datastores to use.
 
 ---
 
-## License
+## License (AGPL-3.0)
 
-This program is free software: you can redistribute it and/or modify it under the terms of the  
-GNU General Public License as published by the Free Software Foundation; either version 3 of the License, or (at your option) any later version.
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU Affero General Public License as published by the Free Software Foundation, version 3.
 
-This program is distributed in the hope that it will be useful,  
-but **without any warranty**; without even the implied warranty of **merchantability or fitness for a particular purpose**.  
-See the GNU General Public License for more details:
+This program is distributed in the hope that it will be useful,
+but without any warranty; without even the implied warranty of merchantability or fitness for a particular purpose.
+See the GNU Affero General Public License for more details:
 
-[https://www.gnu.org/licenses/gpl-3.0.en.html](https://www.gnu.org/licenses/gpl-3.0.en.html)
+https://www.gnu.org/licenses/agpl-3.0.en.html
 
+AGPL notice: If you modify this application and make it available to users over a network, you must also offer those users access to the corresponding source code of your modified version under the AGPL-3.0.
