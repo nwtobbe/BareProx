@@ -24,7 +24,9 @@ RUN dotnet publish BareProx.csproj -c Release -r linux-x64 --self-contained true
 FROM debian:bookworm-slim AS runtime
 WORKDIR /app
 
-# Install minimal dependencies needed by self-contained .NET app
+# Install runtime deps + CA bundle
+# - ca-certificates is what fixes the TLS "PartialChain" to GitHub
+# - libicu/openssl/tzdata already good to have for .NET + time zone
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates \
