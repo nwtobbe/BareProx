@@ -800,8 +800,7 @@ namespace BareProx.Controllers
                     row.Vserver = v.Vserver;
                     row.VolumeName = v.VolumeName;
                     row.Uuid = v.Uuid;
-                    row.MountIp = v.MountIp;
-                    row.ClusterId = v.ClusterId;             // keep mapping
+                    row.MountIp = v.MountIp;            // keep mapping
                     row.NetappControllerId = controllerId;   // ensure controller binding
                 }
                 else
@@ -812,7 +811,6 @@ namespace BareProx.Controllers
                         VolumeName = v.VolumeName,
                         Uuid = v.Uuid,
                         MountIp = v.MountIp,
-                        ClusterId = v.ClusterId,
                         NetappControllerId = controllerId,
                         Disabled = false
                     });

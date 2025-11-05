@@ -59,6 +59,14 @@ namespace BareProx.Models
         public bool EnableLocking { get; set; }
         public int? LockRetentionCount { get; set; }
         public string? LockRetentionUnit { get; set; } = "Hours";
+        // Notifications (new master switch)
+        public bool NotificationsEnabled { get; set; } = true;
+        public bool NotifyOnSuccess { get; set; }   // checkbox
+        public bool NotifyOnError { get; set; }   // checkbox
+        public string? NotificationEmails { get; set; } // optional CSV
+
+        // UI hint (no post needed, but handy to keep)
+        public bool EmailConfigured { get; set; }
     }
 
     public class ScheduleEntry

@@ -142,7 +142,7 @@ namespace BareProx.Models
         public string VolumeName { get; set; }
         public string Uuid { get; set; }
         public string MountIp { get; set; }
-        public int ClusterId { get; set; }
+        // public int ClusterId { get; set; }
         public int NetappControllerId { get; set; }
 
         public long? SpaceSize { get; set; }         // maps to "space.size"
@@ -230,6 +230,11 @@ namespace BareProx.Models
         public bool EnableLocking { get; set; }
         public int? LockRetentionCount { get; set; }
         public string? LockRetentionUnit { get; set; }
+        // Notifications (new master switch)
+        public bool NotificationsEnabled { get; set; } = true;
+        public bool NotifyOnSuccess { get; set; }          // default false
+        public bool NotifyOnError { get; set; }            // default false
+        public string? NotificationEmails { get; set; }    // optional CSV override; null => use global/default
     }
 
     public class BackupRecord

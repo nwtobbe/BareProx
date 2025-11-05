@@ -46,13 +46,18 @@ namespace BareProx.Controllers
             _logger = logger;
         }
 
-        public async Task<IActionResult> ListVMs(CancellationToken ct)
+        // Optional clusterId avoids accidentally binding to "first" cluster.
+        public async Task<IActionResult> ListVMs(int? clusterId, CancellationToken ct)
         {
-            // 1) Load the first configured cluster (no tracking)
-            var cluster = await _context.ProxmoxClusters
+            // 1) Load target cluster (no tracking)
+            var clusterQuery = _context.ProxmoxClusters
                 .AsNoTracking()
                 .Include(c => c.Hosts)
-                .FirstOrDefaultAsync(ct);
+                .AsQueryable();
+
+            var cluster = clusterId is int requestedClusterId
+                ? await clusterQuery.FirstOrDefaultAsync(c => c.Id == requestedClusterId, ct)
+                : await clusterQuery.FirstOrDefaultAsync(ct);
 
             if (cluster == null)
             {
@@ -60,20 +65,7 @@ namespace BareProx.Controllers
                 return View(new List<StorageWithVMsDto>());
             }
 
-            // 2) Primary NetApp controller (no tracking)
-            var netappController = await _context.NetappControllers
-                .AsNoTracking()
-                .Where(c => c.IsPrimary)
-                .Select(c => new { c.Id })
-                .FirstOrDefaultAsync(ct);
-
-            if (netappController == null)
-            {
-                ViewBag.Warning = "No primary NetApp controller is configured.";
-                return View(new List<StorageWithVMsDto>());
-            }
-
-            // 3) Selected storages (filter set)
+            // 2) Selected storages for THIS cluster (authoritative binding)
             var selectedStorageNames = await _context.SelectedStorages
                 .AsNoTracking()
                 .Where(s => s.ClusterId == cluster.Id)
@@ -82,13 +74,13 @@ namespace BareProx.Controllers
 
             if (selectedStorageNames.Count == 0)
             {
-                ViewBag.Warning = "No Proxmox storage has been selected for backup.";
+                ViewBag.Warning = "No Proxmox storage has been selected for backup for this cluster.";
                 return View(new List<StorageWithVMsDto>());
             }
 
             var selectedStorageSet = new HashSet<string>(selectedStorageNames, StringComparer.OrdinalIgnoreCase);
 
-            // 4) Cluster/host status (skip entirely if all offline)
+            // 3) Cluster/host status (skip entirely if all offline)
             var (_, _, _, hostStates, summary) = await _proxmoxService.GetClusterStatusAsync(cluster, ct);
             var onlineHostNames = hostStates.Where(kv => kv.Value).Select(kv => kv.Key)
                                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -110,7 +102,7 @@ namespace BareProx.Controllers
                 return View(new List<StorageWithVMsDto>());
             }
 
-            // 5) Kick off VM inventory (uses cache internally)
+            // 4) Kick off VM inventory (uses cache internally)
             Dictionary<string, List<ProxmoxVM>> storageVmMap;
             try
             {
@@ -129,16 +121,11 @@ namespace BareProx.Controllers
                 return View(new List<StorageWithVMsDto>());
             }
 
-            // 6) Fetch SnapMirror relations + SelectedNetappVolumes limited to relevant storages
-            var relationsTask = _context.SnapMirrorRelations
+            // 5) Load SelectedNetappVolumes for those storages
+            // DO NOT filter by SelectedNetappVolumes.ClusterId (by design).
+            var selectedVolumes = await _context.SelectedNetappVolumes
                 .AsNoTracking()
-                .Where(r => selectedStorageSet.Contains(r.SourceVolume))
-                .Select(r => new { r.SourceControllerId, r.SourceVolume, r.DestinationControllerId, r.DestinationVolume })
-                .ToListAsync(ct);
-
-            var selectedVolumesTask = _context.SelectedNetappVolumes
-                .AsNoTracking()
-                .Where(v => selectedStorageSet.Contains(v.VolumeName) && v.Disabled != true) // << skip disabled, include null
+                .Where(v => selectedStorageSet.Contains(v.VolumeName) && v.Disabled != true) // skip disabled, include null
                 .Select(v => new
                 {
                     v.Id,
@@ -148,29 +135,39 @@ namespace BareProx.Controllers
                 })
                 .ToListAsync(ct);
 
-            await Task.WhenAll(relationsTask, selectedVolumesTask);
-
-            var relations = relationsTask.Result;
-            var selectedVolumes = selectedVolumesTask.Result;
-
-            // Quick lookup: (controllerId, volumeName) -> SelectedNetappVolume.Id
-            // If multiple rows exist for the same key, we keep the first encountered (stable enough for UI purposes).
-            var selectedVolumeIdByKey = new Dictionary<(int ControllerId, string VolumeName), int>(EqualityComparer<(int, string)>.Default);
-            var lockByKey = new Dictionary<(int ControllerId, string VolumeName), bool>(EqualityComparer<(int, string)>.Default);
+            // Index: (controllerId, volumeName) -> SelectedNetappVolume.Id / Locking
+            var selectedVolumeIdByKey = new Dictionary<(int ControllerId, string Volume), int>();
+            var lockByKey = new Dictionary<(int ControllerId, string Volume), bool>();
             foreach (var v in selectedVolumes)
             {
                 var key = (v.NetappControllerId, v.VolumeName);
                 if (!selectedVolumeIdByKey.ContainsKey(key))
                     selectedVolumeIdByKey[key] = v.Id;
 
-                // Coalesce nullable -> bool
-                if (v.SnapshotLockingEnabled == true)
-                    lockByKey[key] = true;              // any true sets the key to true
-                else if (!lockByKey.ContainsKey(key))
-                    lockByKey[key] = false;             // initialize to false if not present
+                // Any 'true' across duplicates yields true
+                lockByKey[key] = lockByKey.TryGetValue(key, out var prev)
+                    ? (prev || v.SnapshotLockingEnabled == true)
+                    : (v.SnapshotLockingEnabled == true);
             }
 
-            // 7) Build DTOs (skip empty storages early)
+            // Map: storage -> candidate controllers that actually have a mapping entry
+            var controllerIdsByStorage = selectedVolumes
+                .GroupBy(v => v.VolumeName, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.Select(x => x.NetappControllerId).Distinct().ToList(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            // Optional: choose a "primary" only among candidates to act as tie-breaker
+            var allCandidateControllerIds = controllerIdsByStorage.Values.SelectMany(x => x).Distinct().ToHashSet();
+            var fallbackPrimary = await _context.NetappControllers
+                .AsNoTracking()
+                .Where(c => c.IsPrimary && allCandidateControllerIds.Contains(c.Id))
+                .Select(c => new { c.Id })
+                .FirstOrDefaultAsync(ct);
+
+            // 6) Build DTOs (skip empty storages early) with a controller per storage
             var model = new List<StorageWithVMsDto>(capacity: storageVmMap.Count);
             foreach (var kv in storageVmMap)
             {
@@ -178,9 +175,23 @@ namespace BareProx.Controllers
                 var vms = kv.Value;
                 if (vms == null || vms.Count == 0) continue;
 
-                // Map the SelectedNetappVolumeId for the *primary* controller
-                selectedVolumeIdByKey.TryGetValue((netappController.Id, storage), out var maybeSelectedId);
-                var hasLocking = lockByKey.TryGetValue((netappController.Id, storage), out var enabled) && enabled;
+                // Choose controller for this storage (prefer a primary if it’s a candidate)
+                int? controllerForStorage = null;
+                if (controllerIdsByStorage.TryGetValue(storage, out var candidates) && candidates.Count > 0)
+                {
+                    controllerForStorage = (fallbackPrimary != null && candidates.Contains(fallbackPrimary.Id))
+                        ? fallbackPrimary.Id
+                        : candidates[0]; // deterministic, first candidate
+                }
+
+                int? selectedId = null;
+                bool hasLocking = false;
+                if (controllerForStorage is int controllerId)
+                {
+                    if (selectedVolumeIdByKey.TryGetValue((controllerId, storage), out var id))
+                        selectedId = id;
+                    hasLocking = lockByKey.TryGetValue((controllerId, storage), out var lk) && lk;
+                }
 
                 model.Add(new StorageWithVMsDto
                 {
@@ -192,9 +203,9 @@ namespace BareProx.Controllers
                         HostName = vm.HostName,
                         HostAddress = vm.HostAddress
                     }).ToList(),
-                    ClusterId = cluster.Id,
-                    NetappControllerId = netappController.Id,
-                    SelectedNetappVolumeId = maybeSelectedId == 0 ? (int?)null : maybeSelectedId, // ✅ expose to the view
+                    ClusterId = cluster.Id, // authoritative binding
+                    NetappControllerId = controllerForStorage ?? fallbackPrimary?.Id ?? 0,
+                    SelectedNetappVolumeId = selectedId,
                     SnapshotLockingEnabled = hasLocking
                 });
             }
@@ -205,8 +216,20 @@ namespace BareProx.Controllers
                 return View(model);
             }
 
-            // 8) Compute replicability: show checkbox if there is a SnapMirror relation for this storage.
-            //    (Do NOT require destination volume to be selected/enabled in settings.)
+            // 7) Compute replicability: only consider relations for controllers actually used
+            var usedControllerIds = model
+                .Select(m => m.NetappControllerId)
+                .Where(id => id != 0)
+                .Distinct()
+                .ToList();
+
+            var relations = await _context.SnapMirrorRelations
+                .AsNoTracking()
+                .Where(r => selectedStorageSet.Contains(r.SourceVolume)
+                         && usedControllerIds.Contains(r.SourceControllerId))
+                .Select(r => new { r.SourceControllerId, r.SourceVolume, r.DestinationControllerId, r.DestinationVolume })
+                .ToListAsync(ct);
+
             var replicableSources = new HashSet<string>(
                 relations.Select(r => r.SourceVolume),
                 StringComparer.OrdinalIgnoreCase

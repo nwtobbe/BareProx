@@ -120,7 +120,7 @@ namespace BareProx.Controllers
                             Vserver = vol.Vserver,
                             MountIp = vol.MountIp,
                             Uuid = vol.Uuid,
-                            ClusterId = vol.ClusterId,
+                            ClusterId = vol.NetappControllerId,
                             IsSelected = true
                         };
 

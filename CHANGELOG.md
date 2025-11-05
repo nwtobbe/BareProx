@@ -7,11 +7,18 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.0.2511.0413] - 2025-11-04
 
+### Added
+- Email Notifications / Backup Schedule instead of global. Notifications gets disabled when applying this update.
+
 ### Changed
-- Page Settings NetApp. Small helptext for volumes
+- Page Settings NetApp. Small help text for volumes
+- Page Settings Proxmox. Only one cluster is now allowed.
+- Page Backup Create/Edit. Added Notifications
+- Improvements on background services
 
 ### Fixed
 - Update check
+- Validation for storageselection.
 
 
 

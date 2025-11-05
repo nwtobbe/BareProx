@@ -29,7 +29,7 @@
         <input asp-for="Name"
                class="form-control"
                maxlength="20"
-               pattern="^[A-Za-z0-9_\-]+$"
+               pattern="^[A-Za-z0-9_\\-]+$"
                title="Only letters, numbers, hyphens and underscores (max 20 chars)."
                oninput="validateScheduleName(this)"
                required />
@@ -59,7 +59,6 @@
     <!-- Hidden context fields populated from volumeMeta -->
     <input type="hidden" asp-for="ClusterId" id="ClusterId" />
     <input type="hidden" asp-for="ControllerId" id="ControllerId" />
-    <!-- NEW: SelectedNetappVolumeId -->
     <input type="hidden" asp-for="SelectedNetappVolumeId" id="SelectedNetappVolumeId" />
 
     <!-- Backup Type -->
@@ -204,6 +203,81 @@
         <label class="form-check-label" asp-for="ReplicateToSecondary">Replicate to Secondary</label>
     </div>
 
+    <!-- Notifications (updated) -->
+    @{
+        // Resolve emailConfigured and current master value; resilient to missing properties
+        var emailConfigured = true;
+        if (ViewBag.EmailConfigured is bool vb) emailConfigured = vb;
+        else if (Model is not null)
+        {
+            var pCfg = Model.GetType().GetProperty("EmailConfigured");
+            if (pCfg is not null && pCfg.PropertyType == typeof(bool))
+            {
+                emailConfigured = (bool)(pCfg.GetValue(Model) ?? true);
+            }
+        }
+
+        var notificationsEnabled = Model?.NotificationsEnabled ?? true;
+    }
+    <div class="mb-3">
+        <div class="d-flex align-items-center justify-content-between">
+            <label class="form-label mb-0">Notifications</label>
+            @if (!emailConfigured)
+            {
+                <span class="badge bg-secondary" title="Configure SMTP in Settings to enable email notifications.">Email not configured</span>
+            }
+        </div>
+
+        <!-- Master enable/disable -->
+        <div class="form-check form-switch mb-2">
+            <input class="form-check-input"
+                   type="checkbox"
+                   id="NotificationsEnabled"
+                   name="NotificationsEnabled"
+                   value="true"
+                   @(notificationsEnabled ? "checked" : null)
+                   @(emailConfigured ? null : "disabled") />
+            <label class="form-check-label" for="NotificationsEnabled">
+                Enable notifications for this schedule
+            </label>
+            <input type="hidden" name="NotificationsEnabled" value="false" />
+            <div class="form-text">
+                Turn off to silence emails for this schedule.
+            </div>
+        </div>
+
+        <!-- Collapsible body controlled by master toggle -->
+        <div id="notificationsBody" class="mt-2 @(notificationsEnabled && emailConfigured ? "" : "d-none")">
+            <div class="form-check">
+                <input class="form-check-input"
+                       asp-for="NotifyOnSuccess"
+                       id="NotifyOnSuccess"
+                       disabled="@(emailConfigured ? (string?)null : "disabled")" />
+                <label class="form-check-label" for="NotifyOnSuccess">Notify on successful backup</label>
+            </div>
+
+            <div class="form-check">
+                <input class="form-check-input"
+                       asp-for="NotifyOnError"
+                       id="NotifyOnError"
+                       disabled="@(emailConfigured ? (string?)null : "disabled")" />
+                <label class="form-check-label" for="NotifyOnError">Notify on error/failure</label>
+            </div>
+
+            <div class="mt-2">
+                <label class="form-label" for="NotificationEmails">Recipients (optional)</label>
+                <input class="form-control"
+                       asp-for="NotificationEmails"
+                       id="NotificationEmails"
+                       placeholder="ops@example.com; me@example.com"
+                       disabled="@(emailConfigured ? (string?)null : "disabled")" />
+                <div class="form-text">
+                    Leave empty to use the global default recipients from Settings.
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Exclude VMs (by selected Storage) -->
     <div id="excludeBlock" class="mb-3 d-none" aria-hidden="true">
         <label class="form-label">Exclude VMs</label>
@@ -279,6 +353,11 @@
           // Replication
           const replicateBox= document.getElementById('replicateCheckbox');
           const replicable = (document.getElementById('replicableVolumes')?.value.split(',')||[]).filter(Boolean);
+
+          // Notifications
+          const EMAIL_CONFIGURED = @((ViewBag.EmailConfigured is bool vb && vb).ToString().ToLower());
+          const notifMaster = document.getElementById('NotificationsEnabled');
+          const notifBody   = document.getElementById('notificationsBody');
 
           // Helpers
           const qsa = (sel,root=document)=>Array.from(root.querySelectorAll(sel));
@@ -489,7 +568,7 @@
           // Replication visibility
           function supportsReplicateFor(val){ return replicable.indexOf(val) !== -1; }
 
-          // Storage change (replication/locking + cluster/controller + exclude list + SelectedNetappVolumeId)
+          // Storage change
           storageSel?.addEventListener('change', function(){
             const val = storageSel.value;
 
@@ -515,7 +594,7 @@
               recalcLockingOptions();
             }
 
-            // Cluster/Controller/VolumeId hidden fields
+            // Hidden fields
             const clusterInput = document.getElementById('ClusterId');
             const controllerInput = document.getElementById('ControllerId');
             const selectedVolIdInput = document.getElementById('SelectedNetappVolumeId');
@@ -539,17 +618,32 @@
             renderFields(t);
           });
 
-          // Wire app-aware related handlers
+          // Wire app-aware handlers
           ccRadio?.addEventListener('change', () => { updateProxSnapshotUI(); syncExcludeDisabledState(); });
           aaRadio?.addEventListener('change', () => { updateProxSnapshotUI(); syncExcludeDisabledState(); });
           ioFreezeCb?.addEventListener('change', updateProxSnapshotUI);
           proxSnapCb?.addEventListener('change', updateProxSnapshotUI);
 
-          // Initial render (order matters)
-          if (selectType?.value) renderFields(selectType.value); // creates dynamic fields + sets retention unit
-          storageSel?.dispatchEvent(new Event('change'));        // sets replication/locking + excludes + cluster/controller + SelectedNetappVolumeId
-          updateProxSnapshotUI();                                // ensures "With Memory" visibility
-          syncExcludeDisabledState();                            // ensure exclude block follows app-aware
+          // ---- Notifications master toggle ----
+          function setDisabledRecursive(root, disabled){
+            if (!root) return;
+            root.querySelectorAll('input,select,textarea,button').forEach(el => { el.disabled = disabled; });
+          }
+          function syncNotificationsUI(){
+            const enabled = !!(notifMaster && notifMaster.checked) && EMAIL_CONFIGURED;
+            if (notifBody){
+              notifBody.classList.toggle('d-none', !enabled);
+            }
+            setDisabledRecursive(notifBody, !enabled);
+          }
+          notifMaster?.addEventListener('change', syncNotificationsUI);
+          syncNotificationsUI();
+
+          // Initial render
+          if (selectType?.value) renderFields(selectType.value);
+          storageSel?.dispatchEvent(new Event('change'));
+          updateProxSnapshotUI();
+          syncExcludeDisabledState();
 
           // Submit guard
           form?.addEventListener('submit', function(e){
@@ -558,7 +652,19 @@
               if (appErr) appErr.style.display='block';
               e.preventDefault(); e.stopPropagation();
             }
-            // safety: keep excludes cleared when app-aware is off
+
+            // If notifications are OFF (or email not configured), clear detail fields before post
+            const enabled = !!(notifMaster && notifMaster.checked) && EMAIL_CONFIGURED;
+            if (!enabled){
+              const noSuccess = document.getElementById('NotifyOnSuccess');
+              const noError   = document.getElementById('NotifyOnError');
+              const noEmails  = document.getElementById('NotificationEmails');
+              if (noSuccess) noSuccess.checked = false;
+              if (noError)   noError.checked   = false;
+              if (noEmails)  noEmails.value    = '';
+            }
+
+            // Keep excludes cleared when app-aware is off
             syncExcludeDisabledState();
             form.classList.add('was-validated');
           });
