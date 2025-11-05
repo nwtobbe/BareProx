@@ -25,10 +25,14 @@ FROM debian:bookworm-slim AS runtime
 WORKDIR /app
 
 # Install minimal dependencies needed by self-contained .NET app
-RUN apt-get update && apt-get install -y \
-    libicu72 \
-    libssl3 \
-    tzdata \
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      libicu72 \
+      libssl3 \
+      tzdata \
+      curl \
+ && update-ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
  # Create a non-root user and group
