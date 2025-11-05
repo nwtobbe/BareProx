@@ -48,6 +48,7 @@ namespace BareProx.Models
         /// <summary>Sub-model for the “Email Notifications” form (prefix: "Email")</summary>
         public EmailSettingsViewModel Email { get; set; }
         public UpdateSettingsViewModel Updates { get; set; } = new();
+        public AcmeSettingsViewModel? Acme { get; set; }
 
         /// <summary>List of time zones for the dropdown</summary>
         public IEnumerable<SelectListItem> TimeZones { get; set; }
@@ -217,5 +218,23 @@ namespace BareProx.Models
         public NetappController? Selected { get; set; }
         public int? SelectedId { get; set; }
         public string? Message { get; set; }
+    }
+
+    public class AcmeSettingsViewModel
+    {
+        [EmailAddress]
+        public string? Email { get; set; }
+
+        // Comma-separated domains: example.com,www.example.com
+        public string? Domains { get; set; }
+
+        // "Http01" for now (future: "Dns01")
+        public string? Method { get; set; } = "Http01";
+
+        public bool AgreeToTos { get; set; }
+
+        // Read-only/status fields to show progress/errors in the UI
+        public string? LastStatus { get; set; }
+        public string? LastError { get; set; }
     }
 }

@@ -199,14 +199,14 @@
         </nav>
     </header>
 
-    <div class="container">
+    <div class="@(ViewBag.FullWidth == true ? "container-fluid px-3" : "container")">
         <main role="main" class="pb-3">
             @RenderBody()
         </main>
     </div>
 
     <footer class="border-top footer text-muted">
-        <div class="container">
+        <div class="@(ViewBag.FullWidth == true ? "container-fluid px-3" : "container")">
             &copy; 2025 - BareProx - <a asp-area="" asp-controller="Home" asp-action="Privacy">Privacy</a>
         </div>
     </footer>

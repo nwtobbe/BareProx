@@ -85,4 +85,23 @@ namespace BareProx.Models
         public string? Type { get; set; }     // e.g. "dir","nfs","iscs","rbd",...
     }
 
+    public sealed class ProxmoxClusterDiscoveryResult
+    {
+        public bool Success { get; set; }
+        public string? Error { get; set; }
+        public string? ClusterName { get; set; }
+        public List<string> Logs { get; set; } = new();
+        public List<DiscoveredProxmoxNode> Nodes { get; set; } = new();
+    }
+
+    public sealed class DiscoveredProxmoxNode
+    {
+        public string NodeName { get; set; } = "";
+        public string IpAddress { get; set; } = "";
+        public string? ReverseName { get; set; }
+        public bool SshOk { get; set; }
+    }
+
+
+
 }

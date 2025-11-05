@@ -1,6 +1,86 @@
 ﻿@{
     ViewData["Title"] = "Privacy Policy";
+    var product = (string)(ViewBag.ProductName ?? "BareProx");
+    var contact = (string)(ViewBag.ContactEmail ?? "nwtobbe@gmail.com");
 }
-<h1>@ViewData["Title"]</h1>
 
-<p>Use this page to detail your site's privacy policy and also for testing.</p>
+<style>
+    .policy h2 {
+        margin-top: 1.25rem;
+    }
+
+    .policy h3 {
+        margin-top: 1rem;
+    }
+
+    .policy code {
+        padding: .15rem .35rem;
+        background: rgba(0,0,0,.05);
+        border-radius: .25rem;
+    }
+</style>
+
+<div class="policy">
+    <h1 class="mb-3">Privacy Policy</h1>
+    <p><em>Last updated: @DateTime.UtcNow.ToString("yyyy-MM-dd") UTC</em></p>
+
+    <p>
+        This Privacy Policy describes how <strong>@product</strong> processes data when you use the application.
+        @product is deployed and operated by you (self-hosted). No telemetry is sent to the developers by default.
+    </p>
+
+    <h2>What @product Stores</h2>
+    <ul>
+        <li><strong>Configuration data:</strong> Proxmox and NetApp connection details, settings, schedules.</li>
+        <li><strong>Operational logs:</strong> Job history (backups, restores), warnings/errors, timestamps.</li>
+        <li><strong>User accounts:</strong> Authentication and authorization data via ASP.NET Identity (if enabled).</li>
+        <li><strong>Notifications:</strong> Email settings and recipients if you enable email notifications.</li>
+    </ul>
+
+    <h2>What @product Does Not Do</h2>
+    <ul>
+        <li>No built-in analytics or third-party tracking.</li>
+        <li>No automatic data sharing with external services, unless you configure features (e.g., email).</li>
+    </ul>
+
+    <h2>Cookies</h2>
+    <p>
+        @product may use cookies for authentication/session management. These are strictly necessary for the app to function.
+        If you enable anti-forgery tokens (default), related cookies are also used to protect against CSRF.
+    </p>
+
+    <h2>Log & Diagnostic Data</h2>
+    <p>
+        Application and job logs are stored locally (e.g., database and/or rolling log files).
+        You control retention policies. Logs may include VM names, storage names, cluster/host names, timestamps and error details.
+    </p>
+
+    <h2>Security</h2>
+    <ul>
+        <li>Credentials and secrets should be stored encrypted at rest (e.g., Data Protection APIs / your key vault).</li>
+        <li>Self-signed certificates can be generated in-app; consider replacing with a trusted certificate in production.</li>
+        <li>Restrict network access to the management UI and APIs.</li>
+    </ul>
+
+    <h2>Data Export & Deletion</h2>
+    <p>
+        As the operator, you control the database and file storage. You may export or delete data using your database tools.
+        For user-initiated deletion requests, follow your organization’s policy and remove data from the underlying stores.
+    </p>
+
+    <h2>Third-Party Services</h2>
+    <p>
+        Certain optional features may contact external endpoints (e.g., GitHub raw content for update checks).
+        These are opt-in and documented in the settings UI.
+    </p>
+
+    <h2>Contact</h2>
+    <p>
+        For privacy questions, contact: <a href="mailto:@contact">@contact</a>.
+    </p>
+
+    <hr />
+    <small class="text-muted">
+        @product is GPL-3.0 licensed. You are responsible for running and configuring it in compliance with your local laws and policies.
+    </small>
+</div>

@@ -19,12 +19,13 @@
  */
 
 
-using System.Reflection;
-using System.Text.RegularExpressions;
 using BareProx.Data;
 using BareProx.Services.Proxmox;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Reflection;
+using System.Text.RegularExpressions;
 
 namespace BareProx.Controllers
 {
@@ -102,6 +103,16 @@ namespace BareProx.Controllers
             ViewData["LicenseText"] = licenseText;
             return View();
         }
+
+            [HttpGet]
+            [AllowAnonymous]
+            public IActionResult Privacy()
+            {
+                // If you want to pass dynamic info (version, contact), do it here
+                ViewBag.ProductName = "BareProx";
+                ViewBag.ContactEmail = "admin@example.com"; // TODO: set real contact
+                return View();
+            }
 
         public IActionResult Help() => View();
     }

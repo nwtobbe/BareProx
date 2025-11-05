@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),  
 and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
+
+## [1.0.2511.0519] - 2025-11-05
+
+## Added
+- Possibility to add certificates in the form of .pfx (PKCS#12
+
+### Changed
+- Page Settings/System. New layout
+- Page Settings/Proxmox New add cluster method
+
+
+
+## [1.0.2511.0519] - 2025-11-05
+
+### Changed
+- Added ca-certificates to docker image
+
+
+
 ## [1.0.2511.0518] - 2025-11-05
 
 ### Changed

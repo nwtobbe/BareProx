@@ -160,7 +160,7 @@ if (!File.Exists(appSettingsPath))
     },
       "AllowedHosts": "*",
       "CertificateOptions": {
-      "OutputFolder": "/config/Certs",
+      "OutputFolder": "/config/certs",
       "PfxFileName": "selfsigned.pfx",
       "PfxPassword": "changeit",
       "SubjectName": "CN=localhost",
@@ -202,7 +202,7 @@ builder.Services.Configure<CertificateOptions>(
     builder.Configuration.GetSection("CertificateOptions"));
 
 // Register the service as a Singleton
-builder.Services.AddSingleton<SelfSignedCertificateService>();
+builder.Services.AddSingleton<CertificateService>();
 
 
 // --- Check if DB config exists --------------------------------------------
@@ -371,6 +371,7 @@ if (isConfigured)
     builder.Services.AddMemoryCache();
     builder.Services.AddHttpClient(nameof(UpdateChecker));
     builder.Services.AddSingleton<IUpdateChecker, UpdateChecker>();
+    builder.Services.AddScoped<IProxmoxClusterDiscoveryService, ProxmoxClusterDiscoveryService>();
 
     // --- Remote API Client -----------------------------------------------------
     builder.Services.AddSingleton<IRemoteApiClient, RemoteApiClient>();
@@ -395,9 +396,15 @@ if (isConfigured)
     builder.Services.AddHostedService<QueuedBackgroundService>();
     builder.Services.AddHostedService<ScheduledBackupService>();
     builder.Services.AddHostedService<JanitorService>();
-    builder.Services.AddHostedService<CollectionService>();
     builder.Services.AddMemoryCache();
     builder.Services.AddSingleton<IProxmoxInventoryCache, ProxmoxInventoryCache>();
+
+    // CollectionService: single instance used both as hosted service and ICollectionService
+    builder.Services.AddSingleton<CollectionService>();
+    builder.Services.AddSingleton<ICollectionService>(sp =>
+        sp.GetRequiredService<CollectionService>());
+    builder.Services.AddHostedService(sp =>
+        sp.GetRequiredService<CollectionService>());
 
 }
 
@@ -440,7 +447,7 @@ builder.WebHost.ConfigureKestrel(options =>
         listenOpts.UseHttps(httpsOpts =>
         {
             var sp = options.ApplicationServices; // <-- the real app provider
-            var certService = sp.GetRequiredService<SelfSignedCertificateService>();
+            var certService = sp.GetRequiredService<CertificateService>();
             var cert = certService.CurrentCertificate
                       ?? throw new InvalidOperationException("Failed to load or generate the self-signed certificate.");
             httpsOpts.ServerCertificate = cert;

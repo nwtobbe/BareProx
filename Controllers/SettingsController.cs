@@ -18,55 +18,126 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
-
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services;
+using BareProx.Services.Background;
 using BareProx.Services.Features;
 using BareProx.Services.Netapp;
-using BareProx.Services.Proxmox.Authentication;
 using BareProx.Services.Notifications;
+using BareProx.Services.Proxmox;
+using BareProx.Services.Proxmox.Authentication;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Hosting; // IHostApplicationLifetime
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using Newtonsoft.Json.Linq;
-using System.Runtime.InteropServices;
-using TimeZoneConverter;
-using BareProx.Services.Proxmox;
+using Renci.SshNet;
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Diagnostics.Metrics;
+using System.IO;
 using System.Linq;
+using System.Net;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography.X509Certificates;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using TimeZoneConverter;
 
 namespace BareProx.Controllers
 {
     public class SettingsController : Controller
     {
         private const string FF_Experimental = "ExperimentalExtra";
+
         private readonly IFeatureService _features;
         private readonly ApplicationDbContext _context;
         private readonly ProxmoxService _proxmoxService;
         private readonly IEncryptionService _encryptionService;
         private readonly string _configFile;
-        private readonly SelfSignedCertificateService _certService;
+        private readonly CertificateService _certService;
         private readonly IHostApplicationLifetime _appLifetime;
         private readonly INetappVolumeService _netappVolumeService;
         private readonly IProxmoxAuthenticator _proxmoxAuthenticator;
         private readonly INetappAuthService _netappAuthService;
         private readonly IEmailSender _email;
         private readonly IDataProtector _protector;
+        private readonly IOptionsMonitor<CertificateOptions> _certOptions;
+        private readonly IConfiguration _configuration;
+        private readonly IProxmoxClusterDiscoveryService _clusterDiscovery;
+        private readonly ICollectionService _collector;
+
+        // Live Proxmox discovery states (for wizard log polling)
+        private static readonly ConcurrentDictionary<Guid, ProxmoxDiscoveryState> _proxmoxDiscoveryStates
+            = new();
+
+        #region Nested types (discovery DTOs)
+
+        private class ProxmoxDiscoveryState
+        {
+            public List<string> Logs { get; } = new();
+            public bool Completed { get; set; }
+            public bool Success { get; set; }
+            public string? Error { get; set; }
+            public ProxmoxDiscoveryResult? Result { get; set; }
+        }
+
+        private record ProxmoxDiscoveryNode(
+            string NodeName,
+            string Ip,
+            string? ReverseName,
+            bool SshOk
+        );
+
+        private record ProxmoxDiscoveryResult(
+            string ClusterName,
+            List<ProxmoxDiscoveryNode> Nodes
+        );
+
+        public record StartProxmoxDiscoveryRequest(
+            string SeedHost,
+            string Username,
+            string Password
+        );
+
+        public record CreateClusterFromDiscoveryRequest(
+            string ClusterName,
+            string Username,
+            string Password,
+            List<DiscoveryNodeDto> Nodes
+        );
+
+        public record DiscoveryNodeDto(
+            string NodeName,
+            string Ip,
+            string HostAddress
+        );
+
+        #endregion
 
         public SettingsController(
             ApplicationDbContext context,
             IFeatureService features,
             ProxmoxService proxmoxService,
             IEncryptionService encryptionService,
-            SelfSignedCertificateService certService,
+            CertificateService certService,
             IHostApplicationLifetime appLifetime,
             INetappVolumeService netappVolumeService,
             IProxmoxAuthenticator proxmoxAuthenticator,
             INetappAuthService netappAuthService,
             IEmailSender email,
-            IDataProtectionProvider dataProtectionProvider)
+            IDataProtectionProvider dataProtectionProvider,
+            IOptionsMonitor<CertificateOptions> certOptions,
+            IConfiguration configuration,
+            IProxmoxClusterDiscoveryService clusterDiscovery,
+            ICollectionService collector
+        )
         {
             _context = context;
             _features = features;
@@ -80,24 +151,26 @@ namespace BareProx.Controllers
             _netappAuthService = netappAuthService;
             _email = email;
             _protector = dataProtectionProvider.CreateProtector("BareProx.EmailSettings.Password.v1");
+            _clusterDiscovery = clusterDiscovery;
+            _certOptions = certOptions;
+            _configuration = configuration;
+            _collector = collector;
         }
 
-        // ========================================================
-        // GET: /Settings/Config  (single GET — builds full view model)
-        // ========================================================
+        // =====================================================================
+        // CONFIG PAGE
+        // =====================================================================
+
         [HttpGet]
         public async Task<IActionResult> Config(CancellationToken ct)
         {
-            // Load /config/appsettings.json (for time zone + updates)
             JObject cfg = System.IO.File.Exists(_configFile)
                 ? JObject.Parse(System.IO.File.ReadAllText(_configFile))
                 : new JObject();
 
-            // Read stored TZs
             var storedWindows = (string?)cfg["ConfigSettings"]?["TimeZoneWindows"];
             var storedIana = (string?)cfg["ConfigSettings"]?["TimeZoneIana"];
 
-            // Decide selected Windows TZ
             string selectedWindowsId;
             if (!string.IsNullOrWhiteSpace(storedWindows))
             {
@@ -113,10 +186,8 @@ namespace BareProx.Controllers
                 selectedWindowsId = GetLocalWindowsId();
             }
 
-            // Current certificate
             var cert = _certService.CurrentCertificate;
 
-            // Base VM
             var vm = new SettingsPageViewModel
             {
                 Config = new ConfigSettingsViewModel
@@ -130,11 +201,12 @@ namespace BareProx.Controllers
                     CurrentNotBefore = cert?.NotBefore,
                     CurrentNotAfter = cert?.NotAfter,
                     CurrentThumbprint = cert?.Thumbprint,
-                    RegenSubjectName = cert?.Subject ?? "CN=localhost",
-                    RegenValidDays = 365,
+                    RegenSubjectName = cert?.Subject ?? (_certOptions.CurrentValue?.SubjectName ?? "CN=localhost"),
+                    RegenValidDays = _certOptions.CurrentValue?.ValidDays > 0
+                        ? _certOptions.CurrentValue.ValidDays
+                        : 365,
                     RegenSANs = "localhost"
                 },
-                // NEW: Updates section from appsettings.json
                 Updates = new UpdateSettingsViewModel
                 {
                     Enabled = (bool?)cfg["Updates"]?["Enabled"] ?? false,
@@ -142,7 +214,7 @@ namespace BareProx.Controllers
                 }
             };
 
-            // Email settings (ensure seeded row exists; migrations should handle this)
+            // Ensure EmailSettings row exists
             var es = await _context.EmailSettings.AsNoTracking().FirstOrDefaultAsync(e => e.Id == 1, ct);
             if (es == null)
             {
@@ -171,16 +243,13 @@ namespace BareProx.Controllers
             vm.Email.OnRestoreFailure = es.OnRestoreFailure;
             vm.Email.OnWarnings = es.OnWarnings;
             vm.Email.MinSeverity = es.MinSeverity ?? "Info";
-            // Password intentionally left blank
 
-            // Time zone dropdown + feature flag
             vm.TimeZones = BuildTimeZoneSelectList(selectedWindowsId);
             ViewBag.ExperimentalExtra = await _features.IsEnabledAsync(FF_Experimental);
 
             return View("Config", vm);
         }
 
-        // POST from the Experimental checkbox form
         [HttpPost]
         [ValidateAntiForgeryToken]
         public async Task<IActionResult> ToggleExperimental()
@@ -191,9 +260,6 @@ namespace BareProx.Controllers
             return RedirectToAction(nameof(Config));
         }
 
-        // ========================================================
-        // POST: /Settings/Config (Time zone only)
-        // ========================================================
         [HttpPost]
         [ValidateAntiForgeryToken]
         public IActionResult Config([Bind(Prefix = "Config")] ConfigSettingsViewModel configVm)
@@ -206,21 +272,17 @@ namespace BareProx.Controllers
                 return View("Config", pageVm);
             }
 
-            // Windows → IANA
             string ianaId;
             try { ianaId = TZConvert.WindowsToIana(configVm.TimeZoneWindows.Trim()); }
             catch { ianaId = configVm.TimeZoneWindows.Trim(); }
 
-            // Load root JSON
             JObject cfg = System.IO.File.Exists(_configFile)
                 ? JObject.Parse(System.IO.File.ReadAllText(_configFile))
                 : new JObject();
 
-            // Ensure "ConfigSettings" object
             if (cfg["ConfigSettings"] == null || cfg["ConfigSettings"]!.Type != JTokenType.Object)
                 cfg["ConfigSettings"] = new JObject();
 
-            // Persist only under ConfigSettings
             var section = (JObject)cfg["ConfigSettings"]!;
             section["TimeZoneWindows"] = configVm.TimeZoneWindows.Trim();
             section["TimeZoneIana"] = ianaId;
@@ -230,20 +292,13 @@ namespace BareProx.Controllers
             return RedirectToAction(nameof(Config));
         }
 
-        // ========================================================
-        // NEW: POST — Save Update Checker settings
-        // ========================================================
         [HttpPost]
         [ValidateAntiForgeryToken]
         public IActionResult SaveUpdateSettings([Bind(Prefix = "Updates")] UpdateSettingsViewModel vm)
         {
-            // Accept only a few safe frequencies
             var allowed = new HashSet<int> { 1440, 2880, 10080 };
             if (!allowed.Contains(vm.FrequencyMinutes))
-            {
-                // fallback to weekly if something odd was posted
                 vm.FrequencyMinutes = 10080;
-            }
 
             JObject cfg = System.IO.File.Exists(_configFile)
                 ? JObject.Parse(System.IO.File.ReadAllText(_configFile))
@@ -261,7 +316,84 @@ namespace BareProx.Controllers
             return RedirectToAction(nameof(Config));
         }
 
-        // Helper: rebuild page VM (now also fills Email + Updates)
+        [HttpPost]
+        [ValidateAntiForgeryToken]
+        public async Task<IActionResult> UploadPfx(IFormFile? pfxFile, string? pfxPassword, CancellationToken ct)
+        {
+            if (pfxFile is null || pfxFile.Length == 0)
+            {
+                TempData["Error"] = "Please choose a .pfx file.";
+                return RedirectToAction(nameof(Config), new { pane = "certificates" });
+            }
+
+            byte[] pfxBytes;
+            using (var ms = new MemoryStream())
+            {
+                await pfxFile.CopyToAsync(ms, ct);
+                pfxBytes = ms.ToArray();
+            }
+
+            var plainPwd = string.IsNullOrWhiteSpace(pfxPassword) ? null : pfxPassword.Trim();
+            try
+            {
+                _ = string.IsNullOrEmpty(plainPwd)
+                    ? new X509Certificate2(pfxBytes)
+                    : new X509Certificate2(pfxBytes, plainPwd);
+            }
+            catch (Exception ex)
+            {
+                TempData["Error"] =
+                    $"The uploaded PFX could not be opened ({ex.GetType().Name}). Check the password and try again.";
+                return RedirectToAction(nameof(Config), new { pane = "certificates" });
+            }
+
+            var configCertsDir = Path.Combine("/config", "Certs");
+            Directory.CreateDirectory(configCertsDir);
+            var targetPath = Path.Combine(configCertsDir, "https.pfx");
+
+            if (System.IO.File.Exists(targetPath))
+            {
+                var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+                var backupPath = Path.Combine(configCertsDir, $"https.pfx.{stamp}.old");
+                try
+                {
+                    System.IO.File.Move(targetPath, backupPath, overwrite: false);
+                }
+                catch
+                {
+                    var rnd = Guid.NewGuid().ToString("N")[..8];
+                    var backupPath2 = Path.Combine(configCertsDir, $"https.pfx.{stamp}-{rnd}.old");
+                    System.IO.File.Move(targetPath, backupPath2, overwrite: false);
+                }
+            }
+
+            await System.IO.File.WriteAllBytesAsync(targetPath, pfxBytes, ct);
+
+            JObject cfg = System.IO.File.Exists(_configFile)
+                ? JObject.Parse(System.IO.File.ReadAllText(_configFile))
+                : new JObject();
+
+            if (cfg["CertificateOptions"] == null || cfg["CertificateOptions"]!.Type != JTokenType.Object)
+                cfg["CertificateOptions"] = new JObject();
+
+            var certNode = (JObject)cfg["CertificateOptions"]!;
+            certNode["OutputFolder"] = configCertsDir.Replace('\\', '/');
+            certNode["PfxFileName"] = "https.pfx";
+
+            string? encPwd = string.IsNullOrWhiteSpace(plainPwd) ? null : _encryptionService.Encrypt(plainPwd);
+            certNode["PfxPasswordEnc"] = encPwd;
+            certNode.Remove("PfxPassword");
+
+            if (certNode["SubjectName"] == null) certNode["SubjectName"] = "CN=localhost";
+            if (certNode["ValidDays"] == null) certNode["ValidDays"] = 365;
+
+            System.IO.File.WriteAllText(_configFile, cfg.ToString());
+
+            TempData["Success"] = "Certificate installed. Please restart to apply.";
+            TempData["RestartRequired"] = true;
+            return RedirectToAction(nameof(Config), new { pane = "certificates" });
+        }
+
         private SettingsPageViewModel BuildSettingsPageViewModel()
         {
             JObject cfg = System.IO.File.Exists(_configFile)
@@ -301,11 +433,12 @@ namespace BareProx.Controllers
                     CurrentNotBefore = cert?.NotBefore,
                     CurrentNotAfter = cert?.NotAfter,
                     CurrentThumbprint = cert?.Thumbprint,
-                    RegenSubjectName = cert?.Subject ?? "CN=localhost",
-                    RegenValidDays = 365,
+                    RegenSubjectName = cert?.Subject ?? (_certOptions.CurrentValue?.SubjectName ?? "CN=localhost"),
+                    RegenValidDays = _certOptions.CurrentValue?.ValidDays > 0
+                        ? _certOptions.CurrentValue.ValidDays
+                        : 365,
                     RegenSANs = "localhost"
                 },
-                // NEW: Updates section
                 Updates = new UpdateSettingsViewModel
                 {
                     Enabled = (bool?)cfg["Updates"]?["Enabled"] ?? false,
@@ -313,7 +446,6 @@ namespace BareProx.Controllers
                 }
             };
 
-            // Also populate Email from DB (best effort; avoid throwing here)
             try
             {
                 var es = _context.EmailSettings.AsNoTracking().FirstOrDefault(e => e.Id == 1);
@@ -334,19 +466,22 @@ namespace BareProx.Controllers
                     vm.Email.MinSeverity = es.MinSeverity ?? "Info";
                 }
             }
-            catch { /* keep page rendering even if DB lookup fails here */ }
+            catch
+            {
+                // ignore, keep view rendering
+            }
 
             vm.TimeZones = BuildTimeZoneSelectList(selectedWindowsId);
             return vm;
         }
 
-        // Build the time zone dropdown
         private IEnumerable<SelectListItem> BuildTimeZoneSelectList(string selectedWindowsId)
         {
             var allZones = TimeZoneInfo.GetSystemTimeZones();
             var items = allZones.Select(tzInfo =>
             {
-                string windowsId, ianaId;
+                string windowsId;
+                string ianaId;
 
                 if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                 {
@@ -374,24 +509,19 @@ namespace BareProx.Controllers
             return items;
         }
 
-        // Get the local machine’s “Windows” TZ id (convert from IANA if on Linux)
         private string GetLocalWindowsId()
         {
-            var local = TimeZoneInfo.Local.Id; // On Linux it's IANA; on Windows it's Windows.
+            var local = TimeZoneInfo.Local.Id;
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return local;
 
             try { return TZConvert.IanaToWindows(local); }
             catch { return local; }
         }
 
-        // ========================================================
-        // POST: Settings/RegenerateCert
-        // ========================================================
         [HttpPost]
         [ValidateAntiForgeryToken]
         public IActionResult RegenerateCert([Bind(Prefix = "Regenerate")] RegenerateCertViewModel regenVm)
         {
-            // Only validate the Regenerate submodel
             ModelState.Remove("Regenerate.CurrentSubject");
             ModelState.Remove("Regenerate.CurrentNotBefore");
             ModelState.Remove("Regenerate.CurrentNotAfter");
@@ -434,28 +564,32 @@ namespace BareProx.Controllers
             return Content("Application is restarting...");
         }
 
-        // ===================== Proxmox / NetApp admin bits (unchanged) =====================
-
-        [HttpPost]
-        public async Task<IActionResult> AuthenticateCluster(int id, CancellationToken ct)
-        {
-            var success = await _proxmoxAuthenticator.AuthenticateAndStoreTokenCidAsync(id, ct);
-            TempData["Message"] = success ? "Authentication successful." : "Authentication failed.";
-            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = id });
-        }
+        // =====================================================================
+        // PROXMOX: CLUSTERS + WIZARD
+        // =====================================================================
 
         [HttpGet]
-        public async Task<IActionResult> NetappHub(int? selectedId = null, CancellationToken ct = default)
+        public async Task<IActionResult> ProxmoxHub(int? selectedId = null, CancellationToken ct = default)
         {
-            var list = await _context.NetappControllers.ToListAsync(ct);
-            NetappController? selected = selectedId.HasValue
-                ? list.FirstOrDefault(x => x.Id == selectedId.Value)
-                : null;
+            var clusters = await _context.ProxmoxClusters
+                .Include(c => c.Hosts)
+                .ToListAsync(ct);
 
-            var vm = new NetappHubViewModel
+            ProxmoxCluster? selected = null;
+            SelectStorageViewModel? storageView = null;
+
+            if (selectedId.HasValue)
             {
-                Controllers = list,
-                Selected = selected,
+                selected = clusters.FirstOrDefault(c => c.Id == selectedId.Value);
+                if (selected != null)
+                    storageView = await BuildStorageViewAsync(selected.Id, ct);
+            }
+
+            var vm = new ProxmoxHubViewModel
+            {
+                Clusters = clusters,
+                SelectedCluster = selected,
+                StorageView = storageView,
                 SelectedId = selectedId,
                 Message = TempData["Message"] as string
             };
@@ -464,21 +598,52 @@ namespace BareProx.Controllers
         }
 
         [HttpPost]
+        public async Task<IActionResult> AuthenticateCluster(int id, CancellationToken ct)
+        {
+            var success = await _proxmoxAuthenticator.AuthenticateAndStoreTokenCidAsync(id, ct);
+
+            if (success)
+            {
+                // Only run collection if this cluster already has hosts
+                var hasHosts = await _context.ProxmoxHosts
+                    .AnyAsync(h => h.ClusterId == id, ct);
+
+                if (hasHosts)
+                    await _collector.RunProxmoxClusterStatusCheckAsync(ct);
+            }
+
+            TempData["Message"] = success
+                ? "Authentication successful."
+                : "Authentication failed.";
+            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = id });
+        }
+
+
+        [HttpPost]
         public async Task<IActionResult> AddCluster(string name, string username, string password, CancellationToken ct)
         {
             var cluster = new ProxmoxCluster
             {
                 Name = name,
                 Username = username,
-                PasswordHash = _encryptionService.Encrypt(password)
+                PasswordHash = _encryptionService.Encrypt(password),
+                LastStatus = "configured",
+                LastChecked = DateTime.UtcNow
             };
 
             _context.ProxmoxClusters.Add(cluster);
             await _context.SaveChangesAsync(ct);
 
-            TempData["Message"] = $"Cluster \"{cluster.Name}\" added.";
-            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = cluster.Id });
+            var success = await _proxmoxAuthenticator.AuthenticateAndStoreTokenCidAsync(cluster.Id, ct);
+
+            TempData["Message"] = success
+                ? $"Cluster \"{cluster.Name}\" added and authenticated. Now add hosts to complete configuration."
+                : $"Cluster \"{cluster.Name}\" added, but authentication failed. Please verify credentials.";
+
+            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = cluster.Id, tab = "storage" });
         }
+
+
 
         [HttpPost]
         public async Task<IActionResult> DeleteCluster(int id, CancellationToken ct)
@@ -512,21 +677,19 @@ namespace BareProx.Controllers
 
             existing.Username = cluster.Username;
 
-            if (!ModelState.IsValid)
-                return View("EditCluster", existing);
-
             if (!string.IsNullOrWhiteSpace(cluster.PasswordHash))
                 existing.PasswordHash = _encryptionService.Encrypt(cluster.PasswordHash);
 
             await _context.SaveChangesAsync(ct);
             TempData["Message"] = $"Cluster \"{existing.Name}\" saved.";
-            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = existing.Id });
+            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = existing.Id, tab = "edit" });
         }
 
         [HttpPost]
         public async Task<IActionResult> AddHost(int clusterId, string hostAddress, string hostname, CancellationToken ct)
         {
-            var cluster = await _context.ProxmoxClusters.Include(c => c.Hosts).FirstOrDefaultAsync(c => c.Id == clusterId, ct);
+            var cluster = await _context.ProxmoxClusters.Include(c => c.Hosts)
+                .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
             if (cluster == null) return NotFound();
 
             _context.ProxmoxHosts.Add(new ProxmoxHost
@@ -552,7 +715,344 @@ namespace BareProx.Controllers
             await _context.SaveChangesAsync(ct);
 
             TempData["Message"] = "Host removed.";
-            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = clusterId });
+            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = clusterId, tab = "edit" });
+        }
+
+        // ---------- Live discovery: start ----------
+
+        [HttpPost]
+        public async Task<IActionResult> StartProxmoxDiscovery(
+       [FromBody] StartProxmoxDiscoveryRequest req,
+       CancellationToken ct)
+        {
+            if (string.IsNullOrWhiteSpace(req.SeedHost) ||
+                string.IsNullOrWhiteSpace(req.Username) ||
+                string.IsNullOrWhiteSpace(req.Password))
+            {
+                return BadRequest(new { success = false, error = "Missing seed host / username / password." });
+            }
+
+            var existingCount = await _context.ProxmoxClusters.CountAsync(ct);
+            if (existingCount > 0)
+            {
+                return BadRequest(new { success = false, error = "A cluster is already configured." });
+            }
+
+            var id = Guid.NewGuid();
+            var state = new ProxmoxDiscoveryState();
+            _proxmoxDiscoveryStates[id] = state;
+
+            _ = Task.Run(async () =>
+            {
+                void Log(string msg)
+                {
+                    lock (state.Logs)
+                    {
+                        state.Logs.Add(msg);
+                    }
+                }
+
+                try
+                {
+                    Log($"Connecting to {req.SeedHost} ...");
+
+                    var sshUser = req.Username;
+                    var at = sshUser.IndexOf('@');
+                    if (at > 0) sshUser = sshUser[..at];
+
+                    using var ssh = new SshClient(req.SeedHost, sshUser, req.Password);
+                    ssh.ConnectionInfo.Timeout = TimeSpan.FromSeconds(10);
+                    ssh.Connect();
+                    Log("Connected. Reading /etc/pve/.members ...");
+
+                    using var cmd = ssh.CreateCommand("cat /etc/pve/.members");
+                    var json = cmd.Execute();
+                    if (cmd.ExitStatus != 0 || string.IsNullOrWhiteSpace(json))
+                        throw new Exception("Failed to read /etc/pve/.members from seed node.");
+
+                    using var doc = JsonDocument.Parse(json);
+                    var root = doc.RootElement;
+
+                    if (!root.TryGetProperty("cluster", out var clusterEl))
+                        throw new Exception("No 'cluster' section in .members.");
+
+                    var clusterName = clusterEl.GetProperty("name").GetString() ?? "ProxmoxCluster";
+
+                    if (!root.TryGetProperty("nodelist", out var nodelistEl) ||
+                        nodelistEl.ValueKind != JsonValueKind.Object)
+                    {
+                        throw new Exception("No 'nodelist' section in .members.");
+                    }
+
+                    var nodes = new List<ProxmoxDiscoveryNode>();
+
+                    foreach (var prop in nodelistEl.EnumerateObject())
+                    {
+                        var nodeName = prop.Name;
+                        var nodeObj = prop.Value;
+
+                        if (!nodeObj.TryGetProperty("ip", out var ipEl))
+                            continue;
+
+                        var ip = ipEl.GetString() ?? "";
+                        if (string.IsNullOrWhiteSpace(ip))
+                            continue;
+
+                        Log($"Found node {nodeName} ({ip}). Reverse DNS + SSH probe...");
+
+                        string? reverse = null;
+                        try
+                        {
+                            if (IPAddress.TryParse(ip, out var ipAddr))
+                            {
+                                var entry = await Dns.GetHostEntryAsync(ipAddr);
+                                reverse = entry.HostName;
+                                Log($"  Reverse: {reverse}");
+                            }
+                        }
+                        catch
+                        {
+                            Log("  Reverse lookup failed.");
+                        }
+
+                        var sshOk = false;
+                        try
+                        {
+                            using var sshProbe = new SshClient(ip, sshUser, req.Password);
+                            sshProbe.ConnectionInfo.Timeout = TimeSpan.FromSeconds(5);
+                            sshProbe.Connect();
+                            sshOk = sshProbe.IsConnected;
+                            sshProbe.Disconnect();
+                        }
+                        catch
+                        {
+                            // ignore
+                        }
+
+                        Log($"  SSH: {(sshOk ? "OK" : "FAILED")}");
+
+                        nodes.Add(new ProxmoxDiscoveryNode(
+                            nodeName,
+                            ip,
+                            reverse,
+                            sshOk
+                        ));
+                    }
+
+                    ssh.Disconnect();
+
+                    if (nodes.Count == 0)
+                        throw new Exception("No nodes discovered in /etc/pve/.members.");
+
+                    var ordered = nodes
+                        .OrderBy(n => n.NodeName, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    state.Result = new ProxmoxDiscoveryResult(clusterName, ordered);
+                    state.Success = true;
+                    state.Completed = true;
+                    Log("Discovery completed.");
+                }
+                catch (Exception ex)
+                {
+                    state.Error = ex.Message;
+                    state.Success = false;
+                    state.Completed = true;
+                    lock (state.Logs)
+                    {
+                        state.Logs.Add("ERROR: " + ex.Message);
+                    }
+                }
+            }, ct);
+
+            // IMPORTANT: include success + id
+            return Ok(new { success = true, id });
+        }
+
+
+
+        // ---------- Live discovery: poll status ----------
+
+        [HttpGet]
+        public IActionResult GetProxmoxDiscoveryStatus(Guid id)
+        {
+            if (!_proxmoxDiscoveryStates.TryGetValue(id, out var state))
+                return NotFound();
+
+            List<string> logs;
+            lock (state.Logs)
+            {
+                logs = state.Logs.ToList();
+            }
+
+            return Ok(new
+            {
+                success = state.Success,
+                completed = state.Completed,
+                error = state.Error,
+                logs,
+                result = state.Result == null
+                    ? null
+                    : new
+                    {
+                        clusterName = state.Result.ClusterName,
+                        nodes = state.Result.Nodes.Select(n => new
+                        {
+                            nodeName = n.NodeName,
+                            ip = n.Ip,
+                            reverseName = n.ReverseName,
+                            sshOk = n.SshOk
+                        }).ToList()
+                    }
+            });
+        }
+
+        // ---------- Create cluster from discovery result ----------
+
+        [HttpPost]
+        public async Task<IActionResult> CreateClusterFromDiscovery(
+       [FromBody] CreateClusterFromDiscoveryRequest req,
+       CancellationToken ct)
+        {
+            if (string.IsNullOrWhiteSpace(req.ClusterName) ||
+                string.IsNullOrWhiteSpace(req.Username) ||
+                string.IsNullOrWhiteSpace(req.Password) ||
+                req.Nodes == null || req.Nodes.Count == 0)
+            {
+                return BadRequest("Invalid payload.");
+            }
+
+            var existingCount = await _context.ProxmoxClusters.CountAsync(ct);
+            if (existingCount > 0)
+                return BadRequest("A cluster is already configured.");
+
+            var firstNode = req.Nodes.First();
+            var seedHost = !string.IsNullOrWhiteSpace(firstNode.HostAddress)
+                ? firstNode.HostAddress
+                : firstNode.Ip;
+
+            // Verify credentials/seed node before we write anything
+            var verify = await _clusterDiscovery.VerifyAsync(seedHost, req.Username, req.Password, ct);
+            if (!verify.Success)
+            {
+                return BadRequest("Verification against seed node failed: " + (verify.Error ?? "Unknown error"));
+            }
+
+            var cluster = new ProxmoxCluster
+            {
+                Name = req.ClusterName.Trim(),
+                Username = req.Username.Trim(),
+                PasswordHash = _encryptionService.Encrypt(req.Password),
+                LastStatus = "configured",
+                LastChecked = DateTime.UtcNow
+            };
+
+            await using var tx = await _context.Database.BeginTransactionAsync(ct);
+
+            _context.ProxmoxClusters.Add(cluster);
+            await _context.SaveChangesAsync(ct);
+
+            var hosts = req.Nodes
+                .Where(n => !string.IsNullOrWhiteSpace(n.Ip))
+                .Select(n => new ProxmoxHost
+                {
+                    ClusterId = cluster.Id,
+                    Hostname = string.IsNullOrWhiteSpace(n.NodeName)
+                        ? (string.IsNullOrWhiteSpace(n.HostAddress) ? n.Ip : n.HostAddress)
+                        : n.NodeName,
+                    HostAddress = string.IsNullOrWhiteSpace(n.HostAddress) ? n.Ip : n.HostAddress
+                })
+                .ToList();
+
+            if (hosts.Count == 0)
+            {
+                await tx.RollbackAsync(ct);
+                return BadRequest("No usable nodes after validation.");
+            }
+
+            _context.ProxmoxHosts.AddRange(hosts);
+            await _context.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+
+            // Auto-authenticate discovered cluster
+            var success = await _proxmoxAuthenticator.AuthenticateAndStoreTokenCidAsync(cluster.Id, ct);
+
+            if (success)
+            {
+                // Now cluster + hosts are fully present → run immediate health check
+                await _collector.RunProxmoxClusterStatusCheckAsync(ct);
+            }
+
+            TempData["Message"] =
+                success
+                    ? $"Cluster \"{cluster.Name}\" discovered, added with {hosts.Count} host(s), and authenticated."
+                    : $"Cluster \"{cluster.Name}\" discovered and added with {hosts.Count} host(s), but authentication failed. Please verify credentials.";
+
+            return Ok(new { clusterId = cluster.Id, authenticated = success });
+        }
+
+
+
+        private async Task<SelectStorageViewModel> BuildStorageViewAsync(int clusterId, CancellationToken ct)
+        {
+            var cluster = await _context.ProxmoxClusters
+                .Include(c => c.Hosts)
+                .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
+
+            if (cluster == null)
+            {
+                return new SelectStorageViewModel
+                {
+                    ClusterId = clusterId,
+                    StorageList = new List<ProxmoxStorageDto>()
+                };
+            }
+
+            var allNfsStorage = await _proxmoxService.GetNfsStorageAsync(cluster, ct);
+
+            var selectedIds = await _context.Set<ProxSelectedStorage>()
+                .Where(s => s.ClusterId == clusterId)
+                .Select(s => s.StorageIdentifier)
+                .ToHashSetAsync(StringComparer.OrdinalIgnoreCase, ct);
+
+            var storageList = allNfsStorage.Select(s => new ProxmoxStorageDto
+            {
+                Id = s.Storage,
+                Storage = s.Storage,
+                Type = s.Type,
+                Path = s.Path,
+                Node = s.Node,
+                IsSelected = selectedIds.Contains(s.Storage)
+            }).ToList();
+
+            return new SelectStorageViewModel
+            {
+                ClusterId = clusterId,
+                StorageList = storageList
+            };
+        }
+
+        // =====================================================================
+        // NETAPP
+        // =====================================================================
+
+        [HttpGet]
+        public async Task<IActionResult> NetappHub(int? selectedId = null, CancellationToken ct = default)
+        {
+            var list = await _context.NetappControllers.ToListAsync(ct);
+            NetappController? selected = selectedId.HasValue
+                ? list.FirstOrDefault(x => x.Id == selectedId.Value)
+                : null;
+
+            var vm = new NetappHubViewModel
+            {
+                Controllers = list,
+                Selected = selected,
+                SelectedId = selectedId,
+                Message = TempData["Message"] as string
+            };
+
+            return View(vm);
         }
 
         [HttpPost]
@@ -596,7 +1096,14 @@ namespace BareProx.Controllers
 
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public async Task<IActionResult> Edit(int id, string Hostname, string IpAddress, bool IsPrimary, string Username, string PasswordHash, CancellationToken ct)
+        public async Task<IActionResult> Edit(
+            int id,
+            string Hostname,
+            string IpAddress,
+            bool IsPrimary,
+            string Username,
+            string PasswordHash,
+            CancellationToken ct)
         {
             var existing = await _context.NetappControllers.FindAsync(id, ct);
             if (existing == null) return RedirectToAction(nameof(NetappHub));
@@ -606,7 +1113,8 @@ namespace BareProx.Controllers
                 var okNew = await _netappAuthService.TryAuthenticateAsync(IpAddress, Username, PasswordHash, ct);
                 if (!okNew)
                 {
-                    TempData["Message"] = "Authentication failed with the new password. Changes were not saved.";
+                    TempData["Message"] =
+                        "Authentication failed with the new password. Changes were not saved.";
                     return RedirectToAction(nameof(NetappHub), new { selectedId = id, tab = "edit" });
                 }
 
@@ -617,8 +1125,6 @@ namespace BareProx.Controllers
             existing.IpAddress = IpAddress;
             existing.IsPrimary = IsPrimary;
             existing.Username = Username;
-            if (!string.IsNullOrWhiteSpace(PasswordHash))
-                existing.PasswordHash = _encryptionService.Encrypt(PasswordHash);
 
             await _context.SaveChangesAsync(ct);
 
@@ -656,19 +1162,18 @@ namespace BareProx.Controllers
         {
             try
             {
-                var controller = await _context.NetappControllers.FirstOrDefaultAsync(c => c.Id == storageId, ct);
+                var controller = await _context.NetappControllers
+                    .FirstOrDefaultAsync(c => c.Id == storageId, ct);
                 if (controller == null) return NotFound("Controller not found");
 
                 var svms = await _netappVolumeService.GetVserversAndVolumesAsync(controller.Id, ct);
                 if (svms == null || !svms.Any())
                     return NotFound("No volume data found for this controller");
 
-                // Load ALL tracked rows, including disabled ones
                 var tracked = await _context.SelectedNetappVolumes
                     .Where(v => v.NetappControllerId == storageId)
                     .ToListAsync(ct);
 
-                // Field-based matcher (works with any vol object)
                 static bool Matches(SelectedNetappVolumes s, string? uuid, string? volName, string? mountIp) =>
                     string.Equals(s.Uuid, uuid, StringComparison.OrdinalIgnoreCase)
                     && string.Equals(s.VolumeName, volName, StringComparison.OrdinalIgnoreCase)
@@ -683,7 +1188,6 @@ namespace BareProx.Controllers
                         Volumes = svm.Volumes.Select(vol =>
                         {
                             var row = tracked.FirstOrDefault(s => Matches(s, vol.Uuid, vol.VolumeName, vol.MountIp));
-                            // Show all; checkbox only checked if tracked AND not disabled
                             var isSelected = row != null && row.Disabled != true;
 
                             return new NetappVolumeDto
@@ -693,7 +1197,6 @@ namespace BareProx.Controllers
                                 MountIp = vol.MountIp,
                                 ClusterId = vol.ClusterId,
                                 IsSelected = isSelected,
-                                // Disabled = row?.Disabled ?? false // if you add this to the DTO
                             };
                         }).ToList()
                     }).ToList()
@@ -710,7 +1213,6 @@ namespace BareProx.Controllers
         [HttpGet]
         public async Task<IActionResult> GetSelectedNetappVolumes(int controllerId, CancellationToken ct)
         {
-            // Return only enabled UUIDs so pre-checks don't tick disabled ones
             var uuids = await _context.SelectedNetappVolumes
                 .Where(v => v.NetappControllerId == controllerId && v.Disabled != true)
                 .Select(v => v.Uuid)
@@ -721,10 +1223,6 @@ namespace BareProx.Controllers
             return Json(uuids);
         }
 
-        /// <summary>
-        /// Returns UUIDs of SelectedNetappVolumes that are in use by any BackupSchedule.SelectedNetappVolumeId
-        /// for the specified controller. Use these to force check + disable the corresponding checkboxes.
-        /// </summary>
         [HttpGet]
         public async Task<IActionResult> GetInUseSelectedVolumeUuids(int controllerId, CancellationToken ct)
         {
@@ -747,29 +1245,41 @@ namespace BareProx.Controllers
         [HttpPost]
         public async Task<IActionResult> SaveSelectedStorage(SelectStorageViewModel model, CancellationToken ct)
         {
-            var existing = await _context.SelectedStorages.Where(s => s.ClusterId == model.ClusterId).ToListAsync(ct);
-            var selectedSet = new HashSet<string>(model.SelectedStorageIds ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
+            var existing = await _context.SelectedStorages
+                .Where(s => s.ClusterId == model.ClusterId)
+                .ToListAsync(ct);
+
+            var selectedSet = new HashSet<string>(
+                model.SelectedStorageIds ?? new List<string>(),
+                StringComparer.OrdinalIgnoreCase);
 
             var toRemove = existing.Where(e => !selectedSet.Contains(e.StorageIdentifier)).ToList();
             _context.SelectedStorages.RemoveRange(toRemove);
 
-            var existingSet = existing.Select(e => e.StorageIdentifier).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var existingSet = existing
+                .Select(e => e.StorageIdentifier)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
             var toAdd = selectedSet
                 .Where(id => !existingSet.Contains(id))
-                .Select(id => new ProxSelectedStorage { ClusterId = model.ClusterId, StorageIdentifier = id });
+                .Select(id => new ProxSelectedStorage
+                {
+                    ClusterId = model.ClusterId,
+                    StorageIdentifier = id
+                });
 
             _context.SelectedStorages.AddRange(toAdd);
             await _context.SaveChangesAsync(ct);
-            TempData["Message"] = "Selected storage updated.";
 
-            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = model.ClusterId });
+            TempData["Message"] = "Selected storage updated.";
+            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = model.ClusterId, tab = "storage" });
         }
 
         [HttpPost]
-        public async Task<IActionResult> SaveNetappSelectedVolumes([FromBody] List<NetappVolumeExportDto> volumes, CancellationToken ct)
+        public async Task<IActionResult> SaveNetappSelectedVolumes(
+            [FromBody] List<NetappVolumeExportDto> volumes,
+            CancellationToken ct)
         {
-            // NOTE: This assumes your payload carries the NetApp *controller id* in ClusterId.
-            // If you already have a separate ControllerId field, swap to that instead.
             var controllerId = volumes.FirstOrDefault()?.ClusterId ?? 0;
             if (controllerId == 0)
                 return BadRequest("Missing controller id.");
@@ -778,7 +1288,6 @@ namespace BareProx.Controllers
                 .Where(v => v.NetappControllerId == controllerId)
                 .ToListAsync(ct);
 
-            // Composite key (Uuid + VolumeName + MountIp)
             static string Key(string? uuid, string? vol, string? ip) =>
                 $"{uuid ?? ""}||{vol ?? ""}||{ip ?? ""}".ToLowerInvariant();
 
@@ -791,18 +1300,17 @@ namespace BareProx.Controllers
                 volumes.Select(v => Key(v.Uuid, v.VolumeName, v.MountIp))
             );
 
-            // 1) Upsert incoming: create if missing, update + enable if present
             foreach (var v in volumes)
             {
                 var k = Key(v.Uuid, v.VolumeName, v.MountIp);
                 if (existingByKey.TryGetValue(k, out var row))
                 {
-                    row.Disabled = false; // re-enable
+                    row.Disabled = false;
                     row.Vserver = v.Vserver;
                     row.VolumeName = v.VolumeName;
                     row.Uuid = v.Uuid;
-                    row.MountIp = v.MountIp;            // keep mapping
-                    row.NetappControllerId = controllerId;   // ensure controller binding
+                    row.MountIp = v.MountIp;
+                    row.NetappControllerId = controllerId;
                 }
                 else
                 {
@@ -818,7 +1326,6 @@ namespace BareProx.Controllers
                 }
             }
 
-            // 2) Any existing not in incoming should be marked Disabled = true (not deleted)
             foreach (var e in existing)
             {
                 var k = Key(e.Uuid, e.VolumeName, e.MountIp);
@@ -827,74 +1334,18 @@ namespace BareProx.Controllers
             }
 
             await _context.SaveChangesAsync(ct);
-
             await _netappVolumeService.UpdateAllSelectedVolumesAsync(ct);
             return Ok();
         }
 
-        [HttpGet]
-        public async Task<IActionResult> ProxmoxHub(int? selectedId = null, CancellationToken ct = default)
-        {
-            var clusters = await _context.ProxmoxClusters
-                .Include(c => c.Hosts)
-                .ToListAsync(ct);
-
-            ProxmoxCluster? selected = null;
-            SelectStorageViewModel? storageView = null;
-
-            if (selectedId.HasValue)
-            {
-                selected = clusters.FirstOrDefault(c => c.Id == selectedId.Value);
-                if (selected != null)
-                    storageView = await BuildStorageViewAsync(selected.Id, ct);
-            }
-
-            var vm = new ProxmoxHubViewModel
-            {
-                Clusters = clusters,
-                SelectedCluster = selected,
-                StorageView = storageView,
-                SelectedId = selectedId,
-                Message = TempData["Message"] as string
-            };
-
-            return View(vm);
-        }
-
-        private async Task<SelectStorageViewModel> BuildStorageViewAsync(int clusterId, CancellationToken ct)
-        {
-            var cluster = await _context.ProxmoxClusters.Include(c => c.Hosts).FirstOrDefaultAsync(c => c.Id == clusterId, ct);
-            if (cluster == null)
-                return new SelectStorageViewModel { ClusterId = clusterId, StorageList = new List<ProxmoxStorageDto>() };
-
-            var allNfsStorage = await _proxmoxService.GetNfsStorageAsync(cluster, ct);
-
-            var selectedIds = await _context.Set<ProxSelectedStorage>()
-                .Where(s => s.ClusterId == clusterId)
-                .Select(s => s.StorageIdentifier)
-                .ToHashSetAsync(StringComparer.OrdinalIgnoreCase, ct);
-
-            var storageList = allNfsStorage.Select(s => new ProxmoxStorageDto
-            {
-                Id = s.Storage,
-                Storage = s.Storage,
-                Type = s.Type,
-                Path = s.Path,
-                Node = s.Node,
-                IsSelected = selectedIds.Contains(s.Storage)
-            }).ToList();
-
-            return new SelectStorageViewModel
-            {
-                ClusterId = clusterId,
-                StorageList = storageList
-            };
-        }
-
-        // ===================== Email settings: Save + Test =====================
+        // =====================================================================
+        // EMAIL: Save + Test
+        // =====================================================================
 
         [HttpPost, ValidateAntiForgeryToken]
-        public async Task<IActionResult> SaveEmailSettings([Bind(Prefix = "Email")] EmailSettingsViewModel vm, CancellationToken ct)
+        public async Task<IActionResult> SaveEmailSettings(
+            [Bind(Prefix = "Email")] EmailSettingsViewModel vm,
+            CancellationToken ct)
         {
             var sec = (vm.SecurityMode ?? "StartTls").Trim();
             var port = vm.SmtpPort > 0
@@ -911,13 +1362,20 @@ namespace BareProx.Controllers
                 ModelState.AddModelError("Email.SmtpHost", "SMTP Server is required.");
 
             var authRequired = vm.Enabled && !noAuth;
-            var existing = await _context.EmailSettings.AsNoTracking().FirstAsync(e => e.Id == 1, ct);
+            var existing = await _context.EmailSettings.AsNoTracking()
+                .FirstAsync(e => e.Id == 1, ct);
 
             if (authRequired && string.IsNullOrWhiteSpace(vm.Username))
-                ModelState.AddModelError("Email.Username", "Username is required unless using Security=None on port 25.");
+                ModelState.AddModelError("Email.Username",
+                    "Username is required unless using Security=None on port 25.");
 
-            if (authRequired && string.IsNullOrWhiteSpace(vm.Password) && string.IsNullOrWhiteSpace(existing.ProtectedPassword))
-                ModelState.AddModelError("Email.Password", "Password (or an already saved password) is required when authentication is used.");
+            if (authRequired &&
+                string.IsNullOrWhiteSpace(vm.Password) &&
+                string.IsNullOrWhiteSpace(existing.ProtectedPassword))
+            {
+                ModelState.AddModelError("Email.Password",
+                    "Password (or an already saved password) is required when authentication is used.");
+            }
 
             if (!ModelState.IsValid)
             {
@@ -945,7 +1403,9 @@ namespace BareProx.Controllers
             }
 
             s.From = string.IsNullOrWhiteSpace(vm.From) ? null : vm.From.Trim();
-            s.DefaultRecipients = string.IsNullOrWhiteSpace(vm.DefaultRecipients) ? null : vm.DefaultRecipients.Trim();
+            s.DefaultRecipients = string.IsNullOrWhiteSpace(vm.DefaultRecipients)
+                ? null
+                : vm.DefaultRecipients.Trim();
 
             s.OnBackupSuccess = vm.OnBackupSuccess;
             s.OnBackupFailure = vm.OnBackupFailure;
@@ -967,8 +1427,9 @@ namespace BareProx.Controllers
                 if (string.IsNullOrWhiteSpace(to))
                     throw new InvalidOperationException("Please provide a recipient email.");
 
-                var html = $@"<p>This is a test email from <b>BareProx</b> at {DateTime.UtcNow:u} (UTC).</p>
-                              <p>If you received this, SMTP settings work.</p>";
+                var html =
+                    $@"<p>This is a test email from <b>BareProx</b> at {DateTime.UtcNow:u} (UTC).</p>
+                       <p>If you received this, SMTP settings work.</p>";
 
                 await _email.SendAsync(to.Trim(), "BareProx test email", html, ct);
                 TempData["Success"] = $"Test email sent to {to}.";
@@ -977,6 +1438,7 @@ namespace BareProx.Controllers
             {
                 TempData["Error"] = $"Failed to send test email: {ex.Message}";
             }
+
             return RedirectToAction(nameof(Config));
         }
     }

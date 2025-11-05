@@ -4,13 +4,14 @@ BareProx is an ASP.NET Core MVC application, as evidenced by its Controllers, Vi
 
 ## Features
 
-- **Proxmox Integration**: Monitor host status and health, create snapshots (with I/O freeze and memory support), and manage snapshot lifecycles  
+- **Proxmox Integration**: Monitor host status and health, create snapshots (with memory vm-state support), and manage snapshot lifecycles
+- **Migration (VMware → Proxmox)**: Migrate VMs from VMware to Proxmox using NetApp NFS as an intermediary storage (needs to be enabled in the system/settings)
 - **NetApp NFS Datastores**: Use NetApp NFS volumes as Proxmox storage backends for VM disks and backups.  
-- **NetApp SnapMirror & SnapLock**: Configure and monitor SnapMirror relationships, support SnapLock tamper-proof snapshots ([github.com](https://github.com/nwtobbe/BareProx))  
-- **Scheduling**: Define hourly and daily backup jobs with customizable retention, including manual cleanup of orphaned snapshots  
-- **User Management**: Authentication via ASP.NET Core Identity with support for multiple users and roles ([github.com](https://github.com/nwtobbe/BareProx))  
-- **Logging & Monitoring**: File logging with categories, Proxmox health dashboard, status warnings ([github.com](https://github.com/nwtobbe/BareProx))  
-- **Dockerized Deployment**: Deploy with Docker Compose using volume mappings for configuration and persistent data ([github.com](https://github.com/nwtobbe/BareProx))  
+- **NetApp SnapMirror & SnapLock**: Replicate backups with SnapMirror to another location, support for SnapLock tamper-proof snapshots both on primary and secondary storage.  
+- **Scheduling**: Define hourly, daily or weekly backup jobs with customizable retention  
+- **User Management**: Authentication via ASP.NET Core Identity with support for multiple users and roles 
+- **Logging & Monitoring**: File logging with categories, Proxmox health dashboard, status warnings  
+- **Dockerized Deployment**: Deploy with Docker Compose using volume mappings for configuration and persistent data
 
 ## Prerequisites
 
@@ -65,9 +66,7 @@ Log out, then log back in as **bareprox**.
 sudo mkdir -p /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 
-echo \
-  "deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
-  \$(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable"  | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
 sudo apt-get update
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin

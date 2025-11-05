@@ -1,390 +1,496 @@
 ﻿@model BareProx.Models.SettingsPageViewModel
+@{
+    ViewBag.Title = "Application Configuration";
+    ViewBag.FullWidth = false;
+    var experimentalEnabled = (bool)(ViewBag.ExperimentalExtra ?? false);
+
+    // Safe in Razor views: get initial pane from query (default: general)
+    string initialPane =
+        (ViewContext?.HttpContext?.Request?.Query["pane"].ToString() ?? "general")
+        .ToLowerInvariant();
+
+    if (initialPane != "general" && initialPane != "notifications" && initialPane != "certificates")
+    {
+        initialPane = "general";
+    }
+}
+
+<style>
+    .settings-shell {
+        display: grid;
+        grid-template-columns: 260px 1fr;
+        gap: 1rem;
+        align-items: start;
+    }
+
+    @@media (max-width: 992px) {
+        .settings-shell
+
+    {
+        grid-template-columns: 1fr;
+    }
+
+    }
+
+    .settings-menu {
+        position: sticky;
+        top: 1rem;
+        border: 1px solid rgba(0,0,0,.125);
+        border-radius: .75rem;
+        background: #fff;
+        padding: .5rem;
+    }
+
+        .settings-menu .title {
+            font-weight: 600;
+            color: #6c757d;
+            font-size: .95rem;
+            margin: .25rem .5rem .5rem;
+        }
+
+        .settings-menu .item {
+            display: flex;
+            align-items: center;
+            gap: .5rem;
+            padding: .5rem .6rem;
+            border-radius: .5rem;
+            text-decoration: none;
+            color: inherit;
+            cursor: pointer;
+        }
+
+            .settings-menu .item:hover {
+                background: rgba(0,0,0,.03);
+            }
+
+            .settings-menu .item.active {
+                background: rgba(13,110,253,.08);
+            }
+
+    .settings-icon {
+        width: 1.15rem;
+        text-align: center;
+        opacity: .9;
+    }
+
+    .pane {
+        display: none;
+    }
+
+        .pane.active {
+            display: block;
+        }
+
+    .section-divider {
+        margin: 1.5rem 0;
+    }
+</style>
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <h2 class="mb-0">@ViewBag.Title</h2>
+</div>
 
 @if (TempData["RestartRequired"] != null)
 {
-    <div class="alert alert-warning">
-        <strong>Restart required:</strong> The application must restart to apply the new certificate.
-        <form asp-action="RestartApp" asp-controller="Settings" method="post" style="display:inline;">
+    <div class="alert alert-warning d-flex align-items-center justify-content-between">
+        <div>
+            <strong>Restart required:</strong> The application must restart to apply the new certificate.
+        </div>
+        <form asp-action="RestartApp" asp-controller="Settings" method="post" class="ms-3 mb-0">
             @Html.AntiForgeryToken()
-            <button type="submit" class="btn btn-danger btn-sm ms-3">Restart Now</button>
+            <button type="submit" class="btn btn-danger btn-sm">Restart Now</button>
         </form>
     </div>
 }
 
-@{
-    ViewBag.Title = "Application Configuration";
-    var experimentalEnabled = (bool)(ViewBag.ExperimentalExtra ?? false);
-}
-
-<h2>@ViewBag.Title</h2>
-
 @if (TempData["Success"] != null)
 {
-    <div class="alert alert-success">
-        @TempData["Success"]
-    </div>
+    <div class="alert alert-success">@TempData["Success"]</div>
 }
 
-<!-- ================================
-     Section A: Time Zone Form
-     ================================ -->
-@using (Html.BeginForm("Config", "Settings", FormMethod.Post))
-{
-    @Html.AntiForgeryToken()
+<div class="settings-shell">
+    <!-- LEFT MENU -->
+    <aside class="settings-menu" id="settingsMenu">
+        <div class="title">Settings</div>
+        <a class="item @(initialPane == "general" ? "active" : "")"
+           href="?pane=general" data-pane="general" role="button">
+            <span class="settings-icon">📁</span> <span>General</span>
+        </a>
+        <a class="item @(initialPane == "notifications" ? "active" : "")"
+           href="?pane=notifications" data-pane="notifications" role="button">
+            <span class="settings-icon">📁</span> <span>Notifications</span>
+        </a>
+        <a class="item @(initialPane == "certificates" ? "active" : "")"
+           href="?pane=certificates" data-pane="certificates" role="button">
+            <span class="settings-icon">📁</span> <span>Certificates</span>
+        </a>
+    </aside>
 
-    <div class="form-group mb-3">
-        @Html.LabelFor(m => m.Config.TimeZoneWindows)
-        @Html.DropDownListFor(
-        m => m.Config.TimeZoneWindows,
-        Model.TimeZones,
-        "— select time zone —",
-        new { @class = "form-control" })
-    @Html.ValidationMessageFor(
-        m => m.Config.TimeZoneWindows,
-        "", new { @class = "text-danger" })
-</div>
+    <!-- RIGHT CONTENT -->
+    <main id="settingsContent">
+        <!-- ===== Pane: GENERAL ===== -->
+        <div class="pane @(initialPane == "general" ? "active" : "")" data-pane="general">
+            <h4 class="mb-3">General</h4>
 
-<button type="submit" class="btn btn-primary">Save Time Zone</button>
-}
-
-<hr />
-
-<!-- ===========================================
-     Section B: Experimental Features Toggle
-     =========================================== -->
-@using (Html.BeginForm("ToggleExperimental", "Settings", FormMethod.Post, new { @class = "mb-3" }))
-{
-    @Html.AntiForgeryToken()
-    <div class="form-check form-switch">
-        <input class="form-check-input"
-               type="checkbox"
-               id="ExperimentalExtra"
-               name="ExperimentalExtra"
-               value="true"
-               @(experimentalEnabled ? "checked" : "") />
-        <label class="form-check-label" for="ExperimentalExtra">
-            Enable even more experimental features in this experimental application
-        </label>
-    </div>
-    <button type="submit" class="btn btn-outline-secondary btn-sm mt-2">Save</button>
-}
-
-<hr />
-
-<!-- =========================================
-     Section: Update Checker
-     ========================================= -->
-<h4>Update checker</h4>
-
-@using (Html.BeginForm("SaveUpdateSettings", "Settings", FormMethod.Post, new { @class = "mb-3" }))
-{
-    @Html.AntiForgeryToken()
-
-    <div class="form-check form-switch mb-2">
-        <input class="form-check-input"
-               type="checkbox"
-               id="Updates_Enabled"
-               name="Updates.Enabled"
-               value="true"
-               @(Model.Updates?.Enabled == true ? "checked" : "") />
-        <label class="form-check-label" for="Updates_Enabled">
-            Enable “check for updates”
-        </label>
-    </div>
-
-    <div id="updates-warning" class="alert alert-warning d-none py-2">
-        <strong>Heads up:</strong> This feature fetches version info and CHANGELOG from GitHub.
-        Your server must have outbound HTTPS access to <code>raw.githubusercontent.com</code>.
-    </div>
-
-    <div id="updates-fields" class="row g-3 @(Model.Updates?.Enabled == true ? "" : "d-none")">
-        <div class="col-md-4">
-            <label for="Updates_FrequencyMinutes" class="form-label">Check frequency</label>
-            <select class="form-select" id="Updates_FrequencyMinutes" name="Updates.FrequencyMinutes">
-                @{
-                    int freq = Model.Updates?.FrequencyMinutes ?? 360;
-                    string Opt(int val, string text) =>
-                    $"<option value=\"{val}\" {(freq == val ? "selected" : "")}>{text}</option>";
-                }
-                @Html.Raw(Opt(1440, "Daily"))
-                @Html.Raw(Opt(2880, "Every 2 days"))
-                @Html.Raw(Opt(10080, "Weekly"))
-            </select>
-        </div>
-    </div>
-
-    <button type="submit" class="btn btn-outline-secondary btn-sm mt-2">Save</button>
-}
-
-<hr />
-
-<!-- =========================================
-     Section C: Email Notifications
-     ========================================= -->
-<h4>Email Notifications</h4>
-
-@using (Html.BeginForm("SaveEmailSettings", "Settings", FormMethod.Post, new { @class = "mb-3" }))
-{
-    @Html.AntiForgeryToken()
-
-    <div class="form-check form-switch mb-3" value="false">
-        <input class="form-check-input"
-               type="checkbox"
-               id="Email_Enabled"
-               name="Email.Enabled"
-               value="true"
-               @(Model.Email?.Enabled == true ? "checked" : "") />
-        <label class="form-check-label" for="Email_Enabled">
-            Enable email notifications
-        </label>
-    </div>
-
-    <!-- Hidden when not enabled -->
-    <div id="email-settings-fields" class="border rounded p-3 bg-light @(Model.Email?.Enabled == true ? "" : "d-none")">
-        <div class="row g-3">
-            <div class="col-md-6">
-                <label for="Email_SmtpHost" class="form-label">SMTP Server</label>
-                <input class="form-control" id="Email_SmtpHost" name="Email.SmtpHost" value="@Model.Email?.SmtpHost" />
-                @Html.ValidationMessage("Email.SmtpHost", "", new { @class = "text-danger" })
+            <!-- Time Zone -->
+            @using (Html.BeginForm("Config", "Settings", FormMethod.Post))
+            {
+                @Html.AntiForgeryToken()
+                <div class="form-group mb-3">
+                    @Html.LabelFor(m => m.Config.TimeZoneWindows)
+                    @Html.DropDownListFor(
+                    m => m.Config.TimeZoneWindows,
+                                Model.TimeZones,
+                                "— select time zone —",
+                                new { @class = "form-control" })
+                @Html.ValidationMessageFor(m => m.Config.TimeZoneWindows, "", new { @class = "text-danger" })
             </div>
+            <button type="submit" class="btn btn-primary">Save Time Zone</button>
+                        }
 
-            <div class="col-md-3">
-                <label for="Email_SmtpPort" class="form-label">Port</label>
-                <input type="number" class="form-control" id="Email_SmtpPort" name="Email.SmtpPort" value="@(Model.Email?.SmtpPort ?? 587)" min="1" />
-                @Html.ValidationMessage("Email.SmtpPort", "", new { @class = "text-danger" })
-            </div>
+            <hr class="section-divider" />
 
-            <div class="col-md-3">
-                <label for="Email_SecurityMode" class="form-label">Security</label>
-                <select class="form-select" id="Email_SecurityMode" name="Email.SecurityMode">
-                    @{
-                        var sec = Model.Email?.SecurityMode ?? "StartTls";
-                        string Opt(string val, string text) => $"<option value=\"{val}\" {(sec == val ? "selected" : "")}>{text}</option>";
-                    }
-                    @Html.Raw(Opt("None", "None"))
-                    @Html.Raw(Opt("StartTls", "STARTTLS"))
-                    @Html.Raw(Opt("SslTls", "SSL/TLS"))
-                </select>
-                @Html.ValidationMessage("Email.SecurityMode", "", new { @class = "text-danger" })
-            </div>
-
-            <div class="col-md-6">
-                <label for="Email_Username" class="form-label">Username</label>
-                <input class="form-control" id="Email_Username" name="Email.Username" value="@Model.Email?.Username" autocomplete="username" />
-                @Html.ValidationMessage("Email.Username", "", new { @class = "text-danger" })
-            </div>
-
-            <div class="col-md-6">
-                <label for="Email_Password" class="form-label">Password / App Password</label>
-                <div class="input-group">
-                    <input type="password" class="form-control" id="Email_Password" name="Email.Password" value="" placeholder="••••••••" autocomplete="current-password" />
-                    <button class="btn btn-outline-secondary" type="button" id="togglePwd">Show</button>
+            <!-- Experimental toggle -->
+            <h5>Enable Migration</h5>
+            @using (Html.BeginForm("ToggleExperimental", "Settings", FormMethod.Post, new { @class = "mb-3" }))
+            {
+                @Html.AntiForgeryToken()
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="ExperimentalExtra" name="ExperimentalExtra" value="true" @(experimentalEnabled ? "checked" : "") />
+                    <label class="form-check-label" for="ExperimentalExtra">Enable even more experimental features in this experimental application</label>
                 </div>
-                @Html.ValidationMessage("Email.Password", "", new { @class = "text-danger" })
-                <small class="text-muted">Leave blank to keep existing password.</small>
-            </div>
+                <button type="submit" class="btn btn-outline-secondary btn-sm mt-2">Save</button>
+            }
 
-            <div class="col-md-6">
-                <label for="Email_From" class="form-label">From Address</label>
-                <input type="email" class="form-control" id="Email_From" name="Email.From" value="@Model.Email?.From" />
-                @Html.ValidationMessage("Email.From", "", new { @class = "text-danger" })
-            </div>
+            <hr class="section-divider" />
 
-            <div class="col-md-6">
-                <label for="Email_DefaultRecipients" class="form-label">Recipients</label>
-                <input class="form-control" id="Email_DefaultRecipients" name="Email.DefaultRecipients" value="@Model.Email?.DefaultRecipients" placeholder="tobias@example.com,alerts@example.com" />
-                <small class="text-muted">Comma-separated list.</small>
-                @Html.ValidationMessage("Email.DefaultRecipients", "", new { @class = "text-danger" })
-            </div>
-        </div>
+            <!-- Update Checker -->
+            <h5>Update checker</h5>
+            @using (Html.BeginForm("SaveUpdateSettings", "Settings", FormMethod.Post, new { @class = "mb-3" }))
+            {
+                @Html.AntiForgeryToken()
 
-        <hr />
-
-        <label class="form-label">Notify for</label>
-        <div class="row g-3">
-            <div class="col-md-3">
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" id="Email_OnBackupSuccess" name="Email.OnBackupSuccess" value="true" @(Model.Email?.OnBackupSuccess == true ? "checked" : "") />
-                    <label class="form-check-label" for="Email_OnBackupSuccess">Backup success</label>
-                </div>
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" id="Email_OnBackupFailure" name="Email.OnBackupFailure" value="true" @(Model.Email?.OnBackupFailure == true ? "checked" : "") />
-                    <label class="form-check-label" for="Email_OnBackupFailure">Backup failure</label>
-                </div>
-            </div>
-
-            <div class="col-md-3">
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" id="Email_OnRestoreSuccess" name="Email.OnRestoreSuccess" value="true" @(Model.Email?.OnRestoreSuccess == true ? "checked" : "") />
-                    <label class="form-check-label" for="Email_OnRestoreSuccess">Restore success</label>
-                </div>
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" id="Email_OnRestoreFailure" name="Email.OnRestoreFailure" value="true" @(Model.Email?.OnRestoreFailure == true ? "checked" : "") />
-                    <label class="form-check-label" for="Email_OnRestoreFailure">Restore failure</label>
-                </div>
-            </div>
-
-            <div class="col-md-6">
-                <div class="form-check mb-2">
-                    <input class="form-check-input" type="checkbox" id="Email_OnWarnings" name="Email.OnWarnings" value="true" @(Model.Email?.OnWarnings == true ? "checked" : "") />
-                    <label class="form-check-label" for="Email_OnWarnings">Warnings / System alerts</label>
+                <div class="form-check form-switch mb-2">
+                    <input class="form-check-input" type="checkbox" id="Updates_Enabled" name="Updates.Enabled" value="true" @(Model.Updates?.Enabled == true ? "checked" : "") />
+                    <label class="form-check-label" for="Updates_Enabled">Enable “check for updates”</label>
                 </div>
 
-                <div class="row">
-                    <div class="col-8">
-                        <label for="Email_MinSeverity" class="form-label">Minimum severity to notify</label>
-                        <select class="form-select" id="Email_MinSeverity" name="Email.MinSeverity">
+                <div id="updates-warning" class="alert alert-warning d-none py-2">
+                    <strong>Heads up:</strong> This feature fetches version info and CHANGELOG from GitHub.
+                    Your server must have outbound HTTPS access to <code>raw.githubusercontent.com</code>.
+                </div>
+
+                <div id="updates-fields" class="row g-3 @(Model.Updates?.Enabled == true ? "" : "d-none")">
+                    <div class="col-md-4">
+                        <label for="Updates_FrequencyMinutes" class="form-label">Check frequency</label>
+                        <select class="form-select" id="Updates_FrequencyMinutes" name="Updates.FrequencyMinutes">
                             @{
-                                var sev = Model.Email?.MinSeverity ?? "Info";
-                                string SOpt(string v) => $"<option value=\"{v}\" {(sev == v ? "selected" : "")}>{v}</option>";
+                                int freq = Model.Updates?.FrequencyMinutes ?? 360;
+                                string Opt(int val, string text) => $"<option value=\"{val}\" {(freq == val ? "selected" : "")}>{text}</option>";
                             }
-                            @Html.Raw(SOpt("Info"))
-                            @Html.Raw(SOpt("Warning"))
-                            @Html.Raw(SOpt("Error"))
-                            @Html.Raw(SOpt("Critical"))
+                            @Html.Raw(Opt(1440, "Daily"))
+                            @Html.Raw(Opt(2880, "Every 2 days"))
+                            @Html.Raw(Opt(10080, "Weekly"))
                         </select>
                     </div>
                 </div>
+
+                <button type="submit" class="btn btn-outline-secondary btn-sm mt-2">Save</button>
+            }
+        </div>
+
+        <!-- ===== Pane: NOTIFICATIONS ===== -->
+        <div class="pane @(initialPane == "notifications" ? "active" : "")" data-pane="notifications">
+            <h4 class="mb-3">Notifications</h4>
+
+            @using (Html.BeginForm("SaveEmailSettings", "Settings", FormMethod.Post, new { @class = "mb-3" }))
+            {
+                @Html.AntiForgeryToken()
+
+                <div class="form-check form-switch mb-3" value="false">
+                    <input class="form-check-input" type="checkbox" id="Email_Enabled" name="Email.Enabled" value="true" @(Model.Email?.Enabled == true ? "checked" : "") />
+                    <label class="form-check-label" for="Email_Enabled">Enable email notifications</label>
+                </div>
+
+                <div id="email-settings-fields" class="border rounded p-3 bg-light @(Model.Email?.Enabled == true ? "" : "d-none")">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label for="Email_SmtpHost" class="form-label">SMTP Server</label>
+                            <input class="form-control" id="Email_SmtpHost" name="Email.SmtpHost" value="@Model.Email?.SmtpHost" />
+                            @Html.ValidationMessage("Email.SmtpHost", "", new { @class = "text-danger" })
+                        </div>
+
+                        <div class="col-md-3">
+                            <label for="Email_SmtpPort" class="form-label">Port</label>
+                            <input type="number" class="form-control" id="Email_SmtpPort" name="Email.SmtpPort" value="@(Model.Email?.SmtpPort ?? 587)" min="1" />
+                            @Html.ValidationMessage("Email.SmtpPort", "", new { @class = "text-danger" })
+                        </div>
+
+                        <div class="col-md-3">
+                            <label for="Email_SecurityMode" class="form-label">Security</label>
+                            <select class="form-select" id="Email_SecurityMode" name="Email.SecurityMode">
+                                @{
+                                    var sec = Model.Email?.SecurityMode ?? "StartTls";
+                                    string Opt(string val, string text) => $"<option value=\"{val}\" {(sec == val ? "selected" : "")}>{text}</option>";
+                                }
+                                @Html.Raw(Opt("None", "None"))
+                                @Html.Raw(Opt("StartTls", "STARTTLS"))
+                                @Html.Raw(Opt("SslTls", "SSL/TLS"))
+                            </select>
+                            @Html.ValidationMessage("Email.SecurityMode", "", new { @class = "text-danger" })
+                        </div>
+
+                        <div class="col-md-6">
+                            <label for="Email_Username" class="form-label">Username</label>
+                            <input class="form-control" id="Email_Username" name="Email.Username" value="@Model.Email?.Username" autocomplete="username" />
+                            @Html.ValidationMessage("Email.Username", "", new { @class = "text-danger" })
+                        </div>
+
+                        <div class="col-md-6">
+                            <label for="Email_Password" class="form-label">Password / App Password</label>
+                            <div class="input-group">
+                                <input type="password" class="form-control" id="Email_Password" name="Email.Password" value="" placeholder="••••••••" autocomplete="current-password" />
+                                <button class="btn btn-outline-secondary" type="button" id="togglePwd">Show</button>
+                            </div>
+                            @Html.ValidationMessage("Email.Password", "", new { @class = "text-danger" })
+                            <small class="text-muted">Leave blank to keep existing password.</small>
+                        </div>
+
+                        <div class="col-md-6">
+                            <label for="Email_From" class="form-label">From Address</label>
+                            <input type="email" class="form-control" id="Email_From" name="Email.From" value="@Model.Email?.From" />
+                            @Html.ValidationMessage("Email.From", "", new { @class = "text-danger" })
+                        </div>
+
+                        <div class="col-md-6">
+                            <label for="Email_DefaultRecipients" class="form-label">Recipients</label>
+                            <input class="form-control" id="Email_DefaultRecipients" name="Email.DefaultRecipients" value="@Model.Email?.DefaultRecipients" placeholder="tobias@example.com,alerts@example.com" />
+                            <small class="text-muted">Comma-separated list.</small>
+                            @Html.ValidationMessage("Email.DefaultRecipients", "", new { @class = "text-danger" })
+                        </div>
+                    </div>
+
+                    <hr />
+
+                    <label class="form-label">Notify for</label>
+                    <div class="row g-3">
+                        <div class="col-md-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="Email_OnBackupSuccess" name="Email.OnBackupSuccess" value="true" @(Model.Email?.OnBackupSuccess == true ? "checked" : "") />
+                                <label class="form-check-label" for="Email_OnBackupSuccess">Backup success</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="Email_OnBackupFailure" name="Email.OnBackupFailure" value="true" @(Model.Email?.OnBackupFailure == true ? "checked" : "") />
+                                <label class="form-check-label" for="Email_OnBackupFailure">Backup failure</label>
+                            </div>
+                        </div>
+
+                        <div class="col-md-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="Email_OnRestoreSuccess" name="Email.OnRestoreSuccess" value="true" @(Model.Email?.OnRestoreSuccess == true ? "checked" : "") />
+                                <label class="form-check-label" for="Email_OnRestoreSuccess">Restore success</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="Email_OnRestoreFailure" name="Email.OnRestoreFailure" value="true" @(Model.Email?.OnRestoreFailure == true ? "checked" : "") />
+                                <label class="form-check-label" for="Email_OnRestoreFailure">Restore failure</label>
+                            </div>
+                        </div>
+
+                        <div class="col-md-6">
+                            <div class="form-check mb-2">
+                                <input class="form-check-input" type="checkbox" id="Email_OnWarnings" name="Email.OnWarnings" value="true" @(Model.Email?.OnWarnings == true ? "checked" : "") />
+                                <label class="form-check-label" for="Email_OnWarnings">Warnings / System alerts</label>
+                            </div>
+
+                            <div class="row">
+                                <div class="col-8">
+                                    <label for="Email_MinSeverity" class="form-label">Minimum severity to notify</label>
+                                    <select class="form-select" id="Email_MinSeverity" name="Email.MinSeverity">
+                                        @{
+                                            var sev = Model.Email?.MinSeverity ?? "Info";
+                                            string SOpt(string v) => $"<option value=\"{v}\" {(sev == v ? "selected" : "")}>{v}</option>";
+                                        }
+                                        @Html.Raw(SOpt("Info"))
+                                        @Html.Raw(SOpt("Warning"))
+                                        @Html.Raw(SOpt("Error"))
+                                        @Html.Raw(SOpt("Critical"))
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn btn-primary mt-3">Save Email Settings</button>
+            }
+
+            @using (Html.BeginForm("SendTestEmail", "Settings", FormMethod.Post, new { @class = "mt-2" }))
+            {
+                @Html.AntiForgeryToken()
+                <div id="email-test" class="@(Model.Email?.Enabled == true ? "" : "d-none")">
+                    <div class="input-group" style="max-width: 520px;">
+                        <input type="email" class="form-control" name="to" placeholder="Send test email to…" />
+                        <button type="submit" class="btn btn-outline-primary">Send Test Email</button>
+                    </div>
+                    <small class="text-muted">Uses the saved SMTP settings above.</small>
+                </div>
+            }
+        </div>
+
+        <!-- ===== Pane: CERTIFICATES ===== -->
+        <div class="pane @(initialPane == "certificates" ? "active" : "")" data-pane="certificates">
+            <h4 class="mb-3">Certificates</h4>
+
+            @if (!string.IsNullOrWhiteSpace(Model.Regenerate.CurrentSubject))
+            {
+                <div class="card mb-3">
+                    <div class="card-body">
+                        <h6 class="card-title">Current Self-Signed Certificate</h6>
+                        <dl class="row mb-0">
+                            <dt class="col-sm-3">Subject</dt>
+                            <dd class="col-sm-9">@Model.Regenerate.CurrentSubject</dd>
+
+                            <dt class="col-sm-3">Valid From</dt>
+                            <dd class="col-sm-9">@Model.Regenerate.CurrentNotBefore?.ToString("u")</dd>
+
+                            <dt class="col-sm-3">Valid Until</dt>
+                            <dd class="col-sm-9">@Model.Regenerate.CurrentNotAfter?.ToString("u")</dd>
+
+                            <dt class="col-sm-3">Thumbprint</dt>
+                            <dd class="col-sm-9">@Model.Regenerate.CurrentThumbprint</dd>
+                        </dl>
+                    </div>
+                </div>
+            }
+            else
+            {
+                <div class="alert alert-warning">No certificate is currently loaded.</div>
+            }
+
+            <hr class="section-divider" />
+
+            <h6>Regenerate Self-Signed Certificate</h6>
+            @using (Html.BeginForm("RegenerateCert", "Settings", FormMethod.Post))
+            {
+                @Html.AntiForgeryToken()
+                <div class="form-group mb-3">
+                    <label for="Regenerate.RegenSubjectName">Common Name (CN)</label>
+                    <input name="Regenerate.RegenSubjectName" class="form-control" value="@Model.Regenerate.RegenSubjectName" />
+                    @Html.ValidationMessage("Regenerate.RegenSubjectName", "", new { @class = "text-danger" })
+                </div>
+
+                <div class="form-group mb-3">
+                    <label for="Regenerate.RegenValidDays">Validity (days)</label>
+                    <input type="number" min="1" name="Regenerate.RegenValidDays" class="form-control" value="@Model.Regenerate.RegenValidDays" />
+                    @Html.ValidationMessage("Regenerate.RegenValidDays", "", new { @class = "text-danger" })
+                </div>
+
+                <div class="form-group mb-3">
+                    <label for="Regenerate.RegenSANs">Subject Alternative Names (SAN)</label>
+                    <input name="Regenerate.RegenSANs" class="form-control" placeholder="e.g. localhost,example.com" value="@Model.Regenerate.RegenSANs" />
+                    @Html.ValidationMessage("Regenerate.RegenSANs", "", new { @class = "text-danger" })
+                </div>
+
+                <button type="submit" class="btn btn-warning">Regenerate Certificate</button>
+            }
+
+            <hr class="section-divider" />
+
+            <!-- Install an existing certificate (PFX) -->
+            <h6>Install Existing Certificate (PFX)</h6>
+            <div class="alert alert-light">
+                Upload a <code>.pfx</code> (PKCS#12) file that contains your certificate and private key.
             </div>
+            @using (Html.BeginForm("UploadPfx", "Settings", FormMethod.Post, new { enctype = "multipart/form-data", @class = "mb-3" }))
+            {
+                @Html.AntiForgeryToken()
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label for="PfxFile" class="form-label">Certificate file (.pfx)</label>
+                        <input type="file" class="form-control" id="PfxFile" name="pfxFile" accept=".pfx" />
+                    </div>
+                    <div class="col-md-6">
+                        <label for="PfxPassword" class="form-label">Password (stored encrypted)</label>
+                        <input type="password" class="form-control" id="PfxPassword" name="pfxPassword" placeholder="••••••••" />
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-success mt-3">Install Certificate</button>
+            }
         </div>
-    </div>
-
-    <button type="submit" class="btn btn-primary mt-3">Save Email Settings</button>
-}
-
-@using (Html.BeginForm("SendTestEmail", "Settings", FormMethod.Post, new { @class = "mt-2" }))
-{
-    @Html.AntiForgeryToken()
-    <!-- Hidden when not enabled -->
-    <div id="email-test" class="@(Model.Email?.Enabled == true ? "" : "d-none")">
-        <div class="input-group" style="max-width: 520px;">
-            <input type="email" class="form-control" name="to" placeholder="Send test email to…" />
-            <button type="submit" class="btn btn-outline-primary">Send Test Email</button>
-        </div>
-        <small class="text-muted">Uses the saved SMTP settings above.</small>
-    </div>
-}
-
-<hr />
-
-<!-- ========================================
-     Section D: Current Certificate (moved)
-     ======================================== -->
-@if (!string.IsNullOrWhiteSpace(Model.Regenerate.CurrentSubject))
-{
-    <h4>Current Self-Signed Certificate</h4>
-    <dl class="row">
-        <dt class="col-sm-3">Subject</dt>
-        <dd class="col-sm-9">@Model.Regenerate.CurrentSubject</dd>
-
-        <dt class="col-sm-3">Valid From</dt>
-        <dd class="col-sm-9">@Model.Regenerate.CurrentNotBefore?.ToString("u")</dd>
-
-        <dt class="col-sm-3">Valid Until</dt>
-        <dd class="col-sm-9">@Model.Regenerate.CurrentNotAfter?.ToString("u")</dd>
-
-        <dt class="col-sm-3">Thumbprint</dt>
-        <dd class="col-sm-9">@Model.Regenerate.CurrentThumbprint</dd>
-    </dl>
-}
-else
-{
-    <div class="alert alert-warning">
-        No certificate is currently loaded.
-    </div>
-}
+    </main>
+</div>
 
 @section Scripts {
     @await Html.PartialAsync("_ValidationScriptsPartial")
-
     <script>
         (function () {
-            // ----- Email section toggle -----
-            const enabled   = document.getElementById('Email_Enabled');
-            const box       = document.getElementById('email-settings-fields');
-            const testRow   = document.getElementById('email-test');
-            const togglePwd = document.getElementById('togglePwd');
-            const pwd       = document.getElementById('Email_Password');
+            // ----- Pane switching -----
+            const menu = document.getElementById('settingsMenu');
+            const items = Array.from(menu.querySelectorAll('.item'));
+            const panes = Array.from(document.querySelectorAll('.pane'));
 
-            function setDisabled(container, off) {
-                if (!container) return;
-                container.querySelectorAll('input, select, button, textarea').forEach(el => {
-                    if (el.id === 'Email_Enabled') return;
-                    el.disabled = off;
-                });
-            }
-
-            function updateEmailState() {
-                const on = enabled?.checked ?? false;
-                if (on) {
-                    box?.classList.remove('d-none');
-                    testRow?.classList.remove('d-none');
-                    setDisabled(box, false);
-                } else {
-                    setDisabled(box, true);
-                    box?.classList.add('d-none');
-                    testRow?.classList.add('d-none');
+            function showPane(name, pushUrl = true) {
+                items.forEach(i => i.classList.toggle('active', i.dataset.pane === name));
+                panes.forEach(p => p.classList.toggle('active', p.dataset.pane === name));
+                if (pushUrl) {
+                    const url = new URL(window.location);
+                    url.searchParams.set('pane', name);
+                    history.replaceState({ pane: name }, "", url);
                 }
             }
 
-            enabled?.addEventListener('change', updateEmailState);
-            updateEmailState();
-
-            if (togglePwd && pwd) {
-                togglePwd.addEventListener('click', function () {
-                    const isPwd = pwd.type === 'password';
-                    pwd.type = isPwd ? 'text' : 'password';
-                    this.textContent = isPwd ? 'Hide' : 'Show';
-                });
-            }
-
-            // ----- Updates section toggle -----
-            const updChk   = document.getElementById('Updates_Enabled');
-            const updBox   = document.getElementById('updates-fields');
-            const updWarn  = document.getElementById('updates-warning');
-
-            function updateUpdatesState() {
-                const on = updChk?.checked ?? false;
-                if (on) {
-                    updBox?.classList.remove('d-none');
-                    updWarn?.classList.remove('d-none');
-                } else {
-                    updBox?.classList.add('d-none');
-                    updWarn?.classList.add('d-none');
+            menu.addEventListener('click', (e) => {
+                const a = e.target.closest('.item');
+                if (!a) return;
+                if (e.button === 0) {
+                    e.preventDefault();
+                    showPane(a.dataset.pane);
+                    a.blur();
                 }
-            }
+            });
 
-            updChk?.addEventListener('change', updateUpdatesState);
-            updateUpdatesState();
+            showPane("@initialPane", false);
+
+            window.addEventListener('popstate', () => {
+                const name = new URL(window.location).searchParams.get('pane') || 'general';
+                showPane(name, false);
+            });
+
+            // ----- EMAIL toggle -----
+            const emailToggle = document.getElementById('Email_Enabled');
+            const emailFields = document.getElementById('email-settings-fields');
+            const emailTest = document.getElementById('email-test');
+
+            function updateEmailVisibility() {
+                const on = !!emailToggle?.checked;
+                if (emailFields) emailFields.classList.toggle('d-none', !on);
+                if (emailTest) emailTest.classList.toggle('d-none', !on);
+            }
+            emailToggle?.addEventListener('change', updateEmailVisibility);
+            updateEmailVisibility();
+
+            // Show/Hide password
+            const togglePwdBtn = document.getElementById('togglePwd');
+            const pwdInput = document.getElementById('Email_Password');
+            togglePwdBtn?.addEventListener('click', () => {
+                if (!pwdInput) return;
+                const showing = pwdInput.type === 'text';
+                pwdInput.type = showing ? 'password' : 'text';
+                togglePwdBtn.textContent = showing ? 'Show' : 'Hide';
+            });
+
+            // ----- UPDATES toggle -----
+            const updToggle = document.getElementById('Updates_Enabled');
+            const updFields = document.getElementById('updates-fields');
+            const updWarn = document.getElementById('updates-warning');
+
+            function updateUpdatesVisibility() {
+                const on = !!updToggle?.checked;
+                if (updFields) updFields.classList.toggle('d-none', !on);
+                if (updWarn) updWarn.classList.toggle('d-none', !on);
+            }
+            updToggle?.addEventListener('change', updateUpdatesVisibility);
+            updateUpdatesVisibility();
         })();
     </script>
-}
-
-<!-- ===========================================
-     Section E: Regenerate Certificate Form
-     =========================================== -->
-<h4>Regenerate Self-Signed Certificate</h4>
-@using (Html.BeginForm("RegenerateCert", "Settings", FormMethod.Post))
-{
-    @Html.AntiForgeryToken()
-
-    <div class="form-group mb-3">
-        <label for="Regenerate.RegenSubjectName">Common Name (CN)</label>
-        <input name="Regenerate.RegenSubjectName" class="form-control" value="@Model.Regenerate.RegenSubjectName" />
-        @Html.ValidationMessage("Regenerate.RegenSubjectName", "", new { @class = "text-danger" })
-    </div>
-
-    <div class="form-group mb-3">
-        <label for="Regenerate.RegenValidDays">Validity (days)</label>
-        <input type="number" min="1" name="Regenerate.RegenValidDays" class="form-control" value="@Model.Regenerate.RegenValidDays" />
-        @Html.ValidationMessage("Regenerate.RegenValidDays", "", new { @class = "text-danger" })
-    </div>
-
-    <div class="form-group mb-3">
-        <label for="Regenerate.RegenSANs">Subject Alternative Names (SAN)</label>
-        <input name="Regenerate.RegenSANs" class="form-control" placeholder="e.g. localhost,example.com" value="@Model.Regenerate.RegenSANs" />
-        @Html.ValidationMessage("Regenerate.RegenSANs", "", new { @class = "text-danger" })
-    </div>
-
-    <button type="submit" class="btn btn-warning">Regenerate Certificate</button>
 }

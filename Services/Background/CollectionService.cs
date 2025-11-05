@@ -18,7 +18,6 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
-
 using System;
 using System.Linq;
 using System.Net.Http;
@@ -31,6 +30,7 @@ using BareProx.Models;
 using BareProx.Services;
 using BareProx.Services.Proxmox;
 using BareProx.Services.Proxmox.Ops;
+using BareProx.Services.Netapp;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -39,18 +39,26 @@ using Microsoft.Extensions.Logging;
 
 namespace BareProx.Services.Background
 {
-    public sealed class CollectionService : BackgroundService
+
+    public sealed class CollectionService : BackgroundService, ICollectionService
     {
         private readonly IDbFactory _dbf;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ILogger<CollectionService> _logger;
 
-        public CollectionService(IDbFactory dbf, IServiceScopeFactory scopeFactory, ILogger<CollectionService> logger)
+        public CollectionService(
+            IDbFactory dbf,
+            IServiceScopeFactory scopeFactory,
+            ILogger<CollectionService> logger)
         {
             _dbf = dbf;
             _scopeFactory = scopeFactory;
             _logger = logger;
         }
+
+        // =====================================================================
+        // Background loop
+        // =====================================================================
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
@@ -68,7 +76,7 @@ namespace BareProx.Services.Background
                         await netappSnapmirrorService.SyncSnapMirrorRelationsAsync(stoppingToken);
                     }
 
-                    // Ensure policies (scoped inside)
+                    // Ensure SnapMirror policies
                     await EnsureSnapMirrorPoliciesAsync(stoppingToken);
 
                     // Update selected volumes hourly
@@ -96,10 +104,21 @@ namespace BareProx.Services.Background
                     _logger.LogError(ex, "Error in CollectionService loop (SnapMirror/Cluster checks).");
                 }
 
-                // Sleep between iterations
                 await Task.Delay(TimeSpan.FromMinutes(2), stoppingToken);
             }
         }
+
+        // =====================================================================
+        // Public API (for controllers/services)
+        // =====================================================================
+
+        /// <inheritdoc />
+        public Task RunProxmoxClusterStatusCheckAsync(CancellationToken ct = default)
+            => CheckProxmoxClusterAndHostsStatusAsync(ct);
+
+        // =====================================================================
+        // SnapMirror policies sync
+        // =====================================================================
 
         private async Task EnsureSnapMirrorPoliciesAsync(CancellationToken ct)
         {
@@ -119,7 +138,10 @@ namespace BareProx.Services.Background
             {
                 try
                 {
-                    var fetchedPolicy = await netappSnapmirrorService.SnapMirrorPolicyGet(pair.DestinationControllerId, pair.PolicyUuid!);
+                    var fetchedPolicy = await netappSnapmirrorService.SnapMirrorPolicyGet(
+                        pair.DestinationControllerId,
+                        pair.PolicyUuid!);
+
                     if (fetchedPolicy == null)
                         continue;
 
@@ -138,8 +160,16 @@ namespace BareProx.Services.Background
                     if (dbPolicy.Name != fetchedPolicy.Name) { dbPolicy.Name = fetchedPolicy.Name; changed = true; }
                     if (dbPolicy.Scope != fetchedPolicy.Scope) { dbPolicy.Scope = fetchedPolicy.Scope; changed = true; }
                     if (dbPolicy.Type != fetchedPolicy.Type) { dbPolicy.Type = fetchedPolicy.Type; changed = true; }
-                    if (dbPolicy.NetworkCompressionEnabled != fetchedPolicy.NetworkCompressionEnabled) { dbPolicy.NetworkCompressionEnabled = fetchedPolicy.NetworkCompressionEnabled; changed = true; }
-                    if (dbPolicy.Throttle != fetchedPolicy.Throttle) { dbPolicy.Throttle = fetchedPolicy.Throttle; changed = true; }
+                    if (dbPolicy.NetworkCompressionEnabled != fetchedPolicy.NetworkCompressionEnabled)
+                    {
+                        dbPolicy.NetworkCompressionEnabled = fetchedPolicy.NetworkCompressionEnabled;
+                        changed = true;
+                    }
+                    if (dbPolicy.Throttle != fetchedPolicy.Throttle)
+                    {
+                        dbPolicy.Throttle = fetchedPolicy.Throttle;
+                        changed = true;
+                    }
 
                     // Compare retentions without relying on tuple field names
                     if (!AreRetentionsEqual(dbPolicy.Retentions, fetchedPolicy.Retentions))
@@ -164,8 +194,8 @@ namespace BareProx.Services.Background
 
         // Order-insensitive, defensive comparison
         private static bool AreRetentionsEqual(
-            System.Collections.Generic.IList<SnapMirrorPolicyRetention> a,
-            System.Collections.Generic.IList<SnapMirrorPolicyRetention> b)
+            IList<SnapMirrorPolicyRetention> a,
+            IList<SnapMirrorPolicyRetention> b)
         {
             if (a is null || b is null) return a == b;
             if (a.Count != b.Count) return false;
@@ -180,8 +210,8 @@ namespace BareProx.Services.Background
                 _ => warn.ToString() ?? string.Empty
             };
 
-            static System.Collections.Generic.IEnumerable<(string Label, int Count, bool Preserve, string Warn, string Period)> KeySel(
-                System.Collections.Generic.IEnumerable<SnapMirrorPolicyRetention> x)
+            static IEnumerable<(string Label, int Count, bool Preserve, string Warn, string Period)> KeySel(
+                IEnumerable<SnapMirrorPolicyRetention> x)
                 => x.Select(r => (
                         Label: r.Label ?? string.Empty,
                         Count: r.Count,
@@ -197,6 +227,10 @@ namespace BareProx.Services.Background
 
             return KeySel(a).SequenceEqual(KeySel(b));
         }
+
+        // =====================================================================
+        // Proxmox cluster + host status
+        // =====================================================================
 
         private async Task CheckProxmoxClusterAndHostsStatusAsync(CancellationToken ct)
         {
@@ -222,19 +256,18 @@ namespace BareProx.Services.Background
                     cluster.OnlineHostCount = onlineCount;
                     cluster.TotalHostCount = totalCount;
 
-                    // 2) Per-node deeper health (API reachability + node status + storage state)
-                    //    We keep this best-effort and squeeze results into LastStatusMessage fields to avoid schema changes.
-                    var perNodeSnippets = new System.Collections.Generic.List<string>();
+                    // 2) Per-node health: API reachability + status + storage
+                    var perNodeSnippets = new List<string>();
 
                     foreach (var host in cluster.Hosts)
                     {
-                        var node = string.IsNullOrWhiteSpace(host.Hostname) ? host.HostAddress : host.Hostname!;
+                        var node = string.IsNullOrWhiteSpace(host.Hostname)
+                            ? host.HostAddress
+                            : host.Hostname!;
                         var key = host.Hostname ?? host.HostAddress;
 
                         var isOnline = hostStates.TryGetValue(key, out var up) && up;
 
-                        // Defaults
-                        string nodeSummary = $"node={node}: offline";
                         host.IsOnline = isOnline;
                         host.LastChecked = DateTime.UtcNow;
                         host.LastStatus = isOnline ? "online" : "offline";
@@ -246,15 +279,14 @@ namespace BareProx.Services.Background
                             continue;
                         }
 
-                        // Small per-node timeout so one slow box doesn't block the sweep
                         using var nodeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                         nodeCts.CancelAfter(TimeSpan.FromSeconds(8));
 
-                        // 2a) /nodes/{node}/status
                         double? cpuPct = null;
                         double? memPct = null;
                         long? uptime = null;
 
+                        // 2a) /nodes/{node}/status
                         try
                         {
                             var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{Uri.EscapeDataString(node)}/status";
@@ -264,15 +296,19 @@ namespace BareProx.Services.Background
                             using var doc = JsonDocument.Parse(json);
                             if (doc.RootElement.TryGetProperty("data", out var data))
                             {
-                                // cpu is fraction (0..1); mem has total/free/used; uptime seconds
                                 if (data.TryGetProperty("cpu", out var cpu) && cpu.ValueKind == JsonValueKind.Number)
                                     cpuPct = Math.Round(cpu.GetDouble() * 100.0, 1);
 
                                 if (data.TryGetProperty("memory", out var mem) && mem.ValueKind == JsonValueKind.Object)
                                 {
-                                    long tot = mem.TryGetProperty("total", out var t) && t.ValueKind == JsonValueKind.Number ? t.GetInt64() : 0;
-                                    long used = mem.TryGetProperty("used", out var u) && u.ValueKind == JsonValueKind.Number ? u.GetInt64() : 0;
-                                    if (tot > 0) memPct = Math.Round(used * 100.0 / tot, 1);
+                                    long tot = mem.TryGetProperty("total", out var t) && t.ValueKind == JsonValueKind.Number
+                                        ? t.GetInt64()
+                                        : 0;
+                                    long used = mem.TryGetProperty("used", out var u) && u.ValueKind == JsonValueKind.Number
+                                        ? u.GetInt64()
+                                        : 0;
+                                    if (tot > 0)
+                                        memPct = Math.Round(used * 100.0 / tot, 1);
                                 }
 
                                 if (data.TryGetProperty("uptime", out var upSecs) && upSecs.ValueKind == JsonValueKind.Number)
@@ -284,7 +320,7 @@ namespace BareProx.Services.Background
                             _logger.LogDebug(ex, "Node status fetch failed for {Node}", node);
                         }
 
-                        // 2b) /nodes/{node}/storage — count active vs total
+                        // 2b) /nodes/{node}/storage
                         int storTotal = 0, storActive = 0, storDisabled = 0, storErrorish = 0;
                         try
                         {
@@ -298,18 +334,22 @@ namespace BareProx.Services.Background
                                 foreach (var s in arr.EnumerateArray())
                                 {
                                     storTotal++;
+
                                     bool active = s.TryGetProperty("active", out var a) && a.ValueKind == JsonValueKind.True;
                                     bool enabled = !(s.TryGetProperty("enabled", out var e) && e.ValueKind == JsonValueKind.False);
+
                                     if (active) storActive++;
                                     if (!enabled) storDisabled++;
-                                    // Some storages expose "state" or "status"; treat non-"available/active/ok" as issue-ish
+
                                     if (s.TryGetProperty("state", out var st) && st.ValueKind == JsonValueKind.String)
                                     {
                                         var sv = st.GetString() ?? "";
                                         if (!sv.Equals("available", StringComparison.OrdinalIgnoreCase) &&
                                             !sv.Equals("active", StringComparison.OrdinalIgnoreCase) &&
                                             !sv.Equals("ok", StringComparison.OrdinalIgnoreCase))
+                                        {
                                             storErrorish++;
+                                        }
                                     }
                                 }
                             }
@@ -319,26 +359,27 @@ namespace BareProx.Services.Background
                             _logger.LogDebug(ex, "Node storage list failed for {Node}", node);
                         }
 
-                        // Build per-node snippet
                         string cpuS = cpuPct.HasValue ? $"{cpuPct:0.0}%" : "n/a";
                         string memS = memPct.HasValue ? $"{memPct:0.0}%" : "n/a";
                         string upS = uptime.HasValue ? $"{TimeSpan.FromSeconds(uptime.Value):d\\.hh\\:mm}" : "n/a";
                         string storS = storTotal > 0 ? $"{storActive}/{storTotal} active" : "n/a";
-                        string storWarn = (storDisabled > 0 || storErrorish > 0) ? $" (disabled:{storDisabled}, issues:{storErrorish})" : "";
+                        string storWarn =
+                            (storDisabled > 0 || storErrorish > 0)
+                                ? $" (disabled:{storDisabled}, issues:{storErrorish})"
+                                : "";
 
-                        nodeSummary = $"cpu {cpuS}, mem {memS}, up {upS}, storage {storS}{storWarn}";
+                        var nodeSummary = $"cpu {cpuS}, mem {memS}, up {upS}, storage {storS}{storWarn}";
                         host.LastStatusMessage = nodeSummary;
 
                         perNodeSnippets.Add($"{node}: ✅ {nodeSummary}");
                     }
 
-                    // 3) Persist summaries
                     var header = $"quorum={(quorate ? "yes" : "no")}, hosts={onlineCount}/{totalCount}";
                     cluster.LastStatus = header;
                     cluster.LastStatusMessage = $"{header}; " + string.Join(" | ", perNodeSnippets);
                     cluster.LastChecked = DateTime.UtcNow;
 
-                    // Save with SQLite retry (db is scoped)
+                    // Save with SQLite retry
                     for (int i = 0; i < 3; i++)
                     {
                         try
@@ -346,7 +387,8 @@ namespace BareProx.Services.Background
                             await db.SaveChangesAsync(ct);
                             break;
                         }
-                        catch (DbUpdateException ex) when (ex.InnerException is SqliteException se && se.SqliteErrorCode == 5) // SQLITE_BUSY
+                        catch (DbUpdateException ex)
+                            when (ex.InnerException is SqliteException se && se.SqliteErrorCode == 5) // SQLITE_BUSY
                         {
                             if (i == 2) throw;
                             await Task.Delay(500, ct);
@@ -368,7 +410,8 @@ namespace BareProx.Services.Background
                             await db.SaveChangesAsync(ct);
                             break;
                         }
-                        catch (DbUpdateException ey) when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
+                        catch (DbUpdateException ey)
+                            when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
                         {
                             if (i == 2) throw;
                             await Task.Delay(500, ct);
@@ -377,6 +420,10 @@ namespace BareProx.Services.Background
                 }
             }
         }
+
+        // =====================================================================
+        // JobSnapKey helpers (unchanged)
+        // =====================================================================
 
         private readonly struct JobSnapKey
         {
