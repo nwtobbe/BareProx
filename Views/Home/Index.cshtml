@@ -27,7 +27,7 @@
     <h1 class="mb-4">BareProx System Status</h1>
 
     <!-- Update banner host (Home-only) -->
-    <div class="mb-3" id="update-banner-container"></div>
+    <div class="mb-3" id="update-banner-container" aria-live="polite"></div>
 
     <!-- Job Status (Last 24h) -->
     <div class="card mb-4 shadow-sm">
@@ -192,125 +192,118 @@
 
 @section Scripts {
     <script>
-          (async () => {
-            // Build URL safely (supports UsePathBase / reverse proxy)
-            const STATUS_URL = '@Url.Content("~/api/updates/status")';
-            try {
-              console.log("[BP] Update check →", STATUS_URL);
-              const r = await fetch(STATUS_URL, { cache: 'no-store', credentials: 'same-origin' });
-              if (!r.ok) {
-                console.warn("[BP] Update status HTTP not OK:", r.status, r.statusText);
-                return;
-              }
+        (async () => {
+          // Build URL safely (supports UsePathBase / reverse proxy)
+          const STATUS_URL = '@Url.Content("~/api/updates/status")';
+          try {
+            console.log("[BP] Update check →", STATUS_URL);
+            const r = await fetch(STATUS_URL, { cache: 'no-store', credentials: 'same-origin' });
+            if (!r.ok) { console.warn("[BP] Update status HTTP not OK:", r.status, r.statusText); return; }
 
-              const ct = (r.headers.get('content-type') || '').toLowerCase();
-              if (!ct.includes('application/json')) {
-                console.warn("[BP] Update status returned non-JSON (maybe login HTML). Content-Type:", ct);
-                return;
-              }
+            const ct = (r.headers.get('content-type') || '').toLowerCase();
+            if (!ct.includes('application/json')) { console.warn("[BP] Update status returned non-JSON (maybe login HTML). Content-Type:", ct); return; }
 
-              const d = await r.json();
-              if (!d || !d.isUpdateAvailable) {
-                console.log("[BP] No update available");
-                return;
-              }
+            const d = await r.json();
 
-              const commands =
-                "sudo apt-get update\n" +
-                "sudo apt-get dist-upgrade -y\n" +
-                "docker compose down\n" +
-                "docker image prune -f\n" +
-                "docker compose pull\n" +
-                "docker compose up -d";
+            // 🔎 Always print what the server thinks
+            console.info(`[BP] Versions: current=${String(d?.currentVersion || "")}, latest=${String(d?.latestVersion || "")}, isUpdateAvailable=${!!d?.isUpdateAvailable}`);
 
-              // Optional date bit
-              var latestDateHtml = "";
-              if (d.latestDate) {
-                latestDateHtml = '<small class="text-muted ms-2">(' + String(d.latestDate) + ')</small>';
-              }
-
-              // Escape for innerHTML injection
-              var commandsEsc = commands.replace(/&/g, "&amp;").replace(/</g, "&lt;");
-
-              const html = `
-        <div class="alert alert-info d-flex align-items-center justify-content-between shadow-sm" role="alert">
-          <div>
-            <strong>Update available:</strong>
-            <span class="badge bg-primary">v${String(d.latestVersion || "")}</span>
-            ${latestDateHtml}
-            <span class="ms-2">You’re on <code>${String(d.currentVersion || "")}</code>.</span>
-          </div>
-          <div class="ms-3">
-            <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#whatsNewModal">
-              What’s new
-            </button>
-            <button type="button" class="btn btn-sm btn-success ms-2" data-bs-toggle="modal" data-bs-target="#updateInstructionsModal">
-              Get update
-            </button>
-          </div>
-        </div>
-
-        <!-- What's New Modal -->
-        <div class="modal fade" id="whatsNewModal" tabindex="-1" aria-labelledby="whatsNewLabel" aria-hidden="true">
-          <div class="modal-dialog modal-lg modal-dialog-scrollable">
-            <div class="modal-content">
-              <div class="modal-header">
-                <h5 class="modal-title" id="whatsNewLabel">What’s new in v${String(d.latestVersion || "")}</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-              </div>
-              <div class="modal-body">${d.whatsNewHtml || "<p>No changelog entries found.</p>"}</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Update Instructions Modal -->
-        <div class="modal fade" id="updateInstructionsModal" tabindex="-1" aria-labelledby="updateInstructionsLabel" aria-hidden="true">
-          <div class="modal-dialog modal-lg modal-dialog-scrollable">
-            <div class="modal-content">
-              <div class="modal-header">
-                <h5 class="modal-title" id="updateInstructionsLabel">Update BareProx (Docker Compose on Debian)</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-              </div>
-              <div class="modal-body">
-                <p class="mb-2">Run these commands on the host where <code>docker-compose.yml</code> lives:</p>
-                <pre class="bg-light border rounded p-3 mb-3"><code id="bp-update-commands">${commandsEsc}</code></pre>
-                <button type="button" class="btn btn-outline-secondary btn-sm" id="bp-copy-cmds">Copy commands</button>
-                <hr/>
-                <ul class="small text-muted mb-0">
-                  <li>Run these in the directory containing your <code>docker-compose.yml</code>.</li>
-                  <li><code>docker image prune</code> only removes dangling images; remove <code>-f</code> to confirm interactively.</li>
-                  <li>If you use legacy <code>docker-compose</code>, replace <code>docker compose</code> with <code>docker-compose</code>.</li>
-                </ul>
-              </div>
-            </div>
-          </div>
-        </div>`;
-
-              const host = document.getElementById('update-banner-container');
-              if (!host) {
-                console.warn("[BP] #update-banner-container not found");
-                return;
-              }
-              host.innerHTML = html;
-
-              // Copy handler
-              const btn = document.getElementById('bp-copy-cmds');
-              const codeEl = document.getElementById('bp-update-commands');
-              if (btn && codeEl) {
-                btn.addEventListener('click', async () => {
-                  try {
-                    await navigator.clipboard.writeText(codeEl.innerText);
-                    btn.textContent = 'Copied!';
-                    setTimeout(() => (btn.textContent = 'Copy commands'), 1500);
-                  } catch {
-                    btn.textContent = 'Copy failed';
-                    setTimeout(() => (btn.textContent = 'Copy commands'), 1500);
-                  }
-                });
-              }
-            } catch (err) {
-              console.warn('[BP] Update status banner error', err);
+            // No update? exit after logging
+            if (!d || !d.isUpdateAvailable) {
+              console.log("[BP] No update available. current:", d?.currentVersion, "latest:", d?.latestVersion);
+              return;
             }
-          })();
+
+            const commands =
+              "sudo apt-get update\n" +
+              "sudo apt-get dist-upgrade -y\n" +
+              "docker compose down\n" +
+              "docker image prune -f\n" +
+              "docker compose pull\n" +
+              "docker compose up -d";
+
+            // Optional date bit
+            const latestDateHtml = d.latestDate ? `<small class="text-muted ms-2">(${String(d.latestDate)})</small>` : "";
+
+            // Escape for innerHTML injection
+            const commandsEsc = commands.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+
+            const html = `
+              <div class="alert alert-info d-flex align-items-center justify-content-between shadow-sm" role="alert">
+                <div>
+                  <strong>Update available:</strong>
+                  <span class="badge bg-primary">v${String(d.latestVersion || "")}</span>
+                  ${latestDateHtml}
+                  <span class="ms-2">You’re on <code>${String(d.currentVersion || "")}</code>.</span>
+                </div>
+                <div class="ms-3">
+                  <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#whatsNewModal">
+                    What’s new
+                  </button>
+                  <button type="button" class="btn btn-sm btn-success ms-2" data-bs-toggle="modal" data-bs-target="#updateInstructionsModal">
+                    Get update
+                  </button>
+                </div>
+              </div>
+
+              <!-- What's New Modal -->
+              <div class="modal fade" id="whatsNewModal" tabindex="-1" aria-labelledby="whatsNewLabel" aria-hidden="true">
+                <div class="modal-dialog modal-lg modal-dialog-scrollable">
+                  <div class="modal-content">
+                    <div class="modal-header">
+                      <h5 class="modal-title" id="whatsNewLabel">What’s new in v${String(d.latestVersion || "")}</h5>
+                      <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">${d.whatsNewHtml || "<p>No changelog entries found.</p>"}</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Update Instructions Modal -->
+              <div class="modal fade" id="updateInstructionsModal" tabindex="-1" aria-labelledby="updateInstructionsLabel" aria-hidden="true">
+                <div class="modal-dialog modal-lg modal-dialog-scrollable">
+                  <div class="modal-content">
+                    <div class="modal-header">
+                      <h5 class="modal-title" id="updateInstructionsLabel">Update BareProx (Docker Compose on Debian)</h5>
+                      <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                      <p class="mb-2">Run these commands on the host where <code>docker-compose.yml</code> lives:</p>
+                      <pre class="bg-light border rounded p-3 mb-3"><code id="bp-update-commands">${commandsEsc}</code></pre>
+                      <button type="button" class="btn btn-outline-secondary btn-sm" id="bp-copy-cmds">Copy commands</button>
+                      <hr/>
+                      <ul class="small text-muted mb-0">
+                        <li>Run these in the directory containing your <code>docker-compose.yml</code>.</li>
+                        <li><code>docker image prune</code> only removes dangling images; remove <code>-f</code> to confirm interactively.</li>
+                        <li>If you use legacy <code>docker-compose</code>, replace <code>docker compose</code> with <code>docker-compose</code>.</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              </div>`;
+
+            const host = document.getElementById('update-banner-container');
+            if (!host) { console.warn("[BP] #update-banner-container not found"); return; }
+            host.innerHTML = html;
+
+            // Copy handler
+            const btn = document.getElementById('bp-copy-cmds');
+            const codeEl = document.getElementById('bp-update-commands');
+            if (btn && codeEl) {
+              btn.addEventListener('click', async () => {
+                try {
+                  await navigator.clipboard.writeText(codeEl.innerText);
+                  btn.textContent = 'Copied!';
+                  setTimeout(() => (btn.textContent = 'Copy commands'), 1500);
+                } catch {
+                  btn.textContent = 'Copy failed';
+                  setTimeout(() => (btn.textContent = 'Copy commands'), 1500);
+                }
+              });
+            }
+          } catch (err) {
+            console.warn('[BP] Update status banner error', err);
+          }
+        })();
     </script>
 }
