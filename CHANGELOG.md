@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),  
 and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.0.2511.0413] - 2025-11-04
+## [1.0.2511.0513] - 2025-11-05
 
 ### Added
 - Email Notifications / Backup Schedule instead of global. Notifications gets disabled when applying this update.
