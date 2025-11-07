@@ -54,13 +54,15 @@ namespace BareProx.Services
         // Create
         // ---------------------------------------------------------------------
         public async Task<SnapshotResult> CreateSnapshotAsync(
-            int controllerId,
-            string storageName,
-            string snapmirrorLabel,
-            bool snapLocking = false,
-            int? lockRetentionCount = null,
-            string? lockRetentionUnit = null,
-            CancellationToken ct = default)
+       int controllerId,
+       string storageName,
+       string snapmirrorLabel,
+       bool snapLocking = false,
+       int? lockRetentionCount = null,
+       string? lockRetentionUnit = null,
+       string? volumeUuid = null,            // optional input UUID (preferred)
+       string? svmName = null,               // optional SVM hint (used only if UUID is missing)
+       CancellationToken ct = default)
         {
             using var scope = _logger.BeginScope(new Dictionary<string, object?>
             {
@@ -68,14 +70,16 @@ namespace BareProx.Services
                 ["controllerId"] = controllerId,
                 ["storage"] = storageName,
                 ["label"] = snapmirrorLabel,
-                ["locking"] = snapLocking
+                ["locking"] = snapLocking,
+                ["uuidSupplied"] = !string.IsNullOrWhiteSpace(volumeUuid),
+                ["svmSupplied"] = !string.IsNullOrWhiteSpace(svmName)
             });
 
             _logger.LogInformation("Creating NetApp snapshot (locking={Locking}).", snapLocking);
 
             try
             {
-                // --- Look up the mapping row from DB (has Uuid/Vserver/NetappControllerId) ---
+                // 0) DB lookup for mapping (VolumeName, Uuid, Vserver/SVM)
                 using var db = await _dbf.CreateDbContextAsync(ct);
 
                 var map = await db.SelectedNetappVolumes
@@ -84,38 +88,44 @@ namespace BareProx.Services
                         x.NetappControllerId == controllerId &&
                         x.VolumeName == storageName, ct);
 
-                if (map is null)
+                // Effective selectors
+                var effVolumeName = map?.VolumeName ?? storageName;
+                var effUuid = !string.IsNullOrWhiteSpace(volumeUuid) ? volumeUuid : map?.Uuid;          // UUID first
+                var effSvm = !string.IsNullOrWhiteSpace(svmName) ? svmName : map?.Vserver;            // SVM only used if UUID missing
+
+                // Guard: if both param UUID and DB UUID exist but differ -> fail fast
+                if (!string.IsNullOrWhiteSpace(volumeUuid) &&
+                    !string.IsNullOrWhiteSpace(map?.Uuid) &&
+                    !string.Equals(volumeUuid, map!.Uuid, StringComparison.OrdinalIgnoreCase))
                 {
-                    var msg = $"No mapping for storage '{storageName}' on controller {controllerId}.";
-                    _logger.LogWarning(msg);
+                    var msg = $"Volume UUID mismatch for '{storageName}' on controller {controllerId}: " +
+                              $"param='{volumeUuid}', db='{map.Uuid}'. Aborting to avoid acting on the wrong volume.";
+                    _logger.LogError(msg);
                     return new SnapshotResult { Success = false, ErrorMessage = msg };
                 }
 
-                // 1) Timestamp (app tz) used in name only
+                if (map is null && string.IsNullOrWhiteSpace(effUuid))
+                {
+                    _logger.LogWarning("[No UUID] No SelectedNetappVolumes row; resolving by name (svm={Svm}) for '{Storage}' on controller {ControllerId}.",
+                        effSvm ?? "<unknown>", storageName, controllerId);
+                }
+
+                // 1) Build snapshot name (App TZ)
                 var creationTimeLocal = _tz.ConvertUtcToApp(DateTime.UtcNow);
                 var timestamp = creationTimeLocal.ToString("yyyy-MM-dd-HH_mm-ss");
                 var snapshotName = $"BP_{snapmirrorLabel}-{timestamp}";
-                _logger.LogDebug("Using snapshot name {SnapshotName}.", snapshotName);
 
-                // 2) Base payload
                 var body = new SnapshotCreateBody
                 {
                     Name = snapshotName,
                     SnapMirrorLabel = snapmirrorLabel
                 };
 
-                // 3) Optional SnapLock expiry
+                // 2) Optional SnapLock expiry (prefer compliance clock via UUID; else name+svm)
                 if (snapLocking)
                 {
                     if (lockRetentionCount == null || string.IsNullOrWhiteSpace(lockRetentionUnit))
-                    {
-                        _logger.LogWarning("SnapLock requested without retention parameters.");
-                        return new SnapshotResult
-                        {
-                            Success = false,
-                            ErrorMessage = "snapLocking requested but no retention count/unit supplied."
-                        };
-                    }
+                        return new SnapshotResult { Success = false, ErrorMessage = "snapLocking requested but no retention count/unit supplied." };
 
                     TimeSpan offset = lockRetentionUnit switch
                     {
@@ -125,38 +135,30 @@ namespace BareProx.Services
                         _ => throw new ArgumentException($"Unknown unit '{lockRetentionUnit}'")
                     };
 
-                    var complianceBase = await ResolveComplianceClockBaseAsync(controllerId, map.VolumeName, map.Uuid, map.Vserver, ct)
+                    var complianceBase = await ResolveComplianceClockBaseAsync(
+                                             controllerId,
+                                             effVolumeName,
+                                             effUuid,     // UUID-first
+                                             effSvm,      // SVM hint only if UUID missing
+                                             ct)
                                          ?? creationTimeLocal;
 
                     var expiryWallClock = DateTime.SpecifyKind(complianceBase.Add(offset), DateTimeKind.Unspecified);
                     if (expiryWallClock <= complianceBase)
-                    {
-                        _logger.LogWarning("Computed SnapLock expiry {Expiry} is not in the future (base={Base}).",
-                            expiryWallClock, complianceBase);
-                        return new SnapshotResult
-                        {
-                            Success = false,
-                            ErrorMessage = $"Computed SnapLock expiry '{expiryWallClock:yyyy-MM-dd HH:mm:ss}' must be in the future."
-                        };
-                    }
+                        return new SnapshotResult { Success = false, ErrorMessage = $"Computed SnapLock expiry '{expiryWallClock:yyyy-MM-dd HH:mm:ss}' must be in the future." };
 
-                    body.SnapLock = new SnapshotCreateBody.SnapLockBlock
-                    {
-                        ExpiryTime = expiryWallClock
-                    };
-
-                    _logger.LogInformation("SnapLock expiry set to {Expiry} (base={Base}, unit={Unit}, count={Count}).",
-                        expiryWallClock, complianceBase, lockRetentionUnit, lockRetentionCount);
+                    body.SnapLock = new SnapshotCreateBody.SnapLockBlock { ExpiryTime = expiryWallClock };
+                    _logger.LogInformation("SnapLock expiry set to {Expiry}.", expiryWallClock);
                 }
 
-                // 4) POST
+                // 3) POST snapshot (UUID-first; else name + optional SVM; ambiguity handled inside)
                 await SendSnapshotRequestAsync(
-                                               controllerId: controllerId,
-                                               volumeName: map.VolumeName,
-                                               body: body,
-                                               volumeUuid: map.Uuid,
-                                               svmName: map.Vserver,   // or map.VserverName depending on your entity
-                                               ct: ct);
+                    controllerId: controllerId,
+                    volumeName: effVolumeName,
+                    body: body,
+                    volumeUuid: effUuid,
+                    svmName: effSvm,       // used only if UUID is missing
+                    ct: ct);
 
                 _logger.LogInformation("NetApp snapshot created successfully: {SnapshotName}.", snapshotName);
                 return new SnapshotResult { Success = true, SnapshotName = snapshotName };
@@ -172,6 +174,10 @@ namespace BareProx.Services
                 return new SnapshotResult { Success = false, ErrorMessage = ex.Message };
             }
         }
+
+
+
+
 
         // ---------------------------------------------------------------------
         // List (by controller + volume)
@@ -823,12 +829,12 @@ namespace BareProx.Services
         /// Prefer passing a UUID. If UUID is null/empty, we look up by name (and svm.name if provided).
         /// </summary>
         private async Task SendSnapshotRequestAsync(
-            int controllerId,
-            string volumeName,
-            SnapshotCreateBody body,
-            string? volumeUuid,
-            string? svmName,
-            CancellationToken ct = default)
+       int controllerId,
+       string volumeName,
+       SnapshotCreateBody body,
+       string? volumeUuid,
+       string? svmName,                          // <- NEW: optional SVM hint
+       CancellationToken ct = default)
         {
             using var scope = _logger.BeginScope(new Dictionary<string, object?>
             {
@@ -841,7 +847,7 @@ namespace BareProx.Services
                 ["label"] = body?.SnapMirrorLabel
             });
 
-            // Resolve controller via factory-scoped DbContext
+            // Resolve controller
             await using var db = await _dbf.CreateDbContextAsync(ct);
             var controller = await db.NetappControllers
                 .AsNoTracking()
@@ -856,12 +862,12 @@ namespace BareProx.Services
 
             if (string.IsNullOrWhiteSpace(uuid))
             {
-                // Build lookup with optional svm filter
-                var query = string.IsNullOrWhiteSpace(svmName)
-                    ? $"storage/volumes?name={Uri.EscapeDataString(volumeName)}&fields=uuid,svm.name,name"
-                    : $"storage/volumes?name={Uri.EscapeDataString(volumeName)}&svm.name={Uri.EscapeDataString(svmName)}&fields=uuid,svm.name,name";
+                // Build lookup; include SVM filter when provided to avoid ambiguity
+                var lookupPath = string.IsNullOrWhiteSpace(svmName)
+                    ? $"storage/volumes?name={Uri.EscapeDataString(volumeName)}&fields=uuid,svm.name,name&max_records=2"
+                    : $"storage/volumes?name={Uri.EscapeDataString(volumeName)}&svm.name={Uri.EscapeDataString(svmName)}&fields=uuid,svm.name,name&max_records=2";
 
-                var lookupUrl = baseUrl + query;
+                var lookupUrl = baseUrl + lookupPath;
                 var lookupResp = await http.GetAsync(lookupUrl, ct);
                 var lookupTxt = await lookupResp.Content.ReadAsStringAsync(ct);
 
@@ -876,11 +882,25 @@ namespace BareProx.Services
                 if (!lookupDoc.RootElement.TryGetProperty("records", out var records) || records.ValueKind != JsonValueKind.Array)
                     throw new Exception("Unexpected NetApp API response format for volume lookup.");
 
-                if (records.GetArrayLength() == 0)
-                    throw new Exception($"Volume '{volumeName}' not found in NetApp API (controller={controllerId}, svm={svmName ?? "?"}).");
+                var count = records.GetArrayLength();
+                if (count == 0)
+                    throw new Exception($"Volume '{volumeName}' not found on controller {controllerId}{(string.IsNullOrWhiteSpace(svmName) ? "" : $" (svm={svmName})")}.");
 
-                if (records.GetArrayLength() > 1 && string.IsNullOrWhiteSpace(svmName))
-                    throw new Exception($"Multiple volumes named '{volumeName}' found (controller={controllerId}). Specify SVM or pass UUID.");
+                if (count > 1)
+                {
+                    var svms = records.EnumerateArray()
+                                      .Select(e => e.GetProperty("svm").GetProperty("name").GetString())
+                                      .Where(s => !string.IsNullOrWhiteSpace(s))
+                                      .Distinct(StringComparer.OrdinalIgnoreCase)
+                                      .OrderBy(s => s)
+                                      .ToArray();
+
+                    var svmList = svms.Length > 0 ? $" (SVMs: {string.Join(", ", svms)})" : string.Empty;
+                    var callerSvm = string.IsNullOrWhiteSpace(svmName) ? "" : $" (requested svm={svmName})";
+                    throw new Exception(
+                        $"Multiple volumes named '{volumeName}' found on controller {controllerId}{svmList}{callerSvm}. " +
+                        $"Provide svmName or store/use the volume UUID.");
+                }
 
                 uuid = records[0].GetProperty("uuid").GetString();
                 if (string.IsNullOrWhiteSpace(uuid))
@@ -888,7 +908,7 @@ namespace BareProx.Services
             }
             else
             {
-                // Optional verification of the UUID; useful during migrations/debugging.
+                // Optional verification of the UUID
                 var verifyUrl = $"{baseUrl}storage/volumes/{uuid}?fields=uuid,svm.name,name";
                 var verifyResp = await http.GetAsync(verifyUrl, ct);
                 var verifyTxt = await verifyResp.Content.ReadAsStringAsync(ct);
@@ -916,6 +936,8 @@ namespace BareProx.Services
 
             resp.EnsureSuccessStatusCode();
         }
+
+
 
     }
 }

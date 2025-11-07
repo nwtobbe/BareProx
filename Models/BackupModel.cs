@@ -29,6 +29,7 @@ namespace BareProx.Models
         public int ControllerId { get; set; }
         public bool SnapshotLockingEnabled { get; set; }
         public int? SelectedNetappVolumeId { get; set; }
+        public string? VolumeUuid { get; set; }
     }
     public class CreateScheduleRequest
     {
@@ -41,6 +42,7 @@ namespace BareProx.Models
         public Dictionary<string, VolumeMeta> VolumeMeta { get; set; }
             = new(StringComparer.OrdinalIgnoreCase);
         public string StorageName { get; set; } = null!;
+        public string? VolumeUuid { get; set; }
         public int? SelectedNetappVolumeId { get; set; }
         public bool IsApplicationAware { get; set; }
         public string Name { get; set; } = null!;
@@ -86,6 +88,7 @@ namespace BareProx.Models
     {
         public string StorageName { get; set; } = null!;
         public int? selectedNetappVolumeId { get; set; }
+        public string? VolumeUuid { get; set; }
         public bool IsApplicationAware { get; set; }
         public string Label { get; set; } = "Manual";
         public int ClusterId { get; set; }

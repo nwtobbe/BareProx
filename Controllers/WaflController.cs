@@ -18,7 +18,6 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
-
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services;
@@ -32,7 +31,9 @@ namespace BareProx.Controllers
 {
     public class WaflController : Controller
     {
-        private readonly ApplicationDbContext _context;
+        private readonly IDbContextFactory<ApplicationDbContext> _dbf;
+        private readonly IDbContextFactory<QueryDbContext> _qdbf; // NEW: Query DB
+
         private readonly INetappFlexCloneService _netappflexcloneService;
         private readonly INetappExportNFSService _netappExportNFSService;
         private readonly INetappSnapmirrorService _netappSnapmirrorService;
@@ -41,15 +42,17 @@ namespace BareProx.Controllers
         private readonly ProxmoxService _proxmoxService;
 
         public WaflController(
-                ApplicationDbContext context,
-                INetappFlexCloneService netappflexcloneService,
-                INetappExportNFSService netappExportNFSService,
-                INetappSnapmirrorService netappSnapmirrorService,
-                INetappVolumeService netappVolumeService,
-                INetappSnapshotService netappSnapshotService,
-                ProxmoxService proxmoxService)
+            IDbContextFactory<ApplicationDbContext> dbf,
+            IDbContextFactory<QueryDbContext> qdbf,           // NEW
+            INetappFlexCloneService netappflexcloneService,
+            INetappExportNFSService netappExportNFSService,
+            INetappSnapmirrorService netappSnapmirrorService,
+            INetappVolumeService netappVolumeService,
+            INetappSnapshotService netappSnapshotService,
+            ProxmoxService proxmoxService)
         {
-            _context = context;
+            _dbf = dbf;
+            _qdbf = qdbf; // NEW
             _netappflexcloneService = netappflexcloneService;
             _netappExportNFSService = netappExportNFSService;
             _netappSnapmirrorService = netappSnapmirrorService;
@@ -60,40 +63,48 @@ namespace BareProx.Controllers
 
         public async Task<IActionResult> Snapshots(int? clusterId, CancellationToken ct)
         {
-            // 1. Load all clusters
-            var clusters = await _context.ProxmoxClusters
-                                         .Include(c => c.Hosts)
-                                         .ToListAsync(ct);
+            await using var db = await _dbf.CreateDbContextAsync(ct);
 
-            if (!clusters.Any())
+            var clusters = await db.ProxmoxClusters
+                .Include(c => c.Hosts)
+                .AsNoTracking()
+                .ToListAsync(ct);
+
+            if (clusters.Count == 0)
             {
                 ViewBag.Warning = "No Proxmox clusters are configured.";
                 return View(new List<NetappControllerTreeDto>());
             }
 
-            // 2. Figure out which cluster is selected (default: first)
-            var selectedCluster = clusters.FirstOrDefault(c => c.Id == clusterId) ?? clusters.First();
+            var selectedCluster = clusterId.HasValue
+                ? clusters.FirstOrDefault(c => c.Id == clusterId.Value) ?? clusters[0]
+                : clusters[0];
+
             ViewBag.Clusters = clusters;
             ViewBag.SelectedClusterId = selectedCluster.Id;
 
-            // 3. Load all NetApp controllers
-            var netappControllers = await _context.NetappControllers.AsNoTracking().ToListAsync(ct);
-            if (!netappControllers.Any())
+            var netappControllers = await db.NetappControllers
+                .AsNoTracking()
+                .ToListAsync(ct);
+
+            if (netappControllers.Count == 0)
             {
                 ViewBag.Warning = "No NetApp controllers are configured.";
                 return View(new List<NetappControllerTreeDto>());
             }
 
-            // 4. Load **enabled** volumes (primary and secondary) from SelectedNetappVolumes
-            //    (Disabled == true => skip; NULL => treated as enabled)
-            var selectedVolumes = await _context.SelectedNetappVolumes
-                                                .AsNoTracking()
-                                                .Where(v => v.Disabled != true)
-                                                .ToListAsync(ct);
+            var selectedVolumes = await db.SelectedNetappVolumes
+                .AsNoTracking()
+                .Where(v => v.Disabled != true)
+                .ToListAsync(ct);
 
             var volumeLookup = selectedVolumes.ToLookup(v => v.NetappControllerId);
-
             var result = new List<NetappControllerTreeDto>();
+
+            // Optional: throttle calls to GetSnapshotsAsync to avoid hammering the controller
+            using var gate = new SemaphoreSlim(4); // tune parallelism
+            var tasks = new List<Task>();
+
             foreach (var controller in netappControllers)
             {
                 var controllerDto = new NetappControllerTreeDto
@@ -107,11 +118,7 @@ namespace BareProx.Controllers
                 var groupedBySvm = volumeLookup[controller.Id].GroupBy(v => v.Vserver);
                 foreach (var svmGroup in groupedBySvm)
                 {
-                    var svmDto = new NetappSvmDto
-                    {
-                        Name = svmGroup.Key,
-                        Volumes = new List<NetappVolumeDto>()
-                    };
+                    var svmDto = new NetappSvmDto { Name = svmGroup.Key, Volumes = new List<NetappVolumeDto>() };
 
                     foreach (var vol in svmGroup)
                     {
@@ -125,46 +132,67 @@ namespace BareProx.Controllers
                             IsSelected = true
                         };
 
-                        // Fetch snapshots for this volume
-                        var snapshots = await _netappSnapshotService.GetSnapshotsAsync(vol.NetappControllerId, vol.VolumeName, ct);
-                        volumeDto.Snapshots = snapshots;
-
                         svmDto.Volumes.Add(volumeDto);
+
+                        // fetch snapshots in parallel with throttle
+                        tasks.Add(Task.Run(async () =>
+                        {
+                            await gate.WaitAsync(ct);
+                            try
+                            {
+                                var snaps = await _netappSnapshotService
+                                    .GetSnapshotsAsync(vol.NetappControllerId, vol.VolumeName, ct);
+                                volumeDto.Snapshots = snaps;
+                            }
+                            catch
+                            {
+                                volumeDto.Snapshots = new List<string>();
+                            }
+                            finally
+                            {
+                                gate.Release();
+                            }
+                        }, ct));
                     }
+
                     controllerDto.Svms.Add(svmDto);
                 }
+
                 result.Add(controllerDto);
             }
+
+            await Task.WhenAll(tasks);
             return View(result);
         }
 
         public async Task<IActionResult> SnapMirrorGraph(CancellationToken ct)
         {
-            // Pull data (no tracking for speed)
-            var snapshotList = await _context.NetappSnapshots.AsNoTracking().ToListAsync(ct);
-            var policies = await _context.SnapMirrorPolicies.AsNoTracking().ToListAsync(ct);
-            var retentions = await _context.SnapMirrorPolicyRetentions.AsNoTracking().ToListAsync(ct);
-            var relationsRaw = await _context.SnapMirrorRelations.AsNoTracking().ToListAsync(ct);
+            await using var db = await _dbf.CreateDbContextAsync(ct);   // Main DB
+            await using var qdb = await _qdbf.CreateDbContextAsync(ct);  // Query DB
 
-            // Build a fast lookup of "enabled" volumes (Disabled == true => excluded; NULL => included)
+            // READ snapshots from Query DB
+            var snapshotList = await qdb.NetappSnapshots.AsNoTracking().ToListAsync(ct);
+
+            // Everything else from Main DB
+            var policies = await db.SnapMirrorPolicies.AsNoTracking().ToListAsync(ct);
+            var retentions = await db.SnapMirrorPolicyRetentions.AsNoTracking().ToListAsync(ct);
+            var relationsRaw = await db.SnapMirrorRelations.AsNoTracking().ToListAsync(ct);
+
             static string Key(int cid, string? vol) => $"{cid}||{(vol ?? string.Empty).ToLowerInvariant()}";
 
-            var enabledVolKeys = (await _context.SelectedNetappVolumes
+            var enabledVolKeys = (await db.SelectedNetappVolumes
                 .AsNoTracking()
-                .Where(v => v.Disabled != true)                   // only enabled
+                .Where(v => v.Disabled != true && v.VolumeName != null && v.VolumeName != "")
                 .Select(v => new { v.NetappControllerId, v.VolumeName })
                 .ToListAsync(ct))
-                .Where(x => !string.IsNullOrWhiteSpace(x.VolumeName))
                 .Select(x => Key(x.NetappControllerId, x.VolumeName))
-                .ToHashSet(StringComparer.Ordinal);               // keys already normalized
+                .ToHashSet(StringComparer.Ordinal);
 
-            // Filter relations: require BOTH source and destination volumes to be enabled
             var relationsFiltered = relationsRaw.Where(r =>
                 enabledVolKeys.Contains(Key(r.SourceControllerId, r.SourceVolume)) &&
                 enabledVolKeys.Contains(Key(r.DestinationControllerId, r.DestinationVolume))
             ).ToList();
 
-            // Lookups for policy/retention/controller names
             var policyByUuid = policies
                 .Where(p => !string.IsNullOrEmpty(p.Uuid))
                 .ToDictionary(p => p.Uuid!, p => p, StringComparer.OrdinalIgnoreCase);
@@ -173,28 +201,22 @@ namespace BareProx.Controllers
                 .GroupBy(r => r.SnapMirrorPolicyId)
                 .ToDictionary(g => g.Key, g => g.ToList());
 
-            var controllerNames = await _context.NetappControllers
+            var controllerNames = await db.NetappControllers
                 .AsNoTracking()
                 .ToDictionaryAsync(
                     c => c.Id,
                     c => string.IsNullOrWhiteSpace(c.Hostname) ? $"#{c.Id}" : c.Hostname,
-                    ct
-                );
+                    ct);
 
-            // Map to DTOs
             var relations = new List<SnapMirrorRelationGraphDto>();
             foreach (var rel in relationsFiltered)
             {
-                // Policy + retentions
-                SnapMirrorPolicy? policy = null;
-                if (!string.IsNullOrEmpty(rel.PolicyUuid))
-                    policyByUuid.TryGetValue(rel.PolicyUuid, out policy);
-
+                policyByUuid.TryGetValue(rel.PolicyUuid ?? "", out var policy);
                 var relRetentions = retentionsByPolicyId.GetValueOrDefault(policy?.Id ?? 0, new List<SnapMirrorPolicyRetention>());
-                int getRetention(string label) => relRetentions.FirstOrDefault(r => r.Label == label)?.Count ?? 0;
-                string? lockedPeriod = relRetentions.FirstOrDefault(r => r.Period != null)?.Period;
+                int R(string lbl) => relRetentions.FirstOrDefault(r => r.Label == lbl)?.Count ?? 0;
+                string? locked = relRetentions.FirstOrDefault(r => r.Period != null)?.Period;
 
-                var dto = new SnapMirrorRelationGraphDto
+                relations.Add(new SnapMirrorRelationGraphDto
                 {
                     SourceController = controllerNames.GetValueOrDefault(rel.SourceControllerId, $"#{rel.SourceControllerId}"),
                     DestinationController = controllerNames.GetValueOrDefault(rel.DestinationControllerId, $"#{rel.DestinationControllerId}"),
@@ -207,23 +229,13 @@ namespace BareProx.Controllers
                     RelationUuid = rel.Uuid,
                     PolicyName = policy?.Name ?? "",
                     PolicyType = policy?.Type ?? "",
-                    HourlyRetention = getRetention("hourly"),
-                    DailyRetention = getRetention("daily"),
-                    WeeklyRetention = getRetention("weekly"),
-                    LockedPeriod = FormatIso8601Duration(lockedPeriod),
-
-                    HourlySnapshotsPrimary = 0,
-                    DailySnapshotsPrimary = 0,
-                    WeeklySnapshotsPrimary = 0,
-                    HourlySnapshotsSecondary = 0,
-                    DailySnapshotsSecondary = 0,
-                    WeeklySnapshotsSecondary = 0
-                };
-
-                relations.Add(dto);
+                    HourlyRetention = R("hourly"),
+                    DailyRetention = R("daily"),
+                    WeeklyRetention = R("weekly"),
+                    LockedPeriod = FormatIso8601Duration(locked),
+                });
             }
 
-            // Count snapshots for remaining (visible) relations
             foreach (var rel in relations)
             {
                 var primarySnaps = snapshotList.Where(s =>
@@ -248,7 +260,6 @@ namespace BareProx.Controllers
             return View(relations);
         }
 
-
         [HttpGet]
         public async Task<IActionResult> GetSnapshotsForVolume(
             string volume,
@@ -270,176 +281,124 @@ namespace BareProx.Controllers
         }
 
         [HttpPost]
-        public async Task<IActionResult> MountSnapshot(
-            MountSnapshotViewModel model,
-            CancellationToken ct)
+        public async Task<IActionResult> MountSnapshot(MountSnapshotViewModel model, CancellationToken ct)
         {
-            if (!ModelState.IsValid)
-                return BadRequest("Invalid input.");
+            if (!ModelState.IsValid) return BadRequest("Invalid input.");
 
             try
             {
-                // 1) Generate a unique clone name
                 var timestamp = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
                 var cloneName = $"restore_{model.VolumeName}_{timestamp}";
 
-                var controllerId = model.ControllerId;
-                if (controllerId <= 0)
-                    return BadRequest("Invalid controller ID.");
+                if (model.ControllerId <= 0) return BadRequest("Invalid controller ID.");
 
-                // 2) Clone the snapshot
-                var result = await _netappflexcloneService
-                    .CloneVolumeFromSnapshotAsync(
-                        volumeName: model.VolumeName,
-                        snapshotName: model.SnapshotName,
-                        cloneName: cloneName,
-                        controllerId: controllerId,
-                        ct);
+                var result = await _netappflexcloneService.CloneVolumeFromSnapshotAsync(
+                    model.VolumeName, model.SnapshotName, cloneName, model.ControllerId, ct);
 
-                if (!result.Success)
-                    return BadRequest("Failed to create FlexClone: " + result.Message);
+                if (!result.Success) return BadRequest("Failed to create FlexClone: " + result.Message);
 
-                // 3) Copy export policy — enhanced logic for secondary
-                if (model.IsSecondary)
+                await using (var db = await _dbf.CreateDbContextAsync(ct))
+                await using (var qdb = await _qdbf.CreateDbContextAsync(ct)) // NEW
                 {
-                    // first, try the NetappSnapshots table
-                    var snapshotRecord = await _context.NetappSnapshots
-                        .Where(s =>
-                            s.SnapshotName == model.SnapshotName &&
-                            s.SecondaryVolume == model.VolumeName &&
-                            s.SecondaryControllerId == model.ControllerId)
-                        .FirstOrDefaultAsync(ct);
-
-                    int primaryControllerId;
-                    string primaryVolumeName;
-                    string exportPolicyName;
-
-                    if (snapshotRecord != null)
+                    if (model.IsSecondary)
                     {
-                        // got it directly
-                        primaryControllerId = snapshotRecord.PrimaryControllerId;
-                        primaryVolumeName = snapshotRecord.PrimaryVolume;
+                        // Read snapshot metadata from Query DB
+                        var snapshotRecord = await qdb.NetappSnapshots
+                            .AsNoTracking()
+                            .FirstOrDefaultAsync(s =>
+                                s.SnapshotName == model.SnapshotName &&
+                                s.SecondaryVolume == model.VolumeName &&
+                                s.SecondaryControllerId == model.ControllerId, ct);
+
+                        int primaryControllerId;
+                        string primaryVolumeName;
+
+                        if (snapshotRecord != null)
+                        {
+                            primaryControllerId = snapshotRecord.PrimaryControllerId;
+                            primaryVolumeName = snapshotRecord.PrimaryVolume;
+                        }
+                        else
+                        {
+                            var smr = await db.SnapMirrorRelations
+                                .AsNoTracking()
+                                .FirstOrDefaultAsync(r =>
+                                    r.DestinationControllerId == model.ControllerId &&
+                                    r.DestinationVolume == model.VolumeName, ct);
+
+                            if (smr == null)
+                                return BadRequest($"No snapshot metadata or SnapMirrorRelation found for '{model.SnapshotName}' on '{model.VolumeName}'.");
+
+                            primaryControllerId = smr.SourceControllerId;
+                            primaryVolumeName = smr.SourceVolume;
+                        }
+
+                        var primaryExportPolicy = await db.SelectedNetappVolumes
+                            .AsNoTracking()
+                            .Where(v => v.NetappControllerId == primaryControllerId &&
+                                        v.VolumeName == primaryVolumeName &&
+                                        v.Disabled != true)
+                            .Select(v => v.ExportPolicyName)
+                            .FirstOrDefaultAsync(ct);
+
+                        if (string.IsNullOrEmpty(primaryExportPolicy))
+                            return StatusCode(500, "Could not find export policy on primary volume.");
+
+                        var svmName = await db.SelectedNetappVolumes
+                            .AsNoTracking()
+                            .Where(v => v.NetappControllerId == model.ControllerId &&
+                                        v.VolumeName == model.VolumeName &&
+                                        v.Disabled != true)
+                            .Select(v => v.Vserver)
+                            .FirstOrDefaultAsync(ct);
+
+                        if (string.IsNullOrEmpty(svmName))
+                            return StatusCode(500, "Could not determine SVM name for clone.");
+
+                        var copied = await _netappExportNFSService.EnsureExportPolicyExistsOnSecondaryAsync(
+                            primaryExportPolicy, primaryControllerId, model.ControllerId, svmName, ct);
+
+                        if (!copied)
+                            return StatusCode(500, "Failed to ensure export policy exists on secondary controller.");
+
+                        var ok = await _netappExportNFSService.SetExportPolicyAsync(
+                            cloneName, primaryExportPolicy, model.ControllerId, ct);
+
+                        if (!ok)
+                            return StatusCode(500, "Failed to set export policy on clone from primary info.");
                     }
                     else
                     {
-                        // FALLBACK: use SnapMirrorRelation
-                        var smr = await _context.SnapMirrorRelations
-                            .Where(r =>
-                                r.DestinationControllerId == model.ControllerId &&
-                                r.DestinationVolume == model.VolumeName)
-                            .FirstOrDefaultAsync(ct);
-
-                        if (smr == null)
-                            return BadRequest(
-                               $"No snapshot metadata or SnapMirrorRelation found for '{model.SnapshotName}' on '{model.VolumeName}'.");
-
-                        primaryControllerId = smr.SourceControllerId;
-                        primaryVolumeName = smr.SourceVolume;
-
-                        // now look up the export-policy on the source (primary) side
-                        exportPolicyName = await _context.SelectedNetappVolumes
-                            .AsNoTracking()
-                            .Where(v =>
-                                v.NetappControllerId == primaryControllerId &&
-                                v.VolumeName == primaryVolumeName &&
-                                v.Disabled != true) // skip disabled, include NULL
-                            .Select(v => v.ExportPolicyName)
-                            .FirstOrDefaultAsync(ct)
-                            ?? throw new Exception(
-                                $"ExportPolicyName not found for primary volume '{primaryVolumeName}'");
+                        await _netappExportNFSService.CopyExportPolicyAsync(model.VolumeName, cloneName, model.ControllerId, ct);
                     }
 
-                    // Get export policy name from primary (consistent filter)
-                    var primaryExportPolicy = await _context.SelectedNetappVolumes
+                    var volumeInfo = await _netappVolumeService.LookupVolumeAsync(result.CloneVolumeName!, model.ControllerId, ct);
+                    if (volumeInfo == null)
+                        return StatusCode(500, $"Failed to find UUID for cloned volume '{result.CloneVolumeName}'.");
+
+                    await _netappExportNFSService.SetVolumeExportPathAsync(volumeInfo.Uuid, $"/{cloneName}", model.ControllerId, ct);
+
+                    var cluster = await db.ProxmoxClusters
+                        .Include(c => c.Hosts)
                         .AsNoTracking()
-                        .Where(v =>
-                            v.NetappControllerId == primaryControllerId &&
-                            v.VolumeName == primaryVolumeName &&
-                            v.Disabled != true) // skip disabled
-                        .Select(v => v.ExportPolicyName)
                         .FirstOrDefaultAsync(ct);
 
-                    if (string.IsNullOrEmpty(primaryExportPolicy))
-                        return StatusCode(500, "Could not find export policy on primary volume.");
+                    if (cluster == null) return NotFound("Proxmox cluster not found.");
+                    var host = cluster.Hosts.FirstOrDefault();
+                    if (host == null) return NotFound("No Proxmox hosts available in the cluster.");
 
-                    // Get SVM name for the clone (from SelectedNetappVolumes on secondary)
-                    var svmName = await _context.SelectedNetappVolumes
-                        .AsNoTracking()
-                        .Where(v =>
-                            v.NetappControllerId == model.ControllerId &&
-                            v.VolumeName == model.VolumeName &&
-                            v.Disabled != true) // skip disabled
-                        .Select(v => v.Vserver)
-                        .FirstOrDefaultAsync(ct);
+                    var mounted = await _proxmoxService.MountNfsStorageViaApiAsync(
+                        cluster,
+                        node: host.Hostname!,
+                        storageName: cloneName,
+                        serverIp: model.MountIp,
+                        exportPath: $"/{cloneName}",
+                        false,                 // snapshotChainActive
+                        ct: ct
+                    );
 
-                    if (string.IsNullOrEmpty(svmName))
-                        return StatusCode(500, "Could not determine SVM name for clone.");
-
-                    // Ensure the policy (and its rules) exist on secondary (copy if needed)
-                    var copied = await _netappExportNFSService.EnsureExportPolicyExistsOnSecondaryAsync(
-                        exportPolicyName: primaryExportPolicy,
-                        primaryControllerId: primaryControllerId,
-                        secondaryControllerId: model.ControllerId,
-                        svmName: svmName,
-                        ct: ct);
-
-                    if (!copied)
-                        return StatusCode(500, "Failed to ensure export policy exists on secondary controller.");
-
-                    // Now assign the policy to the clone (on secondary)
-                    var ok = await _netappExportNFSService.SetExportPolicyAsync(
-                        volumeName: cloneName,
-                        exportPolicyName: primaryExportPolicy,
-                        controllerId: model.ControllerId,
-                        ct: ct);
-
-                    if (!ok)
-                        return StatusCode(500, "Failed to set export policy on clone from primary info.");
+                    if (!mounted) return StatusCode(500, "Failed to mount clone on Proxmox.");
                 }
-                else
-                {
-                    // Primary: just copy export policy on same controller
-                    await _netappExportNFSService.CopyExportPolicyAsync(
-                        model.VolumeName,
-                        cloneName,
-                        controllerId: controllerId,
-                        ct);
-                }
-
-                // 4) Lookup the clone’s UUID, then set its export path
-                var volumeInfo = await _netappVolumeService
-                    .LookupVolumeAsync(result.CloneVolumeName!, controllerId, ct);
-                if (volumeInfo == null)
-                    return StatusCode(500, $"Failed to find UUID for cloned volume '{result.CloneVolumeName}'.");
-
-                // set nas.path = "/{cloneName}"
-                await _netappExportNFSService.SetVolumeExportPathAsync(
-                    volumeInfo.Uuid,
-                    $"/{cloneName}",
-                    controllerId,
-                    ct);
-
-                // 5) Mount to Proxmox
-                var cluster = await _context.ProxmoxClusters
-                                            .Include(c => c.Hosts)
-                                            .FirstOrDefaultAsync(ct);
-                if (cluster == null)
-                    return NotFound("Proxmox cluster not found.");
-
-                var host = cluster.Hosts.FirstOrDefault();
-                if (host == null)
-                    return NotFound("No Proxmox hosts available in the cluster.");
-
-                var mountSuccess = await _proxmoxService.MountNfsStorageViaApiAsync(
-                    cluster,
-                    node: host.Hostname!,
-                    storageName: cloneName,
-                    serverIp: model.MountIp,
-                    exportPath: $"/{cloneName}",
-                    ct: ct);
-
-                if (!mountSuccess)
-                    return StatusCode(500, "Failed to mount clone on Proxmox.");
 
                 TempData["Message"] = $"Snapshot {model.SnapshotName} cloned and mounted as {cloneName}.";
                 return RedirectToAction("Snapshots");

@@ -18,7 +18,6 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
-
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services.Background;
@@ -36,16 +35,17 @@ namespace BareProx.Services.Restore
     public class RestoreService : IRestoreService
     {
         private readonly IDbContextFactory<ApplicationDbContext> _dbf;
+        private readonly IQueryDbFactory _qdbf;                          // NEW: Query DB factory
         private readonly IBackgroundServiceQueue _taskQueue;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ILogger<RestoreService> _logger;
-        // Field retained (even if unused directly) to keep ctor wiring symmetrical
         private readonly INetappVolumeService _netappVolumeService;
         private readonly IEmailSender _email;
         private readonly IAppTimeZoneService _tz;
 
         public RestoreService(
             IDbContextFactory<ApplicationDbContext> dbf,
+            IQueryDbFactory qdbf,                                        // NEW: inject
             IBackgroundServiceQueue taskQueue,
             IServiceScopeFactory scopeFactory,
             ILogger<RestoreService> logger,
@@ -54,6 +54,7 @@ namespace BareProx.Services.Restore
             IAppTimeZoneService tz)
         {
             _dbf = dbf;
+            _qdbf = qdbf;                                                // NEW
             _taskQueue = taskQueue;
             _scopeFactory = scopeFactory;
             _logger = logger;
@@ -88,6 +89,7 @@ namespace BareProx.Services.Restore
 
                 var ctxFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<ApplicationDbContext>>();
                 await using var ctx = await ctxFactory.CreateDbContextAsync(backgroundCt);
+                await using var qdb = await _qdbf.CreateAsync(backgroundCt);             // NEW: Query DB for snapshots
 
                 var netappflexclone = scope.ServiceProvider.GetRequiredService<INetappFlexCloneService>();
                 var proxmox = scope.ServiceProvider.GetRequiredService<ProxmoxService>();
@@ -132,6 +134,16 @@ namespace BareProx.Services.Restore
 
                 try
                 {
+                    // Resolve backup -> JobId for correct snapshot lookup
+                    var backupMeta = await ctx.BackupRecords
+                        .AsNoTracking()
+                        .Where(b => b.Id == model.BackupId)
+                        .Select(b => new { b.JobId, b.SnapshotAsvolumeChain, b.StorageName })
+                        .FirstOrDefaultAsync(backgroundCt);
+
+                    if (backupMeta == null)
+                        throw new InvalidOperationException($"Backup record #{model.BackupId} not found.");
+
                     // 3) Clone volume from snapshot
                     cloneName = $"restore_{jobId}_{DateTime.UtcNow:yyyyMMddHHmmss}";
                     model.CloneVolumeName = cloneName;
@@ -139,10 +151,7 @@ namespace BareProx.Services.Restore
                         $"Cloning volume '{model.VolumeName}' from snapshot '{model.SnapshotName}' → '{cloneName}'.",
                         backgroundCt);
 
-                    // Determine snapshot-as-volume chain flag from the originating backup
-                    var snapChainActive = await ctx.BackupRecords
-                        .Where(b => b.Id == model.BackupId)
-                        .AnyAsync(b => b.SnapshotAsvolumeChain, backgroundCt);
+                    var snapChainActive = backupMeta.SnapshotAsvolumeChain;
 
                     var cloneResult = await netappflexclone.CloneVolumeFromSnapshotAsync(
                         model.VolumeName,
@@ -162,9 +171,12 @@ namespace BareProx.Services.Restore
                     {
                         await LogVmAsync(ctx, vmResultId, "Info", "Applying export policy on secondary.", backgroundCt);
 
-                        var snap = await ctx.NetappSnapshots
+                        // FIX: look up latest snapshot for the job in the QUERY DB
+                        var snap = await qdb.NetappSnapshots
                             .AsNoTracking()
-                            .FirstOrDefaultAsync(s => s.JobId == model.BackupId, backgroundCt);
+                            .Where(s => s.JobId == backupMeta.JobId)
+                            .OrderByDescending(s => s.CreatedAt)
+                            .FirstOrDefaultAsync(backgroundCt);
 
                         var primaryCtrl = snap?.PrimaryControllerId
                                           ?? await ctx.SnapMirrorRelations
@@ -257,12 +269,11 @@ namespace BareProx.Services.Restore
                         m.VolumeName.Equals(cloneName, StringComparison.OrdinalIgnoreCase))
                         ?? throw new InvalidOperationException($"Mount info not found for clone '{cloneName}'.");
 
-                    // NOTE: original logic picks the first cluster that has hosts;
-                    // if you have ClusterId on the model, filter by it instead.
+                    // FIX: use the explicit cluster from the model
                     var clusterInfo = await ctx.ProxmoxClusters
                         .Include(c => c.Hosts)
-                        .FirstOrDefaultAsync(c => c.Hosts.Any(), backgroundCt)
-                        ?? throw new InvalidOperationException("Proxmox cluster not found.");
+                        .FirstOrDefaultAsync(c => c.Id == model.ClusterId, backgroundCt)
+                        ?? throw new InvalidOperationException($"Proxmox cluster {model.ClusterId} not found.");
 
                     var origHost = clusterInfo.Hosts
                         .FirstOrDefault(h => h.HostAddress == model.OriginalHostAddress);
@@ -468,7 +479,6 @@ namespace BareProx.Services.Restore
                       $@"<p><b>Notes:</b><br/><pre style=""white-space:pre-wrap"">{System.Net.WebUtility.HtmlEncode(errorOrNote)}</pre></p>")}
                     <p>— BareProx</p>";
 
-                // One mail per recipient (simple & robust)
                 foreach (var r in recipients)
                 {
                     await _email.SendAsync(r, subj, html, ct);
@@ -476,7 +486,6 @@ namespace BareProx.Services.Restore
             }
             catch (Exception ex)
             {
-                // Never fail the restore because email failed — just log.
                 _logger.LogWarning(ex, "TryNotifyAsync (Restore) failed for Job {JobId}", jobId);
             }
         }

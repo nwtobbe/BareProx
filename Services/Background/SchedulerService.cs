@@ -137,7 +137,8 @@ namespace BareProx.Services.Background
                         // Pass everything from the schedule, including excludes + locking
                         await scopedBackupService.StartBackupAsync(
                             storageName: sched.StorageName,
-                            SelectedNetappVolumeId: sched.SelectedNetappVolumeId,
+                            selectedNetappVolumeId: sched.SelectedNetappVolumeId,   // <-- name fix
+                            volumeUuid: sched.VolumeUuid,
                             isApplicationAware: sched.IsApplicationAware,
                             label: sched.Schedule.ToLower(),                 // human label
                             clusterId: sched.ClusterId,

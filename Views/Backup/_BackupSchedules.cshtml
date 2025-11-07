@@ -12,10 +12,13 @@
             font-weight: 700;
             color: #dc3545; /* Bootstrap danger */
         }
-
         .disabled-cell {
             text-align: center;
             width: 110px;
+        }
+        .actions-col {
+            white-space: nowrap;
+            width: 180px;
         }
     </style>
 
@@ -28,49 +31,64 @@
                 <th>Frequency</th>
                 <th>Schedule</th>
                 <th>Time</th>
-                <th>Last Run</th> @* Optional, if using LastRun *@
-                <th>Actions</th>
+                <th>Last Run</th>
+                <th class="actions-col">Actions</th>
             </tr>
         </thead>
         <tbody>
-            @foreach (var schedule in Model)
-            {
-                <tr>
-                    <td>@schedule.Name</td>
-                    <td>@schedule.StorageName</td>
+        @foreach (var schedule in Model)
+        {
+            <tr>
+                <td>@schedule.Name</td>
+                <td>@schedule.StorageName</td>
 
-                    <!-- Disabled column: red checkmark when IsEnabled == false -->
-                    <td class="disabled-cell">
-                        @if (!schedule.IsEnabled)
-                        {
-                            <span class="disabled-mark" title="This schedule is disabled" aria-label="Disabled">✓</span>
-                        }
-                        else
-                        {
-                            <span class="text-muted" aria-hidden="true">—</span>
-                        }
+                <!-- Disabled column: red checkmark when IsEnabled == false -->
+                <td class="disabled-cell">
+                    @if (!schedule.IsEnabled)
+                    {
+                        <span class="disabled-mark" title="This schedule is disabled" aria-label="Disabled">✓</span>
+                    }
+                    else
+                    {
+                        <span class="text-muted" aria-hidden="true">—</span>
+                    }
                 </td>
 
                 <td>@schedule.Frequency</td>
                 <td>@schedule.Schedule</td>
                 <td>
                     @(schedule.TimeOfDay.HasValue
-                                    ? schedule.TimeOfDay.Value.ToString(@"hh\:mm")
-                                    : "-")
-            </td>
-            <td>
-                @(schedule.LastRun?.ToString("yyyy-MM-dd HH:mm") ?? "Never")
-            </td>
-            <td>
-                <a class="btn btn-sm btn-primary" asp-action="EditSchedule" asp-route-id="@schedule.Id">Edit</a>
-                <a class="btn btn-sm btn-danger" asp-action="DeleteSchedule" asp-route-id="@schedule.Id">Delete</a>
-            </td>
-        </tr>
-                }
+                        ? schedule.TimeOfDay.Value.ToString(@"hh\:mm")
+                        : "-")
+                </td>
+                <td>
+                    @(schedule.LastRun?.ToString("yyyy-MM-dd HH:mm") ?? "Never")
+                </td>
+                <td class="actions-col">
+                    <a class="btn btn-sm btn-primary"
+                       asp-action="EditSchedule"
+                       asp-route-id="@schedule.Id">
+                        Edit
+                    </a>
+
+                        <form asp-action="DeleteSchedule"
+                              asp-route-id="@schedule.Id"
+                              method="post"
+                              class="d-inline">
+                            @Html.AntiForgeryToken()
+                            <button type="submit"
+                                    class="btn btn-sm btn-danger"
+                                    onclick="return confirm('Delete schedule &quot;@schedule.Name&quot;?\n\nThis will remove the schedule but not existing backups. This action cannot be undone.');">
+                                Delete
+                            </button>
+                        </form>
+                </td>
+            </tr>
+        }
         </tbody>
     </table>
 }
 else
 {
-    <p class="text-muted">No backup schedules Created.</p>
+    <p class="text-muted">No backup schedules created.</p>
 }

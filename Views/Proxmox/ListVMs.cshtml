@@ -65,7 +65,8 @@
                         data-controllerid="@s.NetappControllerId"
                         data-selectedvolumeid="@(s.SelectedNetappVolumeId?.ToString() ?? "0")"
                         data-replicable="@s.IsReplicable.ToString().ToLower()"
-                        data-snapshotlockingenabled="@(s.SnapshotLockingEnabled ? "true" : "false")">
+                        data-snapshotlockingenabled="@(s.SnapshotLockingEnabled ? "true" : "false")"
+                        data-volumeuuid="@(s.VolumeUuid ?? "")">
                     Backup Now
                 </button>
             </div>
@@ -111,6 +112,7 @@
             <input type="hidden" name="ControllerId" id="modalControllerId" />
             <input type="hidden" name="SelectedNetappVolumeId" id="modalSelectedVolumeId" />
             <input type="hidden" name="ScheduleId" value="999" />
+            <input type="hidden" name="VolumeUuid" id="modalVolumeUuid" />
 
             <div class="modal-content">
                 <div class="modal-header">
@@ -482,18 +484,21 @@
                     const clusterEl     = document.getElementById('modalClusterId');
                     const controllerEl  = document.getElementById('modalControllerId');
                     const selectedVolEl = document.getElementById('modalSelectedVolumeId');
+                    const volumeUuidEl  = document.getElementById('modalVolumeUuid');
 
                     // Values from button
                     const storageVal = btn.dataset.storage || '';
                     const clusterVal = btn.dataset.cluster || '';
                     const ctrlVal    = btn.dataset.controllerid || '';
                     const selVolVal  = btn.dataset.selectedvolumeid || '0';
+                    const volUuidVal = btn.dataset.volumeuuid || '';
 
                     // Assign
                     if (storageEl)     storageEl.value     = storageVal;
                     if (clusterEl)     clusterEl.value     = clusterVal;
                     if (controllerEl)  controllerEl.value  = ctrlVal;
                     if (selectedVolEl) selectedVolEl.value = selVolVal;
+                    if (volumeUuidEl)  volumeUuidEl.value  = volUuidVal;
 
                     // Warning if no SelectedNetappVolumeId
                     const noSelVolAlert = document.getElementById('noSelectedVolAlert');

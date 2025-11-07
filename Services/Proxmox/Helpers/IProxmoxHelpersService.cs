@@ -26,7 +26,7 @@ namespace BareProx.Services.Proxmox.Helpers
 {
     public interface IProxmoxHelpersService
     {
-        IEnumerable<ProxmoxHost> GetQueryableHosts(ProxmoxCluster cluster);
+        Task<IEnumerable<ProxmoxHost>> GetQueryableHostsAsync(ProxmoxCluster cluster, CancellationToken ct = default);
         ProxmoxHost GetHostByNodeName(ProxmoxCluster cluster, string nodeName);
 
         // Config parsing / rewriting

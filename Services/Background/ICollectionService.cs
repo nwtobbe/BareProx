@@ -29,5 +29,8 @@ namespace BareProx.Services.Background
         /// Trigger an immediate Proxmox cluster + hosts status check.
         /// </summary>
         Task RunProxmoxClusterStatusCheckAsync(CancellationToken ct);
+
+        Task RunInventoryInfraSideAsync(CancellationToken ct = default);
+        Task RunInventoryVmSideAsync(CancellationToken ct = default);
     }
 }

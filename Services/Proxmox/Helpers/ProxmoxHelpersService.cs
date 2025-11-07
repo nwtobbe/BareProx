@@ -33,24 +33,46 @@ namespace BareProx.Services.Proxmox.Helpers
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IEncryptionService _encryptionService;
         private readonly ILogger<ProxmoxHelpersService> _logger;
+        private readonly IQueryDbFactory _qdbf;
 
         public ProxmoxHelpersService(
             IDbContextFactory<ApplicationDbContext> dbf,
             IHttpClientFactory httpClientFactory,
             IEncryptionService encryptionService,
-            ILogger<ProxmoxHelpersService> logger)
+            ILogger<ProxmoxHelpersService> logger,
+            IQueryDbFactory qdbf)
         {
             _dbf = dbf;
             _httpClientFactory = httpClientFactory;
             _encryptionService = encryptionService;
             _logger = logger;
+            _qdbf = qdbf;
         }
 
         // ---------- Host pickers ----------
-        public IEnumerable<ProxmoxHost> GetQueryableHosts(ProxmoxCluster cluster)
+        /// <summary>
+        /// Preferred: returns configured hosts filtered by InventoryHostStatus.IsOnline.
+        /// Falls back to all configured hosts if inventory is empty or no hosts are online.
+        /// </summary>
+        public async Task<IEnumerable<ProxmoxHost>> GetQueryableHostsAsync(
+            ProxmoxCluster cluster,
+            CancellationToken ct = default)
         {
-            var up = cluster.Hosts.Where(h => h.IsOnline == true).ToList();
-            return up.Any() ? up : cluster.Hosts;
+            var configured = cluster.Hosts ?? Enumerable.Empty<ProxmoxHost>();
+            if (!configured.Any()) return configured;
+
+            using var qdb = _qdbf.Create();
+            var onlineIds = await qdb.InventoryHostStatuses
+                .AsNoTracking()
+                .Where(h => h.ClusterId == cluster.Id && h.IsOnline)
+                .Select(h => h.HostId)
+                .ToListAsync(ct);
+
+            if (onlineIds.Count == 0)
+                return configured; // fallback
+
+            var up = configured.Where(h => onlineIds.Contains(h.Id)).ToList();
+            return up.Count > 0 ? up : configured;
         }
 
         public ProxmoxHost GetHostByNodeName(ProxmoxCluster cluster, string nodeName)

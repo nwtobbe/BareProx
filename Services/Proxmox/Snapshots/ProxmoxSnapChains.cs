@@ -56,8 +56,13 @@ namespace BareProx.Services.Proxmox.Snapshots
         {
             if (cluster?.Hosts == null || cluster.Hosts.Count == 0) return false;
 
-            var host = _helpers.GetQueryableHosts(cluster).FirstOrDefault()
-                       ?? cluster.Hosts.First();
+            var host =
+                (await _helpers.GetQueryableHostsAsync(cluster, ct)).FirstOrDefault()
+                ?? cluster.Hosts?.FirstOrDefault();
+
+            if (host is null)
+                throw new ServiceUnavailableException($"No Proxmox hosts available for cluster {cluster?.Id}.");
+
 
             var url = $"https://{host.HostAddress}:8006/api2/json/storage/{Uri.EscapeDataString(storageName)}";
             var resp = await _ops.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
@@ -92,9 +97,11 @@ namespace BareProx.Services.Proxmox.Snapshots
             string options = "vers=3",
             CancellationToken ct = default)
         {
-            var nodeHost = _helpers
-                .GetQueryableHosts(cluster)
-                .FirstOrDefault(h => h.Hostname == node)?.HostAddress ?? string.Empty;
+            var nodeHost =
+                (await _helpers.GetQueryableHostsAsync(cluster, ct))
+                    .FirstOrDefault(h => string.Equals(h.Hostname, node, StringComparison.OrdinalIgnoreCase))?.HostAddress
+                ?? cluster.Hosts?.FirstOrDefault(h => string.Equals(h.Hostname, node, StringComparison.OrdinalIgnoreCase))?.HostAddress
+                ?? string.Empty;
 
             if (string.IsNullOrWhiteSpace(nodeHost)) return false;
 

@@ -20,16 +20,21 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using BareProx.Models;
 using Microsoft.Extensions.Logging;
-using Renci.SshNet;
 
 namespace BareProx.Services.Proxmox.Authentication
 {
+    /// <summary>
+    /// Discovers Proxmox cluster information using the Proxmox HTTP API
+    /// instead of SSH + /etc/pve/.members.
+    /// </summary>
     public sealed class ProxmoxClusterDiscoveryService : IProxmoxClusterDiscoveryService
     {
         private readonly ILogger<ProxmoxClusterDiscoveryService> _log;
@@ -40,12 +45,13 @@ namespace BareProx.Services.Proxmox.Authentication
         }
 
         // ======================================================
-        // DiscoverAsync
+        // DiscoverAsync (API-based)
         // ======================================================
         public async Task<ProxmoxClusterDiscoveryResult> DiscoverAsync(
             string seedHost,
             string username,
             string password,
+            Action<string>? log = null,
             CancellationToken ct = default)
         {
             var result = new ProxmoxClusterDiscoveryResult();
@@ -53,123 +59,188 @@ namespace BareProx.Services.Proxmox.Authentication
 
             if (string.IsNullOrWhiteSpace(seedHost))
             {
+                AddLog(logs, log, "ERROR: Seed host is empty.");
                 result.Success = false;
                 result.Error = "Seed host is required.";
-                logs.Add("ERROR: Seed host is empty.");
                 return result;
             }
 
-            var sshUser = NormalizeSshUser(username);
-            var sshPass = password ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(username))
+            {
+                AddLog(logs, log, "ERROR: Username is empty.");
+                result.Success = false;
+                result.Error = "Username is required.";
+                return result;
+            }
+
+            password ??= string.Empty;
 
             try
             {
-                logs.Add($"Connecting to seed host {seedHost} via SSH as '{sshUser}'...");
-                var membersJson = await ReadMembersFileAsync(seedHost, sshUser, sshPass, logs, ct);
+                AddLog(logs, log,
+                    $"Using Proxmox API on seed host '{seedHost}' with user '{username}'...");
 
-                if (string.IsNullOrWhiteSpace(membersJson))
+                using var handler = CreateHandlerAllowingSelfSigned();
+                using var http = new HttpClient(handler)
+                {
+                    Timeout = TimeSpan.FromSeconds(15)
+                };
+
+                // 1) Authenticate
+                var (authOk, ticket, csrfToken, authError) =
+                    await AuthenticateAsync(http, seedHost, username, password, logs, log, ct);
+
+                if (!authOk || string.IsNullOrWhiteSpace(ticket))
                 {
                     result.Success = false;
-                    result.Error = "/etc/pve/.members was empty.";
-                    logs.Add("ERROR: /etc/pve/.members was empty.");
+                    result.Error = authError ?? "Authentication failed.";
+                    AddLog(logs, log, $"ERROR: {result.Error}");
                     return result;
                 }
 
-                using var doc = JsonDocument.Parse(membersJson);
-                var root = doc.RootElement;
+                AddLog(logs, log, "OK: Proxmox API authentication succeeded.");
 
-                // Cluster name
-                if (root.TryGetProperty("cluster", out var clusterEl) &&
-                    clusterEl.ValueKind == JsonValueKind.Object &&
-                    clusterEl.TryGetProperty("name", out var nameEl) &&
-                    nameEl.ValueKind == JsonValueKind.String)
+                // Apply auth cookie for subsequent calls
+                http.DefaultRequestHeaders.Remove("CSRFPreventionToken");
+                if (!string.IsNullOrWhiteSpace(csrfToken))
+                    http.DefaultRequestHeaders.Add("CSRFPreventionToken", csrfToken);
+
+                // Cookie header: PVEAuthCookie=<ticket>
+                http.DefaultRequestHeaders.Add("Cookie", $"PVEAuthCookie={ticket}");
+
+                // 2) Query cluster status => same info as /etc/pve/.members
+                var statusUrl = $"https://{seedHost}:8006/api2/json/cluster/status";
+                AddLog(logs, log, $"GET {statusUrl}");
+                using var statusResp = await http.GetAsync(statusUrl, ct);
+
+                if (!statusResp.IsSuccessStatusCode)
                 {
-                    result.ClusterName = nameEl.GetString();
-                    logs.Add($"Detected cluster name: {result.ClusterName}");
+                    var body = await SafeReadAsync(statusResp, ct);
+                    AddLog(logs, log,
+                        $"ERROR: /cluster/status HTTP {(int)statusResp.StatusCode}: {body}");
+                    result.Success = false;
+                    result.Error = "Failed to query /cluster/status on seed host.";
+                    return result;
+                }
+
+                var statusJson = await statusResp.Content.ReadAsStringAsync(ct);
+                using var doc = JsonDocument.Parse(statusJson);
+
+                if (!doc.RootElement.TryGetProperty("data", out var itemsEl) ||
+                    itemsEl.ValueKind != JsonValueKind.Array)
+                {
+                    AddLog(logs, log,
+                        "ERROR: Invalid /cluster/status response: missing 'data' array.");
+                    result.Success = false;
+                    result.Error = "Invalid /cluster/status response.";
+                    return result;
+                }
+
+                string? clusterName = null;
+                var discoveredNodes = new List<DiscoveredProxmoxNode>();
+
+                // 3) Parse cluster + node entries
+                foreach (var item in itemsEl.EnumerateArray())
+                {
+                    if (!item.TryGetProperty("type", out var typeEl) ||
+                        typeEl.ValueKind != JsonValueKind.String)
+                        continue;
+
+                    var type = typeEl.GetString();
+
+                    if (string.Equals(type, "cluster", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (item.TryGetProperty("name", out var nameEl) &&
+                            nameEl.ValueKind == JsonValueKind.String)
+                        {
+                            clusterName = nameEl.GetString();
+                        }
+                    }
+                    else if (string.Equals(type, "node", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var nodeName = item.GetProperty("name").GetString() ?? "";
+                        var ip = item.TryGetProperty("ip", out var ipEl) &&
+                                 ipEl.ValueKind == JsonValueKind.String
+                            ? ipEl.GetString() ?? ""
+                            : "";
+
+                        if (string.IsNullOrWhiteSpace(nodeName))
+                        {
+                            AddLog(logs, log, "SKIP: Node entry without name.");
+                            continue;
+                        }
+
+                        if (string.IsNullOrWhiteSpace(ip))
+                        {
+                            AddLog(logs, log,
+                                $"SKIP: Node '{nodeName}' missing IP in /cluster/status.");
+                            continue;
+                        }
+
+                        // Reverse DNS (best-effort)
+                        string? reverse = null;
+                        try
+                        {
+                            var he = await Dns.GetHostEntryAsync(ip);
+                            reverse = he.HostName;
+                            AddLog(logs, log,
+                                $"Node '{nodeName}': IP {ip}, reverse DNS '{reverse}'.");
+                        }
+                        catch
+                        {
+                            AddLog(logs, log,
+                                $"Node '{nodeName}': IP {ip}, no reverse DNS.");
+                        }
+
+                        discoveredNodes.Add(new DiscoveredProxmoxNode
+                        {
+                            NodeName = nodeName,
+                            IpAddress = ip,
+                            ReverseName = reverse,
+                            // We keep the property name for compatibility;
+                            // here it means "API reachable", not "SSH ok".
+                            SshOk = false
+                        });
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(clusterName))
+                {
+                    result.ClusterName = clusterName;
+                    AddLog(logs, log, $"Detected cluster name: {clusterName}");
                 }
                 else
                 {
-                    logs.Add("WARN: Could not find 'cluster.name' in /etc/pve/.members.");
+                    AddLog(logs, log,
+                        "WARN: Could not find cluster name in /cluster/status.");
                 }
 
-                // Node list
-                if (!root.TryGetProperty("nodelist", out var nodelistEl) ||
-                    nodelistEl.ValueKind != JsonValueKind.Object)
+                if (discoveredNodes.Count == 0)
                 {
                     result.Success = false;
-                    result.Error = "Invalid /etc/pve/.members: missing 'nodelist'.";
-                    logs.Add("ERROR: /etc/pve/.members missing 'nodelist' object.");
+                    result.Error = "No nodes discovered from /cluster/status.";
+                    AddLog(logs, log, "ERROR: No nodes discovered.");
                     return result;
                 }
 
-                foreach (var nodeProp in nodelistEl.EnumerateObject())
-                {
-                    ct.ThrowIfCancellationRequested();
+                // 4) Probe each node via API to set SshOk flag (API reachability)
+                await ProbeNodesApiAsync(http, discoveredNodes, logs, log, ct);
 
-                    var nodeName = nodeProp.Name;
-                    var nodeObj = nodeProp.Value;
-
-                    if (!nodeObj.TryGetProperty("ip", out var ipEl) ||
-                        ipEl.ValueKind != JsonValueKind.String)
-                    {
-                        logs.Add($"SKIP: Node '{nodeName}' missing 'ip'.");
-                        continue;
-                    }
-
-                    var ip = ipEl.GetString()!.Trim();
-                    if (string.IsNullOrWhiteSpace(ip))
-                    {
-                        logs.Add($"SKIP: Node '{nodeName}' has empty IP.");
-                        continue;
-                    }
-
-                    // Reverse DNS
-                    string? reverse = null;
-                    try
-                    {
-                        var he = await Dns.GetHostEntryAsync(ip);
-                        reverse = he.HostName;
-                        logs.Add($"Node '{nodeName}': IP {ip}, reverse DNS '{reverse}'.");
-                    }
-                    catch
-                    {
-                        logs.Add($"Node '{nodeName}': IP {ip}, no reverse DNS.");
-                    }
-
-                    // SSH probe (short timeout)
-                    var sshOk = await TrySshAsync(ip, sshUser, sshPass, 5000, ct);
-                    logs.Add($"Node '{nodeName}': SSH {(sshOk ? "OK" : "FAILED")} on {ip}.");
-
-                    result.Nodes.Add(new DiscoveredProxmoxNode
-                    {
-                        NodeName = nodeName,
-                        IpAddress = ip,
-                        ReverseName = reverse,
-                        SshOk = sshOk
-                    });
-                }
-
-                if (result.Nodes.Count == 0)
-                {
-                    result.Success = false;
-                    result.Error = "No usable nodes discovered from /etc/pve/.members.";
-                    logs.Add("ERROR: No nodes discovered.");
-                    return result;
-                }
-
+                result.Nodes.AddRange(discoveredNodes);
                 result.Success = true;
+                AddLog(logs, log, "Discovery completed successfully.");
                 return result;
             }
             catch (OperationCanceledException)
             {
-                logs.Add("Discovery canceled.");
-                // let cancellation propagate so caller can handle it
+                AddLog(logs, log, "Discovery canceled.");
                 throw;
             }
             catch (Exception ex)
             {
-                logs.Add($"ERROR: Discovery failed: {ex.Message}");
-                _log.LogWarning(ex, "Proxmox cluster discovery failed for seed host {SeedHost}", seedHost);
+                AddLog(logs, log, $"ERROR: Discovery failed: {ex.Message}");
+                _log.LogWarning(ex,
+                    "Proxmox cluster discovery (API) failed for seed host {SeedHost}", seedHost);
                 result.Success = false;
                 result.Error = "Discovery failed. See logs for details.";
                 return result;
@@ -177,184 +248,274 @@ namespace BareProx.Services.Proxmox.Authentication
         }
 
         // ======================================================
-        // VerifyAsync
+        // VerifyAsync (API-based)
         // ======================================================
         public async Task<ProxmoxClusterDiscoveryResult> VerifyAsync(
-            string seedHost,
-            string username,
-            string password,
-            CancellationToken ct = default)
+     string seedHost,
+     string username,
+     string password,
+     Action<string>? log = null,
+     CancellationToken ct = default)
         {
             var result = new ProxmoxClusterDiscoveryResult();
             var logs = result.Logs;
 
             if (string.IsNullOrWhiteSpace(seedHost))
             {
+                AddLog(logs, log, "ERROR: Seed host is empty.");
                 result.Success = false;
                 result.Error = "Seed host is required.";
-                logs.Add("ERROR: Seed host is empty.");
                 return result;
             }
 
-            var sshUser = NormalizeSshUser(username);
-            var sshPass = password ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(username))
+            {
+                AddLog(logs, log, "ERROR: Username is empty.");
+                result.Success = false;
+                result.Error = "Username is required.";
+                return result;
+            }
+
+            password ??= string.Empty;
 
             try
             {
-                logs.Add($"Verifying SSH connectivity to {seedHost} as '{sshUser}'...");
-                var sshOk = await TrySshAsync(seedHost, sshUser, sshPass, 8000, ct);
-                if (!sshOk)
+                using var handler = CreateHandlerAllowingSelfSigned();
+                using var http = new HttpClient(handler)
                 {
-                    logs.Add("ERROR: SSH connection failed.");
+                    Timeout = TimeSpan.FromSeconds(15)
+                };
+
+                AddLog(logs, log, $"Verifying Proxmox API on {seedHost} as '{username}'...");
+
+                var (authOk, ticket, csrfToken, authError) =
+                    await AuthenticateAsync(http, seedHost, username, password, logs, log, ct);
+
+                if (!authOk || string.IsNullOrWhiteSpace(ticket))
+                {
+                    var err = authError ?? "Authentication failed.";
+                    AddLog(logs, log, $"ERROR: {err}");
                     result.Success = false;
-                    result.Error = "SSH connection to seed host failed.";
+                    result.Error = err;
                     return result;
                 }
 
-                logs.Add("SSH OK. Reading /etc/pve/.members...");
-                var membersJson = await ReadMembersFileAsync(seedHost, sshUser, sshPass, logs, ct);
-                if (string.IsNullOrWhiteSpace(membersJson))
+                AddLog(logs, log, "OK: Authentication succeeded.");
+
+                http.DefaultRequestHeaders.Remove("CSRFPreventionToken");
+                if (!string.IsNullOrWhiteSpace(csrfToken))
+                    http.DefaultRequestHeaders.Add("CSRFPreventionToken", csrfToken);
+
+                http.DefaultRequestHeaders.Add("Cookie", $"PVEAuthCookie={ticket}");
+
+                // Simple sanity check: /cluster/status reachable
+                var statusUrl = $"https://{seedHost}:8006/api2/json/cluster/status";
+                AddLog(logs, log, $"GET {statusUrl}");
+                using var statusResp = await http.GetAsync(statusUrl, ct);
+
+                if (!statusResp.IsSuccessStatusCode)
                 {
-                    logs.Add("ERROR: /etc/pve/.members was empty.");
+                    var body = await SafeReadAsync(statusResp, ct);
+                    AddLog(logs, log,
+                        $"ERROR: /cluster/status HTTP {(int)statusResp.StatusCode}: {body}");
                     result.Success = false;
-                    result.Error = "/etc/pve/.members is empty.";
+                    result.Error = "Failed to query /cluster/status on seed host.";
                     return result;
                 }
 
-                using var doc = JsonDocument.Parse(membersJson);
-                var root = doc.RootElement;
+                var json = await statusResp.Content.ReadAsStringAsync(ct);
+                using var doc = JsonDocument.Parse(json);
 
-                if (!root.TryGetProperty("nodelist", out var nodelistEl) ||
-                    nodelistEl.ValueKind != JsonValueKind.Object)
+                if (doc.RootElement.TryGetProperty("data", out var items) &&
+                    items.ValueKind == JsonValueKind.Array)
                 {
-                    logs.Add("ERROR: /etc/pve/.members missing 'nodelist'.");
-                    result.Success = false;
-                    result.Error = "Invalid /etc/pve/.members: missing 'nodelist'.";
-                    return result;
-                }
+                    var clusterItem = items.EnumerateArray()
+                        .FirstOrDefault(x =>
+                            x.TryGetProperty("type", out var t) &&
+                            t.ValueKind == JsonValueKind.String &&
+                            t.GetString() == "cluster");
 
-                if (root.TryGetProperty("cluster", out var clusterEl) &&
-                    clusterEl.ValueKind == JsonValueKind.Object &&
-                    clusterEl.TryGetProperty("name", out var nameEl) &&
-                    nameEl.ValueKind == JsonValueKind.String)
-                {
-                    result.ClusterName = nameEl.GetString();
-                    logs.Add($"Cluster name: {result.ClusterName}");
+                    if (clusterItem.ValueKind == JsonValueKind.Object &&
+                        clusterItem.TryGetProperty("name", out var nameEl) &&
+                        nameEl.ValueKind == JsonValueKind.String)
+                    {
+                        result.ClusterName = nameEl.GetString();
+                        AddLog(logs, log, $"Cluster name: {result.ClusterName}");
+                    }
+                    else
+                    {
+                        AddLog(logs, log,
+                            "WARN: /cluster/status has no cluster.name.");
+                    }
                 }
                 else
                 {
-                    logs.Add("WARN: .members has no 'cluster.name'.");
+                    AddLog(logs, log,
+                        "WARN: /cluster/status response did not contain a valid 'data' array.");
                 }
 
                 result.Success = true;
+                AddLog(logs, log, "Verification completed successfully.");
                 return result;
             }
             catch (OperationCanceledException)
             {
-                logs.Add("Verification canceled.");
+                AddLog(logs, log, "Verification canceled.");
                 throw;
             }
             catch (Exception ex)
             {
-                logs.Add($"ERROR: Verification failed: {ex.Message}");
-                _log.LogWarning(ex, "Proxmox cluster verification failed for seed host {SeedHost}", seedHost);
+                AddLog(logs, log, $"ERROR: Verification failed: {ex.Message}");
+                _log.LogWarning(ex,
+                    "Proxmox cluster verification (API) failed for seed host {SeedHost}",
+                    seedHost);
                 result.Success = false;
                 result.Error = "Verification failed.";
                 return result;
             }
         }
 
+
         // ======================================================
         // Helpers
         // ======================================================
 
-        private static string NormalizeSshUser(string username)
+        private static HttpClientHandler CreateHandlerAllowingSelfSigned()
         {
-            var u = (username ?? string.Empty).Trim();
-            if (string.IsNullOrEmpty(u))
-                return "root";
-
-            var atIndex = u.IndexOf('@');
-            return atIndex > 0 ? u[..atIndex] : u;
+            return new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+            };
         }
 
-        private async Task<string> ReadMembersFileAsync(
+        private static async Task<string> SafeReadAsync(HttpResponseMessage resp, CancellationToken ct)
+        {
+            try
+            {
+                return await resp.Content.ReadAsStringAsync(ct);
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static (string user, string realm) SplitUserRealm(string username)
+        {
+            var u = (username ?? string.Empty).Trim();
+            var idx = u.IndexOf('@');
+            if (idx > 0 && idx < u.Length - 1)
+                return (u[..idx], u[(idx + 1)..]);
+            // default to pam if not specified
+            return (u, "pam");
+        }
+
+        private static void AddLog(List<string> logs, Action<string>? log, string message)
+        {
+            logs.Add(message);
+            log?.Invoke(message);
+        }
+
+        /// <summary>
+        /// Authenticate against the Proxmox API using username/password.
+        /// </summary>
+        private static async Task<(bool ok, string? ticket, string? csrf, string? error)> AuthenticateAsync(
+            HttpClient http,
             string host,
-            string user,
+            string username,
             string password,
             List<string> logs,
+            Action<string>? log,
             CancellationToken ct)
         {
-            return await Task.Run(() =>
+            var (user, realm) = SplitUserRealm(username);
+
+            var url = $"https://{host}:8006/api2/json/access/ticket";
+            var form = new FormUrlEncodedContent(new[]
             {
-                using var ssh = new SshClient(host, user, password)
+                new KeyValuePair<string, string>("username", $"{user}@{realm}"),
+                new KeyValuePair<string, string>("password", password)
+            });
+
+            AddLog(logs, log, $"POST {url} (login)");
+
+            using var resp = await http.PostAsync(url, form, ct);
+            var body = await SafeReadAsync(resp, ct);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                AddLog(logs, log,
+                    $"ERROR: login failed: HTTP {(int)resp.StatusCode}: {body}");
+                return (false, null, null, "Authentication against Proxmox API failed.");
+            }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                var data = doc.RootElement.GetProperty("data");
+                var ticket = data.GetProperty("ticket").GetString();
+                var csrf = data.TryGetProperty("CSRFPreventionToken", out var csrfEl)
+                    ? csrfEl.GetString()
+                    : null;
+
+                if (string.IsNullOrWhiteSpace(ticket))
                 {
-                    ConnectionInfo = { Timeout = TimeSpan.FromSeconds(10) }
-                };
+                    AddLog(logs, log,
+                        "ERROR: login response missing ticket.");
+                    return (false, null, null, "Authentication response missing ticket.");
+                }
+
+                return (true, ticket, csrf, null);
+            }
+            catch (Exception ex)
+            {
+                AddLog(logs, log,
+                    $"ERROR: Failed to parse login response: {ex.Message}");
+                return (false, null, null, "Failed to parse authentication response.");
+            }
+        }
+
+        /// <summary>
+        /// For each discovered node, probes its API status so we can flag it as reachable.
+        /// Reuses the same cluster ticket (works across nodes in a Proxmox cluster).
+        /// </summary>
+        private static async Task ProbeNodesApiAsync(
+            HttpClient http,
+            List<DiscoveredProxmoxNode> nodes,
+            List<string> logs,
+            Action<string>? log,
+            CancellationToken ct)
+        {
+            foreach (var node in nodes)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var url =
+                    $"https://{node.IpAddress}:8006/api2/json/nodes/{Uri.EscapeDataString(node.NodeName)}/status";
 
                 try
                 {
-                    ssh.Connect();
+                    AddLog(logs, log, $"Probing node API: {url}");
+                    using var resp = await http.GetAsync(url, ct);
+
+                    if (resp.IsSuccessStatusCode)
+                    {
+                        node.SshOk = true; // "API reachable"
+                        AddLog(logs, log,
+                            $"OK: Node '{node.NodeName}' API reachable at {node.IpAddress}.");
+                    }
+                    else
+                    {
+                        AddLog(logs, log,
+                            $"WARN: Node '{node.NodeName}' API probe failed: HTTP {(int)resp.StatusCode}.");
+                    }
                 }
                 catch (Exception ex)
                 {
-                    logs.Add($"ERROR: SSH connect to {host} failed: {ex.Message}");
-                    throw;
+                    AddLog(logs, log,
+                        $"WARN: Node '{node.NodeName}' API probe error: {ex.Message}");
                 }
-
-                using var cmd = ssh.CreateCommand("cat /etc/pve/.members");
-                cmd.CommandTimeout = TimeSpan.FromSeconds(10);
-
-                var output = cmd.Execute();
-                var exit = cmd.ExitStatus;
-                var err = cmd.Error;
-
-                ssh.Disconnect();
-
-                if (exit != 0)
-                {
-                    logs.Add($"ERROR: 'cat /etc/pve/.members' exited with {exit}: {err}");
-                    throw new InvalidOperationException(
-                        $"cat /etc/pve/.members failed with exit code {exit}");
-                }
-
-                if (string.IsNullOrWhiteSpace(output))
-                {
-                    logs.Add("WARN: /etc/pve/.members returned empty output.");
-                }
-                else
-                {
-                    logs.Add("OK: Read /etc/pve/.members.");
-                }
-
-                return output;
-            }, ct);
-        }
-
-        private async Task<bool> TrySshAsync(
-            string host,
-            string user,
-            string password,
-            int timeoutMs,
-            CancellationToken ct)
-        {
-            return await Task.Run(() =>
-            {
-                try
-                {
-                    using var ssh = new SshClient(host, user, password)
-                    {
-                        ConnectionInfo = { Timeout = TimeSpan.FromMilliseconds(timeoutMs) }
-                    };
-                    ssh.Connect();
-                    ssh.Disconnect();
-                    return true;
-                }
-                catch
-                {
-                    return false;
-                }
-            }, ct);
+            }
         }
     }
 }

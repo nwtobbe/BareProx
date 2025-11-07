@@ -43,9 +43,7 @@ namespace BareProx.Data
         public DbSet<JobVmLog> JobVmLogs => Set<JobVmLog>();
         public DbSet<ProxSelectedStorage> SelectedStorages { get; set; }
         public DbSet<SelectedNetappVolumes> SelectedNetappVolumes { get; set; }
-        public DbSet<NetappSnapshot> NetappSnapshots { get; set; } = null!;
         public DbSet<SnapMirrorRelation> SnapMirrorRelations { get; set; } = null!;
-
         public DbSet<SnapMirrorPolicy> SnapMirrorPolicies { get; set; }
         public DbSet<SnapMirrorPolicyRetention> SnapMirrorPolicyRetentions { get; set; }
         public DbSet<MigrationSelection> MigrationSelections { get; set; }

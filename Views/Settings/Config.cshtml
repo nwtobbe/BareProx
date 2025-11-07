@@ -98,6 +98,7 @@
         </div>
         <form asp-action="RestartApp" asp-controller="Settings" method="post" class="ms-3 mb-0">
             @Html.AntiForgeryToken()
+            <input type="hidden" name="pane" value="@initialPane" />
             <button type="submit" class="btn btn-danger btn-sm">Restart Now</button>
         </form>
     </div>

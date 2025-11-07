@@ -2,7 +2,7 @@
 @model NetappHubViewModel
 
 @{
-    ViewData["Title"] = "NetApp – Clusters";
+    ViewData["Title"] = "NetApp – Clusters & SVM:s";
     var hasSelection = Model.Selected != null;
 }
 
@@ -31,7 +31,7 @@
 </style>
 
 <div class="d-flex align-items-center justify-content-between mb-3">
-    <h2 class="mb-0">NetApp – Clusters</h2>
+    <h2 class="mb-0">NetApp – Cluster & SVM:s</h2>
     <span class="text-muted">@((Model.Controllers?.Count() ?? 0)) total</span>
 </div>
 
@@ -46,7 +46,7 @@
 <ul class="nav nav-tabs" id="naTabs" role="tablist">
     <li class="nav-item" role="presentation">
         <!-- link clears selection -->
-        <a class="nav-link active" id="tab-list" href="@Url.Action("NetappHub", "Settings")" role="tab">Clusters</a>
+        <a class="nav-link active" id="tab-list" href="@Url.Action("NetappHub", "Settings")" role="tab">Clusters & SVM:s</a>
     </li>
     <li class="nav-item @(hasSelection ? "" : "d-none")" role="presentation" id="nav-edit">
         <button class="nav-link" id="tab-edit" data-bs-toggle="tab" data-bs-target="#pane-edit" type="button" role="tab">Edit</button>
@@ -138,7 +138,7 @@
                             <div class="invalid-feedback">Required.</div>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label">IP / FQDN – Cluster Management</label>
+                            <label class="form-label">IP / FQDN – Cluster/SVM Management</label>
                             <input name="IpAddress" class="form-control" value="@m.IpAddress" required />
                             <div class="invalid-feedback">Required.</div>
                         </div>
@@ -235,7 +235,7 @@
                 @Html.AntiForgeryToken()
 
                 <div class="modal-header">
-                    <h5 class="modal-title" id="addControllerLabel">Add NetApp Cluster</h5>
+                    <h5 class="modal-title" id="addControllerLabel">Add NetApp Cluster or SVM</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
 
@@ -261,7 +261,7 @@
                                 <div class="invalid-feedback">Display name is required.</div>
                             </div>
                             <div class="col-md-6">
-                                <label class="form-label">IP / FQDN – Cluster Management</label>
+                                <label class="form-label">IP / FQDN – Cluster/SVM Management</label>
                                 <input name="IpAddress" id="acIp" class="form-control" required />
                                 <div class="invalid-feedback">IP / FQDN is required.</div>
                             </div>
@@ -304,216 +304,353 @@
 
 @section Scripts {
     <script>
-        /* ----- basic client-side validation styling ----- */
+        // ----- basic client-side validation styling -----
         document.addEventListener('submit', function (e) {
-          const form = e.target.closest('form.needs-validation');
-          if (!form) return;
-          if (!form.checkValidity()) { e.preventDefault(); e.stopPropagation(); }
-          form.classList.add('was-validated');
+            const form = e.target.closest('form.needs-validation');
+            if (!form) return;
+            if (!form.checkValidity()) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            form.classList.add('was-validated');
         }, true);
 
-        /* ----- reveal hidden tabs if a controller is selected ----- */
+        // ----- reveal hidden tabs if a controller is selected + row click -----
         document.addEventListener('DOMContentLoaded', function () {
-          const hasSelection = @((Model.Selected != null).ToString().ToLower());
-          if (hasSelection) {
-            document.getElementById('nav-edit')?.classList.remove('d-none');
-            document.getElementById('nav-vols')?.classList.remove('d-none');
-          }
+            const hasSelection = @((Model.Selected != null).ToString().ToLower());
+            if (hasSelection) {
+                document.getElementById('nav-edit')?.classList.remove('d-none');
+                document.getElementById('nav-vols')?.classList.remove('d-none');
+            }
 
-          // make rows clickable (except inner controls and delete buttons)
-          document.querySelectorAll('#controllersTable .row-link').forEach(tr => {
-            tr.addEventListener('click', function(e){
-              if (e.target.closest('a,button,form,.delete-ctrl-btn')) return;
-              const url = this.getAttribute('data-url');
-              if (url) window.location = url;
+            // make rows clickable (except inner controls and delete buttons)
+            document.querySelectorAll('#controllersTable .row-link').forEach(tr => {
+                tr.addEventListener('click', function (e) {
+                    if (e.target.closest('a,button,form,.delete-ctrl-btn')) return;
+                    const url = this.getAttribute('data-url');
+                    if (url) window.location = url;
+                });
             });
-          });
 
-          // activate tab based on query/hash
-          const params = new URLSearchParams(window.location.search);
-          const tab = params.get('tab');
-          const showTab = sel => {
-            const btn = document.querySelector(sel);
-            if (btn && typeof bootstrap !== 'undefined') new bootstrap.Tab(btn).show();
-          };
-          if (tab === 'vols') showTab('#tab-vols');
-          if (location.hash === '#pane-edit') showTab('#tab-edit');
-          if (location.hash === '#pane-vols')  showTab('#tab-vols');
+            // activate tab based on query/hash
+            const params = new URLSearchParams(window.location.search);
+            const tab = params.get('tab');
+
+            function showTab(sel) {
+                const btn = document.querySelector(sel);
+                if (!btn || typeof bootstrap === 'undefined') return;
+                new bootstrap.Tab(btn).show();
+            }
+
+            if (tab === 'vols') showTab('#tab-vols');
+            if (location.hash === '#pane-edit') showTab('#tab-edit');
+            if (location.hash === '#pane-vols') showTab('#tab-vols');
         });
 
-        /* ----- Volumes: AJAX load + search + expand/collapse + re-check saved + LOCK items in use ----- */
-        (async function(){
-          const cidEl = document.getElementById('netappControllerId');
-          if (!cidEl) return;
+        // ----- Volumes: AJAX load + search + expand/collapse + save -----
+        (async function () {
+            const cidEl = document.getElementById('netappControllerId');
+            if (!cidEl) return;
 
-          const controllerId = parseInt(cidEl.value, 10);
-          const container = document.getElementById('volume-list-container');
+            const controllerId = parseInt(cidEl.value, 10);
+            if (!controllerId) return;
 
-          // 1) Load the tree markup (server pre-checks IsSelected = (tracked && Disabled != true))
-          const res = await fetch(`@Url.Action("GetVolumesTree", "Settings")?storageId=${controllerId}`, { credentials: "same-origin" });
-          container.innerHTML = await res.text();
+            const container = document.getElementById('volume-list-container');
+            if (!container) return;
 
-          // helper: ensure parent groups are expanded for a given checkbox
-          function expandParentsOf(el){
-            let node = el;
-            while (node) {
-              const col = node.closest?.('.collapse');
-              if (col) {
-                try {
-                  const inst = bootstrap.Collapse.getOrCreateInstance(col, { toggle: false });
-                  inst.show();
-                } catch {}
-              }
-              node = node.parentElement;
+            // 1) Load the tree markup
+            const res = await fetch(`@Url.Action("GetVolumesTree", "Settings")?storageId=${controllerId}`, {
+                credentials: "same-origin"
+            });
+            container.innerHTML = await res.text();
+
+            // helper: expand parents for a given checkbox
+            function expandParentsOf(el) {
+                let node = el;
+                while (node) {
+                    const col = node.closest && node.closest('.collapse');
+                    if (col) {
+                        try {
+                            const inst = bootstrap.Collapse.getOrCreateInstance(col, { toggle: false });
+                            inst.show();
+                        } catch { }
+                    }
+                    node = node.parentElement;
+                }
             }
-          }
 
-          // 2) Mark previously enabled selections (Disabled != true on server)
-          try {
-            const selRes = await fetch(`@Url.Action("GetSelectedNetappVolumes", "Settings")?controllerId=${controllerId}`, { credentials: "same-origin" });
-            if (selRes.ok) {
-              const data = await selRes.json();
-              const uuids = Array.isArray(data)
-                ? (typeof data[0] === 'string' ? data : data.map(x => x?.Uuid ?? x?.uuid))
-                : [];
-              const saved = new Set(uuids.filter(Boolean).map(u => String(u).toLowerCase()));
-
-              if (saved.size > 0) {
-                container.querySelectorAll('.volume-checkbox').forEach(cb => {
-                  const uuid = (cb.dataset.uuid || '').toLowerCase();
-                  if (uuid && saved.has(uuid)) {
-                    cb.checked = true;
-                    expandParentsOf(cb);
-                  }
+            // 2) Mark saved selections
+            try {
+                const selRes = await fetch(`@Url.Action("GetSelectedNetappVolumes", "Settings")?controllerId=${controllerId}`, {
+                    credentials: "same-origin"
                 });
-              }
-            }
-          } catch { /* non-fatal */ }
+                if (selRes.ok) {
+                    const data = await selRes.json();
+                    const uuids = Array.isArray(data)
+                        ? data.map(x => (typeof x === 'string' ? x : x?.Uuid ?? x?.uuid))
+                        : [];
+                    const saved = new Set(uuids.filter(Boolean).map(u => String(u).toLowerCase()));
 
-          // 3) LOCK volumes that are referenced by any BackupSchedule.SelectedNetappVolumeId
-          try {
-            const inUseRes = await fetch(`@Url.Action("GetInUseSelectedVolumeUuids", "Settings")?controllerId=${controllerId}`, { credentials: "same-origin" });
-            if (inUseRes.ok) {
-              const inUseData = await inUseRes.json();
-              const inUse = new Set(
-                (Array.isArray(inUseData) ? inUseData : [])
-                  .filter(Boolean)
-                  .map(u => String(u).toLowerCase())
-              );
+                    if (saved.size > 0) {
+                        container.querySelectorAll('.volume-checkbox').forEach(cb => {
+                            const uuid = (cb.dataset.uuid || '').toLowerCase();
+                            if (uuid && saved.has(uuid)) {
+                                cb.checked = true;
+                                expandParentsOf(cb);
+                            }
+                        });
+                    }
+                }
+            } catch { }
 
-              if (inUse.size > 0) {
-                container.querySelectorAll('.volume-checkbox').forEach(cb => {
-                  const uuid = (cb.dataset.uuid || '').toLowerCase();
-                  if (!uuid || !inUse.has(uuid)) return;
-
-                  // force checked & disable
-                  cb.checked = true;
-                  cb.disabled = true;
-                  cb.dataset.locked = "1";
-                  cb.title = "This volume is used by at least one backup schedule.";
-
-                  // add a tiny visual hint next to label (try common structures)
-                  let label = cb.nextElementSibling;
-                  if (!label || label.tagName !== 'LABEL') {
-                    // some templates put text in a span with .volume-label
-                    label = cb.closest('.form-check')?.querySelector('label, .volume-label') || null;
-                  }
-                  if (label && !label.querySelector('.volume-locked-hint')) {
-                    const hint = document.createElement('span');
-                    hint.className = 'volume-locked-hint text-muted';
-                    hint.innerText = '🔒 in use by schedule';
-                    label.appendChild(hint);
-                  }
-
-                  expandParentsOf(cb);
+            // 3) Lock in-use volumes
+            try {
+                const inUseRes = await fetch(`@Url.Action("GetInUseSelectedVolumeUuids", "Settings")?controllerId=${controllerId}`, {
+                    credentials: "same-origin"
                 });
-              }
+                if (inUseRes.ok) {
+                    const inUseData = await inUseRes.json();
+                    const inUse = new Set(
+                        (Array.isArray(inUseData) ? inUseData : [])
+                            .filter(Boolean)
+                            .map(u => String(u).toLowerCase())
+                    );
+
+                    if (inUse.size > 0) {
+                        container.querySelectorAll('.volume-checkbox').forEach(cb => {
+                            const uuid = (cb.dataset.uuid || '').toLowerCase();
+                            if (!uuid || !inUse.has(uuid)) return;
+
+                            cb.checked = true;
+                            cb.disabled = true;
+                            cb.dataset.locked = "1";
+                            cb.title = "This volume is used by at least one backup schedule.";
+
+                            let label = cb.nextElementSibling;
+                            if (!label || (label.tagName !== 'LABEL' && !label.classList.contains('volume-label'))) {
+                                label = cb.closest('.form-check')?.querySelector('label, .volume-label') || null;
+                            }
+                            if (label && !label.querySelector('.volume-locked-hint')) {
+                                const hint = document.createElement('span');
+                                hint.className = 'volume-locked-hint text-muted';
+                                hint.innerText = '🔒 in use by schedule';
+                                label.appendChild(hint);
+                            }
+
+                            expandParentsOf(cb);
+                        });
+                    }
+                }
+            } catch { }
+
+            // 4) Search + expand/collapse
+            const search = document.getElementById('volSearch');
+            const btnExpand = document.getElementById('expandAll');
+            const btnCollapse = document.getElementById('collapseAll');
+
+            function applyFilter() {
+                const q = (search?.value || '').toLowerCase();
+                container.querySelectorAll('.list-group .list-group .list-group-item').forEach(li => {
+                    const text = (li.textContent || '').toLowerCase();
+                    li.style.display = text.includes(q) ? '' : 'none';
+                });
             }
-          } catch { /* non-fatal */ }
 
-          // --- search / expand / collapse logic ---
-          const search = document.getElementById('volSearch');
-          const btnExpand = document.getElementById('expandAll');
-          const btnCollapse = document.getElementById('collapseAll');
-
-          function applyFilter(){
-            const q = (search.value || '').toLowerCase();
-            container.querySelectorAll('.list-group .list-group .list-group-item').forEach(li => {
-              const text = (li.textContent || '').toLowerCase();
-              li.style.display = text.indexOf(q) !== -1 ? '' : 'none';
-            });
-          }
-
-          function toggleAll(expand){
-            container.querySelectorAll('.collapse').forEach(el => {
-              try {
-                const inst = bootstrap.Collapse.getOrCreateInstance(el, { toggle: false });
-                expand ? inst.show() : inst.hide();
-              } catch {}
-            });
-          }
-
-          search?.addEventListener('input', applyFilter);
-          btnExpand?.addEventListener('click', () => toggleAll(true));
-          btnCollapse?.addEventListener('click', () => toggleAll(false));
-
-          // 4) Save payload
-          document.getElementById('saveVolumes')?.addEventListener('click', async () => {
-            const boxes = container.querySelectorAll('.volume-checkbox:checked');
-            const volumes = Array.from(boxes).map(cb => ({
-              Vserver: cb.dataset.vserver,
-              VolumeName: cb.dataset.volume,
-              Uuid: cb.dataset.uuid,
-              MountIp: cb.dataset.mountip,
-              ClusterId: parseInt(cb.dataset.clusterid), // carries controller id (by design)
-              NetappControllerId: controllerId
-            }));
-            const resp = await fetch("@Url.Action("SaveNetappSelectedVolumes", "Settings")", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(volumes)
-            });
-            if (resp.ok) {
-              alert("Volumes saved.");
-              window.location = `${'@Url.Action("NetappHub", "Settings")'}?selectedId=${encodeURIComponent(controllerId)}&tab=vols#pane-vols`;
-            } else {
-              alert("Failed to save volumes.");
+            function toggleAll(expand) {
+                container.querySelectorAll('.collapse').forEach(el => {
+                    try {
+                        const inst = bootstrap.Collapse.getOrCreateInstance(el, { toggle: false });
+                        expand ? inst.show() : inst.hide();
+                    } catch { }
+                });
             }
-          });
+
+            search?.addEventListener('input', applyFilter);
+            btnExpand?.addEventListener('click', () => toggleAll(true));
+            btnCollapse?.addEventListener('click', () => toggleAll(false));
+
+            // 5) Save
+            document.getElementById('saveVolumes')?.addEventListener('click', async () => {
+                const boxes = container.querySelectorAll('.volume-checkbox:checked');
+                const volumes = Array.from(boxes).map(cb => ({
+                    Vserver: cb.dataset.vserver,
+                    VolumeName: cb.dataset.volume,
+                    Uuid: cb.dataset.uuid,
+                    MountIp: cb.dataset.mountip,
+                    ClusterId: parseInt(cb.dataset.clusterid || controllerId, 10),
+                    NetappControllerId: controllerId
+                }));
+
+                const resp = await fetch("@Url.Action("SaveNetappSelectedVolumes", "Settings")", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(volumes),
+                    credentials: "same-origin"
+                });
+
+                if (resp.ok) {
+                    alert("Volumes saved.");
+                    window.location = '@Url.Action("NetappHub", "Settings")' +
+                        `?selectedId=${encodeURIComponent(controllerId)}&tab=vols#pane-vols`;
+                } else {
+                    alert("Failed to save volumes.");
+                }
+            });
         })();
 
-        /* ----- JS-driven Delete (with anti-forgery) ----- */
-        (function(){
-          const deleteUrl = '@Url.Action("Delete", "Settings")'; // [HttpPost, ActionName("Delete")]
-          function getCsrfToken() {
-            return document.querySelector('#__afTokenForm input[name="__RequestVerificationToken"]')?.value || '';
-          }
-          document.addEventListener('click', function(e){
-            const btn = e.target.closest('.delete-ctrl-btn');
-            if (!btn) return;
-            e.stopPropagation();
-            e.preventDefault();
+        // ----- Add NetApp Cluster wizard -----
+        (function () {
+            const modalEl = document.getElementById('addControllerModal');
+            if (!modalEl) return;
 
-            const id = btn.getAttribute('data-id');
-            const name = btn.getAttribute('data-name') || 'this controller';
-            if (!id) return;
-            if (!confirm(`Delete controller “${name}”?`)) return;
+            const form = document.getElementById('addControllerForm');
+            const steps = modalEl.querySelectorAll('.wizard-step');
+            const stepPills = modalEl.querySelectorAll('#naWizardSteps .nav-link');
+            const backBtn = document.getElementById('acBack');
+            const nextBtn = document.getElementById('acNext');
+            const submitBtn = document.getElementById('acSubmit');
+            const hint = document.getElementById('addControllerHint');
 
-            const token = getCsrfToken();
-            const formData = new FormData();
-            formData.append('__RequestVerificationToken', token);
-            formData.append('id', id);
+            const hostInput = document.getElementById('acHostname');
+            const ipInput = document.getElementById('acIp');
 
-            fetch(deleteUrl, { method: 'POST', body: formData, credentials: 'same-origin' })
-              .then(res => {
-                if (res.ok) {
-                  window.location = '@Url.Action("NetappHub", "Settings")';
-                } else {
-                  return res.text().then(t => { throw new Error(t || 'Delete failed'); });
+            let currentStep = 1;
+
+            function setStep(step) {
+                currentStep = step;
+
+                steps.forEach(el => {
+                    const s = parseInt(el.dataset.step, 10);
+                    el.classList.toggle('d-none', s !== step);
+                });
+
+                stepPills.forEach(btn => {
+                    const s = parseInt(btn.dataset.step, 10);
+                    btn.classList.toggle('active', s === step);
+
+                    if (s === 2) {
+                        if (step >= 2) {
+                            btn.classList.remove('disabled');
+                            btn.removeAttribute('aria-disabled');
+                            btn.removeAttribute('tabindex');
+                        } else {
+                            btn.classList.add('disabled');
+                            btn.setAttribute('aria-disabled', 'true');
+                            btn.setAttribute('tabindex', '-1');
+                        }
+                    }
+                });
+
+                if (step === 1) {
+                    backBtn.disabled = true;
+                    nextBtn.classList.remove('d-none');
+                    submitBtn.classList.add('d-none');
+                    if (hint) hint.textContent = 'Enter display name and management IP/FQDN.';
+                } else if (step === 2) {
+                    backBtn.disabled = false;
+                    nextBtn.classList.add('d-none');
+                    submitBtn.classList.remove('d-none');
+                    if (hint) hint.textContent = 'Enter credentials and mark as primary if this is the main controller.';
                 }
-              })
-              .catch(err => alert('Failed to delete: ' + (err?.message || 'Unknown error')));
-          }, true);
+            }
+
+            function validateStep1() {
+                let ok = true;
+
+                [hostInput, ipInput].forEach(input => {
+                    if (!input) return;
+                    const val = (input.value || '').trim();
+                    if (!val) {
+                        input.classList.add('is-invalid');
+                        ok = false;
+                    } else {
+                        input.classList.remove('is-invalid');
+                    }
+                });
+
+                if (!ok && form) {
+                    form.classList.add('was-validated');
+                }
+
+                return ok;
+            }
+
+            nextBtn?.addEventListener('click', function () {
+                if (currentStep === 1) {
+                    if (!validateStep1()) return;
+                    setStep(2);
+                }
+            });
+
+            backBtn?.addEventListener('click', function () {
+                if (currentStep === 2) {
+                    setStep(1);
+                }
+            });
+
+            modalEl.addEventListener('show.bs.modal', function () {
+                if (form) {
+                    form.reset();
+                    form.classList.remove('was-validated');
+                }
+                modalEl.querySelectorAll('.is-invalid').forEach(e => e.classList.remove('is-invalid'));
+                setStep(1);
+            });
+
+            modalEl.addEventListener('hidden.bs.modal', function () {
+                if (form) {
+                    form.reset();
+                    form.classList.remove('was-validated');
+                }
+                modalEl.querySelectorAll('.is-invalid').forEach(e => e.classList.remove('is-invalid'));
+            });
+
+            setStep(1);
+        })();
+
+        // ----- JS-driven Delete (with anti-forgery) -----
+        (function () {
+            const deleteUrl = '@Url.Action("Delete", "Settings")'; // [HttpPost, ActionName("Delete")]
+
+            function getCsrfToken() {
+                const el = document.querySelector('#__afTokenForm input[name="__RequestVerificationToken"]');
+                return el ? el.value : '';
+            }
+
+            document.addEventListener('click', function (e) {
+                const btn = e.target.closest('.delete-ctrl-btn');
+                if (!btn) return;
+
+                e.preventDefault();
+                e.stopPropagation();
+
+                const id = btn.getAttribute('data-id');
+                const name = btn.getAttribute('data-name') || 'this controller';
+                if (!id) return;
+
+                if (!confirm(`Delete controller “${name}”?`)) return;
+
+                const token = getCsrfToken();
+                const formData = new FormData();
+                formData.append('__RequestVerificationToken', token);
+                formData.append('id', id);
+
+                fetch(deleteUrl, {
+                    method: 'POST',
+                    body: formData,
+                    credentials: 'same-origin'
+                })
+                    .then(res => {
+                        if (res.ok) {
+                            window.location = '@Url.Action("NetappHub", "Settings")';
+                        } else {
+                            return res.text().then(t => { throw new Error(t || 'Delete failed'); });
+                        }
+                    })
+                    .catch(err => alert('Failed to delete: ' + (err && err.message ? err.message : 'Unknown error')));
+            }, true);
         })();
     </script>
 }
+
+

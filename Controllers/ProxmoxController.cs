@@ -18,43 +18,48 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
-
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services;
 using BareProx.Services.Proxmox;
+using BareProx.Services.Proxmox.Authentication;
+using BareProx.Services.Proxmox.Helpers;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.ComponentModel.DataAnnotations;
 
 namespace BareProx.Controllers
 {
     public class ProxmoxController : Controller
     {
         private readonly ApplicationDbContext _context;
-        private readonly ProxmoxService _proxmoxService;
-        private readonly IProxmoxInventoryCache _invCache;
+        private readonly IQueryDbFactory _qdbf;
         private readonly ILogger<ProxmoxController> _logger;
+        private readonly IProxmoxAuthenticator _auth;
+        private readonly IProxmoxHelpersService _helpers;
 
         public ProxmoxController(
             ApplicationDbContext context,
-            ProxmoxService proxmoxService,
-            IProxmoxInventoryCache invCache,
-            ILogger<ProxmoxController> logger)
+            IQueryDbFactory qdbf,
+            ILogger<ProxmoxController> logger,
+            IProxmoxAuthenticator auth,
+            IProxmoxHelpersService helpers)
         {
             _context = context;
-            _proxmoxService = proxmoxService;
-            _invCache = invCache;
+            _qdbf = qdbf;
             _logger = logger;
+            _auth = auth;
+            _helpers = helpers;
         }
 
+        // --------------------------------------------------------------------
+        // List VMs for selected storages
+        // --------------------------------------------------------------------
         // Optional clusterId avoids accidentally binding to "first" cluster.
         public async Task<IActionResult> ListVMs(int? clusterId, CancellationToken ct)
         {
             // 1) Load target cluster (no tracking)
-            var clusterQuery = _context.ProxmoxClusters
-                .AsNoTracking()
-                .Include(c => c.Hosts)
-                .AsQueryable();
+            var clusterQuery = _context.ProxmoxClusters.AsNoTracking();
 
             var cluster = clusterId is int requestedClusterId
                 ? await clusterQuery.FirstOrDefaultAsync(c => c.Id == requestedClusterId, ct)
@@ -66,7 +71,7 @@ namespace BareProx.Controllers
                 return View(new List<StorageWithVMsDto>());
             }
 
-            // 2) Selected storages for THIS cluster (authoritative binding)
+            // 2) Which storages are selected (authoritative selection)
             var selectedStorageNames = await _context.SelectedStorages
                 .AsNoTracking()
                 .Where(s => s.ClusterId == cluster.Id)
@@ -81,165 +86,247 @@ namespace BareProx.Controllers
 
             var selectedStorageSet = new HashSet<string>(selectedStorageNames, StringComparer.OrdinalIgnoreCase);
 
-            // 3) Cluster/host status (skip entirely if all offline)
-            var (_, _, _, hostStates, summary) = await _proxmoxService.GetClusterStatusAsync(cluster, ct);
-            var onlineHostNames = hostStates.Where(kv => kv.Value).Select(kv => kv.Key)
-                                           .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            await using var qdb = await _qdbf.CreateAsync(ct);
 
-            if (onlineHostNames.Count == 0)
-            {
-                ViewBag.Warning = "No Proxmox hosts are currently online: " + summary;
-                return View(new List<StorageWithVMsDto>());
-            }
-
-            // Local list of *online* hosts (don’t mutate EF entity)
-            var onlineHosts = cluster.Hosts
-                .Where(h => onlineHostNames.Contains(h.Hostname ?? h.HostAddress))
-                .ToList();
-
-            if (onlineHosts.Count == 0)
-            {
-                ViewBag.Warning = "No online hosts matched the configured cluster hosts.";
-                return View(new List<StorageWithVMsDto>());
-            }
-
-            // 4) Kick off VM inventory (uses cache internally)
-            Dictionary<string, List<ProxmoxVM>> storageVmMap;
-            try
-            {
-                storageVmMap = await _invCache.GetVmsByStorageListAsync(cluster, selectedStorageNames, ct);
-            }
-            catch (ServiceUnavailableException ex)
-            {
-                _logger.LogWarning(ex, "Unable to reach any Proxmox host");
-                ViewBag.Warning = ex.Message;
-                return View(new List<StorageWithVMsDto>());
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Unexpected error querying Proxmox");
-                ViewBag.Warning = "An unexpected error occurred while fetching VM lists.";
-                return View(new List<StorageWithVMsDto>());
-            }
-
-            // 5) Load SelectedNetappVolumes for those storages
-            // DO NOT filter by SelectedNetappVolumes.ClusterId (by design).
-            var selectedVolumes = await _context.SelectedNetappVolumes
+            // 3) Candidate storages from inventory (must be image-capable, and in selection)
+            var invStorages = await qdb.InventoryStorages
                 .AsNoTracking()
-                .Where(v => selectedStorageSet.Contains(v.VolumeName) && v.Disabled != true) // skip disabled, include null
+                .Where(s => s.ClusterId == cluster.Id
+                         && s.IsImageCapable
+                         && selectedStorageSet.Contains(s.StorageId))
+                .ToListAsync(ct);
+
+            if (invStorages.Count == 0)
+            {
+                ViewBag.Warning = "Selected storages were not found in the inventory yet. Give the collector a minute or two.";
+                return View(new List<StorageWithVMsDto>());
+            }
+
+            // 4) VM-disks for those storages -> collect VM IDs per storage
+            var storageIds = invStorages.Select(s => s.StorageId).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+            var diskPairs = await qdb.InventoryVmDisks
+                .AsNoTracking()
+                .Where(d => d.ClusterId == cluster.Id && storageIds.Contains(d.StorageId))
+                .Select(d => new { d.StorageId, d.VmId })
+                .ToListAsync(ct);
+
+            // Build storage -> distinct VM IDs
+            var vmIdsByStorage = diskPairs
+                .GroupBy(x => x.StorageId, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.Select(x => x.VmId).Distinct().ToList(),
+                    StringComparer.OrdinalIgnoreCase);
+
+            // Union of all VM IDs we need details for
+            var allVmIds = vmIdsByStorage.Values.SelectMany(x => x).Distinct().ToList();
+
+            // Fetch VM details
+            var invVms = await qdb.InventoryVms
+                .AsNoTracking()
+                .Where(v => v.ClusterId == cluster.Id && allVmIds.Contains(v.VmId))
+                .ToDictionaryAsync(v => v.VmId, ct);
+
+            // ---------- Helper normalizers ----------
+            static string Nx(string? s) => (s ?? "").Trim();
+
+            static string NormPath(string? p)
+            {
+                p = Nx(p);
+                if (string.IsNullOrEmpty(p)) return p;
+                var q = p.Replace('\\', '/');
+                if (!q.StartsWith('/')) q = "/" + q;
+                if (q.Length > 1 && q.EndsWith('/')) q = q.TrimEnd('/');
+                return q;
+            }
+
+            static IEnumerable<string> SplitIps(string? ips)
+                => Nx(ips).Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                          .Select(x => x.Trim());
+
+            // 5) Build lookup: (Server IP, Export/JunctionPath) -> InventoryNetappVolume
+            var invNavByServerExport =
+                new Dictionary<(string Server, string Export), InventoryNetappVolume>();
+
+            var allInvNav = await qdb.InventoryNetappVolumes
+                .AsNoTracking()
+                .ToListAsync(ct);
+
+            foreach (var nav in allInvNav)
+            {
+                var junc = NormPath(nav.JunctionPath);
+                if (string.IsNullOrEmpty(junc)) continue;
+
+                foreach (var ip in SplitIps(nav.NfsIps))
+                {
+                    var key = (Server: ip, Export: junc);
+                    // prefer first; if duplicate keys appear, prefer primary
+                    if (!invNavByServerExport.ContainsKey(key))
+                    {
+                        invNavByServerExport[key] = nav;
+                    }
+                    else
+                    {
+                        var existing = invNavByServerExport[key];
+                        if ((nav.IsPrimary == true) && (existing.IsPrimary != true))
+                            invNavByServerExport[key] = nav;
+                    }
+                }
+            }
+
+            // 6) SelectedNetappVolumes: build maps by UUID (preferred) and by VolumeName (fallback)
+            var selRows = await _context.SelectedNetappVolumes
+                .AsNoTracking()
+                .Where(v => v.Disabled != true)
                 .Select(v => new
                 {
                     v.Id,
                     v.NetappControllerId,
-                    v.VolumeName,
-                    v.SnapshotLockingEnabled
+                    Uuid = v.Uuid,
+                    v.VolumeName
                 })
                 .ToListAsync(ct);
 
-            // Index: (controllerId, volumeName) -> SelectedNetappVolume.Id / Locking
-            var selectedVolumeIdByKey = new Dictionary<(int ControllerId, string Volume), int>();
-            var lockByKey = new Dictionary<(int ControllerId, string Volume), bool>();
-            foreach (var v in selectedVolumes)
-            {
-                var key = (v.NetappControllerId, v.VolumeName);
-                if (!selectedVolumeIdByKey.ContainsKey(key))
-                    selectedVolumeIdByKey[key] = v.Id;
+            var selByUuid = new Dictionary<(int ControllerId, string Uuid), int>();
+            var selByName = new Dictionary<(int ControllerId, string VolumeName), int>();
 
-                // Any 'true' across duplicates yields true
-                lockByKey[key] = lockByKey.TryGetValue(key, out var prev)
-                    ? (prev || v.SnapshotLockingEnabled == true)
-                    : (v.SnapshotLockingEnabled == true);
+            foreach (var r in selRows)
+            {
+                if (!string.IsNullOrWhiteSpace(r.Uuid))
+                {
+                    var k = (r.NetappControllerId, r.Uuid!);
+                    if (!selByUuid.ContainsKey(k)) selByUuid[k] = r.Id;
+                }
+                if (!string.IsNullOrWhiteSpace(r.VolumeName))
+                {
+                    var k = (r.NetappControllerId, r.VolumeName);
+                    if (!selByName.ContainsKey(k)) selByName[k] = r.Id;
+                }
             }
 
-            // Map: storage -> candidate controllers that actually have a mapping entry
-            var controllerIdsByStorage = selectedVolumes
-                .GroupBy(v => v.VolumeName, StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(
-                    g => g.Key,
-                    g => g.Select(x => x.NetappControllerId).Distinct().ToList(),
-                    StringComparer.OrdinalIgnoreCase
-                );
+            // 7) Replication map (primary -> secondary) using UUIDs
+            var allUuids = invStorages
+                .Select(s => s.NetappVolumeUuid)
+                .Where(u => !string.IsNullOrWhiteSpace(u))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
-            // Optional: choose a "primary" only among candidates to act as tie-breaker
-            var allCandidateControllerIds = controllerIdsByStorage.Values.SelectMany(x => x).Distinct().ToHashSet();
-            var fallbackPrimary = await _context.NetappControllers
+            var repRows = await qdb.InventoryVolumeReplications
                 .AsNoTracking()
-                .Where(c => c.IsPrimary && allCandidateControllerIds.Contains(c.Id))
-                .Select(c => new { c.Id })
-                .FirstOrDefaultAsync(ct);
+                .Where(r => allUuids.Contains(r.PrimaryVolumeUuid))
+                .Select(r => new { r.PrimaryVolumeUuid })
+                .ToListAsync(ct);
 
-            // 6) Build DTOs (skip empty storages early) with a controller per storage
-            var model = new List<StorageWithVMsDto>(capacity: storageVmMap.Count);
-            foreach (var kv in storageVmMap)
+            var replicablePrimary = new HashSet<string>(
+                repRows.Select(r => r.PrimaryVolumeUuid),
+                StringComparer.OrdinalIgnoreCase);
+
+            // 8) Build DTOs
+            var model = new List<StorageWithVMsDto>(invStorages.Count);
+
+            foreach (var s in invStorages.OrderBy(x => x.StorageId, StringComparer.OrdinalIgnoreCase))
             {
-                var storage = kv.Key;
-                var vms = kv.Value;
-                if (vms == null || vms.Count == 0) continue;
+                var storageName = s.StorageId;
 
-                // Choose controller for this storage (prefer a primary if it’s a candidate)
-                int? controllerForStorage = null;
-                if (controllerIdsByStorage.TryGetValue(storage, out var candidates) && candidates.Count > 0)
+                // VMs for this storage
+                var vmList = new List<ProxmoxVM>();
+                if (vmIdsByStorage.TryGetValue(storageName, out var vmIds) && vmIds.Count > 0)
                 {
-                    controllerForStorage = (fallbackPrimary != null && candidates.Contains(fallbackPrimary.Id))
-                        ? fallbackPrimary.Id
-                        : candidates[0]; // deterministic, first candidate
-                }
-
-                int? selectedId = null;
-                bool hasLocking = false;
-                if (controllerForStorage is int controllerId)
-                {
-                    if (selectedVolumeIdByKey.TryGetValue((controllerId, storage), out var id))
-                        selectedId = id;
-                    hasLocking = lockByKey.TryGetValue((controllerId, storage), out var lk) && lk;
-                }
-
-                model.Add(new StorageWithVMsDto
-                {
-                    StorageName = storage,
-                    VMs = vms.Select(vm => new ProxmoxVM
+                    foreach (var id in vmIds)
                     {
-                        Id = vm.Id,
-                        Name = vm.Name,
-                        HostName = vm.HostName,
-                        HostAddress = vm.HostAddress
-                    }).ToList(),
-                    ClusterId = cluster.Id, // authoritative binding
-                    NetappControllerId = controllerForStorage ?? fallbackPrimary?.Id ?? 0,
+                        if (invVms.TryGetValue(id, out var v))
+                        {
+                            vmList.Add(new ProxmoxVM
+                            {
+                                Id = v.VmId,
+                                Name = string.IsNullOrWhiteSpace(v.Name) ? $"VM {v.VmId}" : v.Name,
+                                HostName = v.NodeName,
+                                HostAddress = null // not stored in inventory; optional
+                            });
+                        }
+                    }
+                }
+
+                // Resolve NetApp mapping via (Server, Export) → (NfsIps, JunctionPath)
+                int controllerId = 0;
+                bool locking = false;
+                string? volumeUuid = null;
+                string? resolvedVolumeName = null;
+
+                var serverKey = Nx(s.Server);
+                var exportKey = NormPath(s.Export);
+
+                if (!string.IsNullOrEmpty(serverKey) &&
+                    !string.IsNullOrEmpty(exportKey) &&
+                    invNavByServerExport.TryGetValue((serverKey, exportKey), out var matchedNav))
+                {
+                    controllerId = matchedNav.NetappControllerId;
+                    locking = matchedNav.SnapshotLockingEnabled == true;
+                    volumeUuid = matchedNav.VolumeUuid;
+                    resolvedVolumeName = matchedNav.VolumeName;
+                }
+                else if (!string.IsNullOrWhiteSpace(s.NetappVolumeUuid))
+                {
+                    // fallback: use previously stored UUID on the inventory storage
+                    var nav = allInvNav.FirstOrDefault(v =>
+                        string.Equals(v.VolumeUuid, s.NetappVolumeUuid, StringComparison.OrdinalIgnoreCase));
+                    if (nav is not null)
+                    {
+                        controllerId = nav.NetappControllerId;
+                        locking = nav.SnapshotLockingEnabled == true;
+                        volumeUuid = nav.VolumeUuid;
+                        resolvedVolumeName = nav.VolumeName;
+                    }
+                }
+
+                // Decide SelectedNetappVolumeId
+                int? selectedId = null;
+                if (controllerId != 0)
+                {
+                    // prefer UUID mapping
+                    if (!string.IsNullOrWhiteSpace(volumeUuid) &&
+                        selByUuid.TryGetValue((controllerId, volumeUuid), out var viaUuid))
+                    {
+                        selectedId = viaUuid;
+                    }
+                    else
+                    {
+                        // fallback by actual NetApp VolumeName, then legacy by Proxmox storage id
+                        if (!string.IsNullOrWhiteSpace(resolvedVolumeName) &&
+                            selByName.TryGetValue((controllerId, resolvedVolumeName), out var viaName))
+                        {
+                            selectedId = viaName;
+                        }
+                        else if (selByName.TryGetValue((controllerId, storageName), out var viaLegacyName))
+                        {
+                            selectedId = viaLegacyName;
+                        }
+                    }
+                }
+
+                var dto = new StorageWithVMsDto
+                {
+                    StorageName = storageName,
+                    VMs = vmList,
+                    ClusterId = cluster.Id,
+                    NetappControllerId = controllerId,
                     SelectedNetappVolumeId = selectedId,
-                    SnapshotLockingEnabled = hasLocking
-                });
+                    SnapshotLockingEnabled = locking,
+                    IsReplicable = !string.IsNullOrWhiteSpace(volumeUuid)
+                                   && replicablePrimary.Contains(volumeUuid),
+                    VolumeUuid = volumeUuid
+                };
+
+                // Only add non-empty storages (keep old behavior)
+                if (dto.VMs.Count > 0)
+                    model.Add(dto);
             }
 
             if (model.Count == 0)
             {
                 ViewBag.Warning = "No VMs found on the selected storage.";
                 return View(model);
-            }
-
-            // 7) Compute replicability: only consider relations for controllers actually used
-            var usedControllerIds = model
-                .Select(m => m.NetappControllerId)
-                .Where(id => id != 0)
-                .Distinct()
-                .ToList();
-
-            var relations = await _context.SnapMirrorRelations
-                .AsNoTracking()
-                .Where(r => selectedStorageSet.Contains(r.SourceVolume)
-                         && usedControllerIds.Contains(r.SourceControllerId))
-                .Select(r => new { r.SourceControllerId, r.SourceVolume, r.DestinationControllerId, r.DestinationVolume })
-                .ToListAsync(ct);
-
-            var replicableSources = new HashSet<string>(
-                relations.Select(r => r.SourceVolume),
-                StringComparer.OrdinalIgnoreCase
-            );
-
-            foreach (var dto in model)
-            {
-                dto.IsReplicable = replicableSources.Contains(dto.StorageName);
-                // SnapshotLockingEnabled already set above from lockByKey
             }
 
             return View(model);

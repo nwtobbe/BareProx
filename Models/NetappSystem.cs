@@ -160,6 +160,8 @@ namespace BareProx.Models
         public string VolumeName { get; set; }
         public string Uuid { get; set; }
         public string MountIp { get; set; }
+        public string? JunctionPath { get; set; }
+        public List<string> MountIps { get; set; } = new();
         public int ClusterId { get; set; }
         public string Vserver { get; set; }
         public bool IsSelected { get; set; }
@@ -192,6 +194,8 @@ namespace BareProx.Models
         // Optional extras (keep if useful; safe to leave out if you don't use them)
         public string? Uuid { get; set; }
         public string? JunctionPath { get; set; }
+        public string? MountIps { get; set; }
+        public bool? SnapshotLockingEnabled { get; set; }
     }
 
     public class VserverDto

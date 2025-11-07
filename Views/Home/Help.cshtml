@@ -1,286 +1,336 @@
-﻿<html>
-  <head>
-    <meta http-equiv="content-type" content="text/html; charset=UTF-8">
-    <title></title>
-  </head>
-  <body>
-    @{ ViewData["Title"] = "Help &amp; User Guide"; }
-    <div class="container mt-5">
-      <div class="card shadow rounded-3">
+﻿@{
+    ViewData["Title"] = "Help & User Guide";
+    Layout = "_Layout";
+    ViewBag.FullWidth = true; // <-- THIS makes the layout use container-fluid for this page
+}
+
+<style>
+    /* Two-pane layout */
+    .help-wrap {
+        display: grid;
+        grid-template-columns: 280px 1fr;
+        gap: 1.5rem;
+    }
+
+    @@media (max-width: 992px) {
+        .help-wrap {
+            grid-template-columns: 1fr;
+        }
+
+        #help-toc {
+            position: static;
+            top: auto;
+            max-height: none;
+        }
+    }
+
+    /* TOC */
+    #help-toc {
+        position: sticky;
+        top: 80px; /* adjust if navbar is taller */
+        max-height: calc(100vh - 100px);
+        overflow: auto;
+        padding-right: .5rem;
+    }
+
+    .toc-title {
+        font-weight: 700;
+        margin-bottom: .5rem;
+    }
+
+    .toc-list {
+        list-style: none;
+        padding-left: 0;
+        margin: 0;
+    }
+
+        .toc-list li {
+            margin: .25rem 0;
+            line-height: 1.3;
+        }
+
+    .toc-link {
+        text-decoration: none;
+        display: inline-block;
+        padding: .15rem 0;
+    }
+
+        .toc-link.active {
+            font-weight: 700;
+            text-decoration: underline;
+        }
+
+    .toc-depth-3 {
+        padding-left: 1rem;
+    }
+
+    /* Content cosmetics */
+    .help-card {
+        border-radius: .75rem;
+    }
+
+    .help-content h1 {
+        margin-bottom: .75rem;
+    }
+
+    .help-content h2 {
+        margin-top: 2rem;
+        scroll-margin-top: 90px;
+    }
+
+    .help-content h3 {
+        margin-top: 1.25rem;
+        scroll-margin-top: 90px;
+    }
+
+    .help-content code {
+        white-space: nowrap;
+    }
+
+    html {
+        scroll-behavior: smooth;
+    }
+</style>
+
+<div class="mt-4 text-start">
+    <!-- text-start ensures left text alignment -->
+    <div class="card shadow help-card">
         <div class="card-body">
+            <div class="help-wrap">
+                <!-- LEFT: Auto TOC -->
+                <aside id="help-toc">
+                    <div class="toc-title">Contents</div>
+                    <ul class="toc-list" id="tocList"></ul>
+                    <noscript><small>(Enable JavaScript to see the table of contents.)</small></noscript>
+                </aside>
 
-          <h2 class="card-title mb-4">Help &amp; User Guide</h2>
+                <!-- RIGHT: Help content -->
+                <article class="help-content" id="helpContent">
+                    <h1>Help &amp; User Guide</h1>
 
-          <h4>About BareProx</h4>
-          <p>
-            <strong>BareProx</strong> automates backup, restore, and
-            snapshot management for Proxmox environments using
-            integrated NetApp storage. This platform aims to simplify VM
-            data protection, recovery, and storage operations for
-            administrators.
-          </p>
-          <hr>
+                    <h2>What is BareProx?</h2>
+                    <p>
+                        <strong>BareProx</strong> automates VM-safe backups and restores for
+                        <em>Proxmox VE</em> environments running on <em>NetApp ONTAP</em> storage (NFS).
+                        It coordinates NetApp volume snapshots and FlexClone mounts, can leverage SnapMirror replication,
+                        and presents a simple scheduling and jobs experience.
+                    </p>
 
-          <h4>Contents</h4>
-          <ul>
-            <li><a href="#getting-started">Getting Started</a></li>
-            <li><a href="#main-features">Main Features</a></li>
-            <li><a href="#common-tasks">Common Tasks</a></li>
-            <li><a href="#faq">Frequently Asked Questions (FAQ)</a></li>
-            <li><a href="#support">Support</a></li>
-          </ul>
-          <hr>
+                    <h2>Requirements</h2>
+                    <ul>
+                        <li>Well.. Proxmox VE</li>
+                        <li>NetApp ONTAP NFS (optional SnapMirror relationships for secondary copies).</li>
+                        <li>Network access from BareProx to all Proxmox hosts via https and ssh (ports: 443,22)</li>
+                        <li>Network access from BareProx to all NetApp Controllers / or SVM:s via https (port: 22)</li>
+                        <li>If you plan to replicate to a Secondary NetApp. NFS! access between Proxmox and the Secondary NetApp</li>
+                    </ul>
 
-          <h4 id="getting-started">Getting Started</h4>
-          <ol>
-            <li>
-              <strong>Login:</strong> Use your assigned credentials.<br>
-            </li>
-            <li>
-              <strong>Navigation:</strong> Use the main menu to access
-              Backups, Restores, Snapshots, Jobs, Settings, and
-              SnapMirror relationships.
-            </li>
-            <li>
-              <strong>Dashboard Overview:</strong> Review system
-              status, storage health, and recent activity after login.
-            </li>
-          </ol>
-          <hr>
+                    <h2>Initial Configuration</h2>
+                    <h3>Proxmox Cluster</h3>
+                    <ol>
+                        <li>Open <strong>Settings → Proxmox</strong> and add your cluster.</li>
+                        <li>Use (<code>root@pam</code>).</li>
+                        <li>Add hosts, click <strong>Authenticate</strong>, then <strong>Select Storage</strong> to manage.</li>
+                    </ol>
+                    <p>In the settings for the Proxmox Cluster you can:</p>
+                    <ul>
+                        <li>Switch between API Tokens and oldschool CSRF for the application authentication to Proxmox.</li>
+                        <li>Change the name of the API Token as it appears in Proxmox</li>
+                        <li>Set the lifetime of the Token</li>
+                        <li>Set the minutes to regenerate the token before it expires.</li>
+                    </ul>
+                    <h3>NetApp Controllers</h3>
+                    <ol>
+                        <li>Open <strong>Settings → NetApp</strong> and add a controller or SVM using its management IP/FQDN.</li>
+                        <li>Save, then edit the controller to <strong>Select Storage</strong> (volumes) that BareProx should manage.</li>
+                        <li>(Optional) Add a secondary controller / SVM if you use SnapMirror replication.</li>
+                        <li>If you add a Secondary controller / SVM you also need to select the "destination" volumes</li>
+                    </ol>
+                    <em>Not. For MetroClusters it is recommended to add the svm:s and not the clusters. That in case of site-switchover.</em>
 
-          <h4 id="main-features">Main Features</h4>
-          <ul>
-            <li>
-              <strong>Backup Scheduling:</strong> Schedule recurring
-              backups for selected VMs or entire storage. Supports
-              daily, weekly, or hourly cycles and application-aware
-              backups.
-            </li>
-            <li>
-              <strong>Manual Backups:</strong> Run instant backups of
-              VMs or volumes, with options for crash-consistent or
-              application-aware (IO Freeze, Proxmox Snapshot, Include
-              RAM) operations.
-            </li>
-            <li>
-              <strong>Snapshot Management:</strong> View and manage
-              snapshots for NetApp volumes, mount snapshots for
-              inspection or recovery, and lock critical snapshots.
-            </li>
-            <li>
-              <strong>Restore:</strong> Restore VMs from available
-              backups/snapshots, with options to rename, disconnect from
-              the network, or use FlexClone for testing.
-            </li>
-            <li>
-              <strong>Storage &amp; Cluster Integration:</strong>
-              Automatically detects connected Proxmox clusters and
-              NetApp controllers, groups shared storage, and tracks all
-              associated VMs.
-            </li>
-            <li>
-              <strong>SnapMirror:</strong> Visualize and manage
-              SnapMirror relationships for replication between primary
-              and secondary NetApp controllers.
-            </li>
-            <li>
-              <strong>Job &amp; Task Monitoring:</strong> Track all
-              ongoing, completed, failed, or cancelled jobs in real
-              time. Cancel or retry operations as needed.
-            </li>
-          </ul>
-          <hr>
+                    <h3>Optional: SnapMirror</h3>
+                    <p>
+                        To expose the “Replicate to secondary” option, configure a SnapMirror relationship in ONTAP with
+                        a policy that uses case-sensitive labels (for example <code>hourly</code>, <code>daily</code>, <code>weekly</code>).
+                        When BareProx detects a valid relationship for a volume, the replication option appears automatically.
+                    </p>
 
-          <h4 id="common-tasks">Settings</h4>
-          <p>
-            System:<br>
-            &nbsp;&nbsp;&nbsp; Change TimeZone<br>
-            &nbsp;&nbsp;&nbsp; Regenerate Self Signed Certificate<br>
-          </p>
-          <p>
-            Users:<br>
-            &nbsp;&nbsp;&nbsp; Add New users<br>
-            &nbsp;&nbsp;&nbsp; Change password<br>
-            &nbsp;&nbsp;&nbsp; Lock user accounts<br>
-          </p>
-          <p>
-            Netapp Controllers:<br>
-            &nbsp;&nbsp;&nbsp; Add Controller and save (ipaddress can
-            also be FQDN for cluster management) It is not tested with
-            svm:s<br>
-            &nbsp;&nbsp;&nbsp; When added, edit again to select storage
-            to use in BareProx<br>
-          </p>
-          <p>
-            Proxmox:<br>
-            &nbsp;&nbsp;&nbsp; Add cluster<br>
-            &nbsp;&nbsp;&nbsp; A small hint is username@pam<br>
-            &nbsp;&nbsp;&nbsp; Edit to add hosts<br>
-            &nbsp;&nbsp;&nbsp; When done click authenticate and then
-            select storage to use in BareProx<br>
-          </p>
-          <p>
-            Cleanup:<br>
-            &nbsp;&nbsp;&nbsp; Remove orphaned snapshots<br>
-            &nbsp;&nbsp;&nbsp; Remove FlexClones and other restore
-            operations.<br>
-          </p>
-          <p>
-            Common configuration Tasks:<br>
-            Replicate to secondary:<br>
-            &nbsp;&nbsp;&nbsp; Configure a mirror-vault relationship
-            between primary volume and secondary in System Manager.<br>
-            &nbsp;&nbsp;&nbsp; The policy needs to include the
-            snapmirror label hourly, daily and/or weekly. The retention
-            is set, in the policy. Note that snapmirror label is case
-            sensitive.<br>
-            &nbsp;&nbsp;&nbsp; Feel free to use tamper proof snapshots
-            on the secondary<br>
-            &nbsp;&nbsp;&nbsp; <br>
-            &nbsp;&nbsp;&nbsp; When a relationship is found by BareProx
-            the Replicate to secondary will be visible in
-            create/edit-schedule and backup now.<br>
-          </p>
-          <p>
-            Tamper Proof snapshots / SnapLock on Primary volume.<br>
-            &nbsp;&nbsp;&nbsp; Enable support for Snapshot Locking on
-            the primary volume.<br>
-          </p>
-          <p>
-            &nbsp;&nbsp;&nbsp; When this is enabled on the volume the
-            option for Locking snapshots will be visible in edit/create
-            and run now.<br>
-          </p>
+                    <h3>Optional: SnapLock / TamperProof Snapshots Primary volumes</h3>
+                    <p>To expose the "Enable Locking" option in the backup jobs you need to enable "snapshot-locking-enabled" on the NetApp Volume.
+                       This gives you the the possibility to actually lock the snapshots.
+                    </p>
 
-          <h4 id="common-tasks">Common Tasks</h4>
-          <ul>
-            <li>
-              <strong>1. Creating a Backup Schedule:</strong>
-              <ol>
-                <li>Go to <b>Backup</b> → <b>Schedules</b>.</li>
-                <li>Click <b>Add Schedule</b>.</li>
-                <li>
-                  Fill in the schedule details: name, backup type,
-                  frequency, VMs/storage, retention policy, and options
-                  like application-aware backup.
-                </li>
-                <li>
-                  Click <b>Save</b>. The schedule will appear in the
-                  list and run at the defined times.
-                </li>
-              </ol>
-            </li>
-            <li>
-              <strong>2. Running a Manual Backup:</strong>
-              <ol>
-                <li>Go to <b>Proxmox Storage</b>.</li>
-                <li>Select the storage, click <b>Backup Now</b>.</li>
-                <li>Choose backup options, then confirm to start.</li>
-              </ol>
-            </li>
-            <li>
-              <strong>3. Restoring a VM: </strong>
-              <ol>
-                <li>Go to <b>Restore</b>.</li>
-                <li>Select the desired backup record or snapshot.</li>
-                <li>
-                  Follow the restore wizard to choose the target name,
-                  storage, and network settings.
-                </li>
-                <li>
-                  Click <b>Restore</b> to start the process. You can
-                  monitor the restore job status on the <b>Jobs</b>
-                  page.
-                </li>
-                 <li>
-                     You'll need to manually restore a proxmox-snapshot if used in the backup and also remove the snapshot.
-                     Note that you'll need to be aware of mac-addresses does not get regenereate during restore.
-                 </li>
-              </ol>
-            </li>
-            <li>
-              <strong>4. Managing Snapshots: </strong>
-              <ol>
-                <li>Go to <b>Snapshots</b>.</li>
-                <li>Expand volumes to see available snapshots.</li>
-                <li>Mount snapshots as needed.</li>
-              </ol>
-            </li>
-            <li>
-              <strong>5. Monitoring Jobs:</strong>
-              <ol>
-                <li>Go to <b>Jobs</b>.</li>
-                <li>
-                  See all running, completed, failed, or cancelled
-                  operations.
-                </li>
-                <li>Cancel jobs directly from this page.</li>
-              </ol>
-            </li>
-          </ul>
-          <hr>
+                    <h3>Optional: SnapLock / TamperProof Snapshots Secondary volumes</h3>
+                    <p>
+                        Configure this in the Protection Policy.
+                    </p>
 
-          <h4 id="faq">Frequently Asked Questions (FAQ)</h4>
-          <div>
-            <strong>Q: How do I know if my backup succeeded?</strong>
-            <p>
-              A: Go to the <b>Jobs</b> page. Completed jobs will show
-              status “Completed”. Failed jobs will be marked with an
-              error message and details.
-            </p>
-            <strong>Q: What is an application-aware backup?</strong>
-            <p>
-              A: It ensures applications (like databases) are in a
-              consistent state by temporarily pausing I/O (IO Freeze) or
-              using Proxmox snapshot features during backup.
-            </p>
-            <strong>Q: Can I restore to a new VM name or without network
-            connection?</strong>
-            <p>
-              A: Yes. The restore wizard allows you to rename the VM
-              and optionally restore it with the network interface
-              removed. Proxmox does not allow just a disconnect.<br>
-            </p>
-            <strong>Q: How do I change the backup retention policy?</strong>
-            <p>
-              A: Edit the backup schedule and adjust the “Retention”
-              settings (number of backups and unit: days, weeks, etc.).
-            </p>
-            <strong>Q: I see a “Warning” on a storage. What does it
-            mean?</strong>
-            <p>
-              A: Warnings are shown if a storage is unreachable or
-              there are issues with the connection. Check network and
-              NetApp system status.
-            </p>
-            <strong>Q: How do I add or configure a Proxmox cluster or
-            NetApp controller?</strong>
-            <p>
-              A: Go to <b>Settings</b>, use the <b>Proxmox</b> or <b>NetApp</b>
-              tabs to define or edit cluster/controller settings. Save
-              credentials and test the connection.
-            </p>
-            <strong>Q: Can I view or manage SnapMirror replication?</strong>
-            <p>
-              A: Yes. Use the <b>SnapMirror</b> menu to see all
-              relationships, replication lag, health, and status.
-            </p>
-          </div>
-          <hr>
+                    <h2>Daily Use</h2>
+                    <h3>Proxmox Storage View</h3>
+                    <ul>
+                        <li>Browse discovered storage and VMs grouped by shared NetApp volumes.</li>
+                        <li>Use <strong>Backup Now</strong> for an on-demand backup on a selected storage/VM set.</li>
+                    </ul>
 
-          <h4 id="support">Support</h4>
-          <ul>
-            <li>For technical or other issues, please do contact someone.</li>
-            <li>
-              Check logs (under <b>Jobs</b> and <b>Notifications</b>)
-              for error details.
-            </li>
-            <li>Check the logfile under /var/bareprox/config/Logs<br></li>
-            <li>For feature requests or bug reports, use the github.</li>
-          </ul>
+                    <h3>Schedules</h3>
+                    <p>Create recurring backups with retention and optional application-aware options.</p>
+                    <ul>
+                        <li><strong>Frequency:</strong> hourly / daily / weekly.</li>
+                        <li><strong>Retention:</strong> keep N backups per schedule.</li>
+                        <li><strong>Application-aware:</strong> I/O freeze, Proxmox snapshot, Include RAM (where supported).</li>
+                        <li><strong>Replicate to secondary:</strong> available when SnapMirror policy/labels match.</li>
+                    </ul>
 
+                    <h3>Backup Now</h3>
+                    <ol>
+                        <li>Go to <strong>Proxmox Storage</strong>, select the storage, click <strong>Backup Now</strong>.</li>
+                        <li>Choose crash-consistent or app-aware options; optionally enable replication.</li>
+                        <li>Start the backup and monitor progress under <strong>Jobs</strong>.</li>
+                    </ol>
+
+                    <h3>Snapshots</h3>
+                    <ul>
+                        <li>View NetApp snapshots per volume (BareProx groups shared storage across hosts).</li>
+                        <li><strong>Mount</strong> a snapshot as a FlexClone for testing, validation, or file recovery.</li>
+                    </ul>
+
+                    <h3>Restore</h3>
+                    <ol>
+                        <li>Open <strong>Restore</strong> and pick a backup record or snapshot.</li>
+                        <li>Choose target storage, optional new VM name, and whether to remove NICs.</li>
+                        <li>Run the restore and follow status in <strong>Jobs</strong>.</li>
+                    </ol>
+
+                    <h3>Jobs</h3>
+                    <ul>
+                        <li>Centralized list of running, completed, failed, or cancelled operations.</li>
+                        <li>Open each job for detailed logs; cancel where supported.</li>
+                    </ul>
+
+                    <h3>Cleanup</h3>
+                    <ul>
+                        <li>Use <strong>Settings → Cleanup</strong> to remove orphaned snapshots and stale FlexClones from prior testing/restores.</li>
+                    </ul>
+
+                    <h2>Configuration Notes</h2>
+                    <h3>Snapshot Locking (Tamper-proof)</h3>
+                    <ul>
+                        <li>Enable Snapshot Locking on the <em>primary</em> volume in ONTAP to expose locking options in schedules and “Run Now”.</li>
+                        <li>Locked snapshots follow ONTAP retention and cannot be deleted until expiry.</li>
+                    </ul>
+
+                    <h3>Credentials &amp; Access</h3>
+                    <ul>
+                        <li><strong>Proxmox:</strong> Prefer API tokens (<code>user@realm!tokenid</code> + secret). Secrets are stored encrypted.</li>
+                        <li><strong>NetApp:</strong> Use an ONTAP role that allows snapshot/clone/replication operations required by your workflows.</li>
+                        <li><strong>HTTPS:</strong> BareProx serves HTTPS; replace the self-signed certificate if desired.</li>
+                    </ul>
+
+                    <h2>Known Limitations</h2>
+                    <ul>
+                        <li><strong>TPM-restricted guests:</strong> Proxmox snapshot rules may limit app-aware backups for TPM-enabled VMs.</li>
+                        <li><strong>Cloud-Init disks:</strong> Often recreated after restore (by design).</li>
+                        <li><strong>Exclude VM:</strong> If an exclude list is present in the UI, some flows may still be evolving; verify results in Jobs.</li>
+                    </ul>
+
+                    <h2>Troubleshooting</h2>
+                    <h3>No storage or VMs appear</h3>
+                    <ul>
+                        <li>Recheck Proxmox authentication and that hosts were added.</li>
+                        <li>Verify the storages you want are selected under <strong>Settings → Proxmox</strong>.</li>
+                    </ul>
+
+                    <h3>“Replicate to secondary” missing</h3>
+                    <ul>
+                        <li>Confirm a SnapMirror relationship exists for the volume.</li>
+                        <li>Ensure your ONTAP policy uses the exact case-sensitive labels you selected (e.g., <code>hourly</code>/<code>daily</code>/<code>weekly</code>).</li>
+                    </ul>
+
+                    <h3>Snapshot/clone errors</h3>
+                    <ul>
+                        <li>Check ONTAP role/permissions for the BareProx account and available capacity.</li>
+                        <li>Ensure FlexClone licensing/features are available on the ONTAP cluster.</li>
+                    </ul>
+
+                    <h3>Where to see logs</h3>
+                    <ul>
+                        <li>Per-operation logs are visible in <strong>Jobs</strong>.</li>
+                        <li>Host/container logs are typically written under <code>/var/bareprox/config/Logs</code>.</li>
+                    </ul>
+
+                    <h2>FAQ</h2>
+                    <h3>Do I need Proxmox Backup Server?</h3>
+                    <p>
+                        No. BareProx leverages NetApp volume snapshots/clone semantics behind your existing Proxmox storage
+                        and can replicate via SnapMirror. You can still run PBS in parallel if you want image-level backups.
+                    </p>
+
+                    <h3>Does BareProx change Proxmox configuration?</h3>
+                    <p>
+                        BareProx discovers via API and coordinates snapshot/clone operations on the storage side.
+                        Storage selection happens in BareProx and ONTAP; Proxmox settings remain under your control.
+                    </p>
+
+                    <h3>Can I restore with a new name and without network?</h3>
+                    <p>
+                        Yes. During restore, set a new name and choose to remove NICs. You can add adapters again after validation.
+                    </p>
+
+                    <h2>Support &amp; Diagnostics</h2>
+                    <ul>
+                        <li>Check <strong>Jobs</strong> and any on-screen <strong>Notifications</strong> for precise errors.</li>
+                        <li>Verify credentials and connectivity under <strong>Settings</strong>.</li>
+                        <li>Open an issue in the project repository for bugs or feature requests.</li>
+                    </ul>
+
+                </article>
+            </div>
         </div>
-      </div>
     </div>
-  </body>
-</html>
+</div>
+
+@section Scripts {
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const content = document.getElementById('helpContent');
+            const tocList = document.getElementById('tocList');
+            if (!content || !tocList) return;
+
+            const headings = Array.from(content.querySelectorAll('h2, h3'));
+            if (!headings.length) return;
+
+            const slug = s => String(s||'').toLowerCase().replace(/[^\w\s-]/g,'').trim().replace(/\s+/g,'-');
+
+            headings.forEach(h => { if (!h.id) h.id = slug(h.textContent); });
+
+            const frag = document.createDocumentFragment();
+            headings.forEach(h => {
+                const li = document.createElement('li');
+                if (h.tagName === 'H3') li.classList.add('toc-depth-3');
+                const a = document.createElement('a');
+                a.href = '#' + h.id;
+                a.textContent = h.textContent;
+                a.className = 'toc-link';
+                li.appendChild(a);
+                frag.appendChild(li);
+            });
+            tocList.innerHTML = '';
+            tocList.appendChild(frag);
+
+            if ('IntersectionObserver' in window) {
+                const links = Array.from(tocList.querySelectorAll('.toc-link'));
+                const io = new IntersectionObserver(entries => {
+                    entries.forEach(entry => {
+                        const link = links.find(a => a.getAttribute('href') === '#' + entry.target.id);
+                        if (!link) return;
+                        if (entry.isIntersecting) {
+                            links.forEach(a => a.classList.remove('active'));
+                            link.classList.add('active');
+                        }
+                    });
+                }, { rootMargin: '-40% 0px -50% 0px', threshold: 0.01 });
+                headings.forEach(h => io.observe(h));
+            }
+        });
+    </script>
+}

@@ -1,6 +1,6 @@
 ﻿# BareProx
 
-BareProx is an ASP.NET Core MVC application, as evidenced by its Controllers, Views, and Program.cs files ([github.com](https://github.com/nwtobbe/BareProx)). It provides management of Proxmox backups—leveraging NetApp NFS datastores—and SnapMirror configurations, including snapshot creation, SnapLock (tamper-proof snapshots), and restore operations via a user-friendly web interface ([github.com](https://github.com/nwtobbe/BareProx)).
+BareProx is an ASP.NET Core MVC application, as evidenced by its Controllers, Views, and Program.cs files. It provides management of Proxmox backups—leveraging NetApp NFS datastores—and SnapMirror configurations, including snapshot creation, SnapLock (tamper-proof snapshots), and restore operations via a user-friendly web interface.
 
 ## Features
 
@@ -123,7 +123,7 @@ It uses the prebuilt **BareProx** Docker image based on the official .NET 8 runt
    ```
 
 BareProx will start automatically.  
-Configuration files will appear under \`/var/bareprox/config\`, and the SQLite database under \`/var/bareprox/data/BareProxDB.db\`.
+Configuration files will and logs appear under \`/var/bareprox/config\`, and the SQLite databases under \`/var/bareprox/data/\`.
 
 ---
 

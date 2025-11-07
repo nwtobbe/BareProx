@@ -18,7 +18,6 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
-
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services;
@@ -33,20 +32,25 @@ namespace BareProx.Controllers
 {
     public class RestoreController : Controller
     {
-        private readonly ApplicationDbContext _context;
+        // Switched to factories for scoped usage
+        private readonly IDbContextFactory<ApplicationDbContext> _dbf;
+        private readonly IDbContextFactory<QueryDbContext> _qdbf; // NEW: Query DB for NetappSnapshots
+
         private readonly IBackupService _backupService;
         private readonly ProxmoxService _proxmoxService;
         private readonly IRestoreService _restoreService;
         private readonly IAppTimeZoneService _tz;
 
         public RestoreController(
-            ApplicationDbContext context,
+            IDbContextFactory<ApplicationDbContext> dbf,
+            IDbContextFactory<QueryDbContext> qdbf,
             IBackupService backupService,
             ProxmoxService proxmoxService,
             IRestoreService restoreService,
             IAppTimeZoneService tz)
         {
-            _context = context;
+            _dbf = dbf;
+            _qdbf = qdbf;
             _backupService = backupService;
             _proxmoxService = proxmoxService;
             _restoreService = restoreService;
@@ -55,8 +59,11 @@ namespace BareProx.Controllers
 
         public async Task<IActionResult> Index(CancellationToken ct)
         {
+            await using var db = await _dbf.CreateDbContextAsync(ct);
+            await using var qdb = await _qdbf.CreateDbContextAsync(ct);
+
             // 1) All backup records (newest first)
-            var backups = await _context.BackupRecords
+            var backups = await db.BackupRecords
                 .AsNoTracking()
                 .OrderByDescending(r => r.TimeStamp)
                 .ToListAsync(ct);
@@ -64,8 +71,8 @@ namespace BareProx.Controllers
             if (backups.Count == 0)
                 return View(new List<RestoreVmGroupViewModel>());
 
-            // 2) Latest NetApp snapshot row per JobId (CreatedAt desc)
-            var snaps = await _context.NetappSnapshots
+            // 2) Latest NetApp snapshot row per JobId (from Query DB)
+            var snaps = await qdb.NetappSnapshots
                 .AsNoTracking()
                 .ToListAsync(ct);
 
@@ -76,8 +83,8 @@ namespace BareProx.Controllers
                     g => g.OrderByDescending(s => s.CreatedAt).First()
                 );
 
-            // 3) Hostname -> Cluster mapping
-            var hostRows = await _context.ProxmoxHosts
+            // 3) Hostname -> Cluster mapping (main DB)
+            var hostRows = await db.ProxmoxHosts
                 .AsNoTracking()
                 .Include(h => h.Cluster)
                 .Select(h => new { h.Hostname, h.ClusterId, ClusterName = h.Cluster.Name })
@@ -145,26 +152,29 @@ namespace BareProx.Controllers
             string target,
             CancellationToken ct)
         {
-            var record = await _context.BackupRecords
+            await using var db = await _dbf.CreateDbContextAsync(ct);
+            await using var qdb = await _qdbf.CreateDbContextAsync(ct);
+
+            var record = await db.BackupRecords
                 .AsNoTracking()
                 .FirstOrDefaultAsync(r => r.Id == backupId, ct);
             if (record == null) return NotFound();
 
-            var cluster = await _context.ProxmoxClusters
+            var cluster = await db.ProxmoxClusters
                 .Include(c => c.Hosts)
                 .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
             if (cluster == null)
                 return StatusCode(500, "Cluster not configured");
 
-            // latest snapshot for this job
-            var snap = await _context.NetappSnapshots
+            // latest snapshot for this job (from Query DB)
+            var snap = await qdb.NetappSnapshots
                 .AsNoTracking()
                 .Where(s => s.JobId == record.JobId)
                 .OrderByDescending(s => s.CreatedAt)
                 .FirstOrDefaultAsync(ct);
 
-            // We’ll need enabled SelectedNetappVolumes for lookups/fallbacks
-            var selectedVolumes = await _context.SelectedNetappVolumes
+            // Enabled SelectedNetappVolumes for lookups/fallbacks (main DB)
+            var selectedVolumes = await db.SelectedNetappVolumes
                 .AsNoTracking()
                 .Where(v => v.Disabled != true)
                 .ToListAsync(ct);
@@ -176,7 +186,7 @@ namespace BareProx.Controllers
 
                 if (wantSecondary)
                 {
-                    // Prefer NetappSnapshots info if present & exists
+                    // Prefer Query DB snapshot info
                     if (snap?.ExistsOnSecondary == true &&
                         snap.SecondaryControllerId.HasValue &&
                         !string.IsNullOrWhiteSpace(snap.SecondaryVolume))
@@ -184,19 +194,16 @@ namespace BareProx.Controllers
                         return (snap.SecondaryVolume!, snap.SecondaryControllerId!.Value);
                     }
 
-                    // Fallback: SnapMirror relation for this primary volume
-                    var rel = _context.SnapMirrorRelations
+                    // Fallback: SnapMirror relation for this primary volume (main DB)
+                    var rel = db.SnapMirrorRelations
                         .AsNoTracking()
-                        .FirstOrDefault(r =>
-                            r.SourceVolume == record.StorageName);
+                        .FirstOrDefault(r => r.SourceVolume == record.StorageName);
 
                     if (rel != null)
                     {
-                        // use destination end (if enabled)
                         var enabled = selectedVolumes.Any(v =>
                             v.NetappControllerId == rel.DestinationControllerId &&
                             v.VolumeName == rel.DestinationVolume);
-
                         if (enabled)
                             return (rel.DestinationVolume, rel.DestinationControllerId);
                     }
@@ -211,14 +218,12 @@ namespace BareProx.Controllers
                         return (record.StorageName, snap.PrimaryControllerId);
                     }
 
-                    // Fallback: SelectedNetappVolumes row for this volume on a primary controller
+                    // Fallback: SelectedNetappVolumes row for this volume (main DB)
                     var sv = selectedVolumes.FirstOrDefault(v =>
                         v.VolumeName == record.StorageName);
 
                     if (sv != null)
-                    {
                         return (record.StorageName, sv.NetappControllerId);
-                    }
                 }
 
                 // Final fallback: original volume + incoming controllerId (if >0) else 0
@@ -227,7 +232,7 @@ namespace BareProx.Controllers
 
             var (actualVolume, resolvedControllerId) = ResolveSource();
 
-            // If we still lack a controller, try any enabled row for the chosen volume
+            // If still lacking a controller, try any enabled row for the chosen volume
             if (resolvedControllerId == 0)
             {
                 resolvedControllerId = selectedVolumes
@@ -264,7 +269,7 @@ namespace BareProx.Controllers
                 })
                 .ToList();
 
-            // Soft warning if chosen end isn’t actually present
+            // Soft warnings for target availability
             if (string.Equals(target, "Secondary", StringComparison.OrdinalIgnoreCase))
             {
                 if (!(snap?.ExistsOnSecondary ?? false))
@@ -284,14 +289,16 @@ namespace BareProx.Controllers
             RestoreFormViewModel model,
             CancellationToken ct)
         {
-            var backup = await _context.BackupRecords
+            await using var db = await _dbf.CreateDbContextAsync(ct);
+
+            var backup = await db.BackupRecords
                 .AsNoTracking()
                 .FirstOrDefaultAsync(r => r.Id == model.BackupId, ct);
             if (backup == null)
                 return RedirectToAction(nameof(Index));
 
             // Load the selected cluster explicitly
-            var cluster = await _context.ProxmoxClusters
+            var cluster = await db.ProxmoxClusters
                 .Include(c => c.Hosts)
                 .FirstOrDefaultAsync(c => c.Id == model.ClusterId, ct);
 

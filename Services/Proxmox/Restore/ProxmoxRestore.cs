@@ -82,7 +82,13 @@ namespace BareProx.Services.Proxmox.Restore
             var nodeName = host.Hostname;
 
             var cluster = await db.ProxmoxClusters.Include(c => c.Hosts).FirstOrDefaultAsync(ct);
-            if (cluster == null || !_helpers.GetQueryableHosts(cluster).Any()) return false;
+            if (cluster == null) return false;
+
+            var anyQueryable = (await _helpers.GetQueryableHostsAsync(cluster, ct)).Any();
+            var anyConfigured = cluster.Hosts?.Any() ?? false;
+
+            if (!anyQueryable && !anyConfigured) return false;
+
 
             var nextIdUrl = $"https://{hostAddress}:8006/api2/json/cluster/nextid";
             var idResp = await _ops.SendWithRefreshAsync(cluster, HttpMethod.Get, nextIdUrl, null, ct);
@@ -390,7 +396,13 @@ namespace BareProx.Services.Proxmox.Restore
             var nodeName = host.Hostname;
 
             var cluster = await db.ProxmoxClusters.Include(c => c.Hosts).FirstOrDefaultAsync(ct);
-            if (cluster == null || !_helpers.GetQueryableHosts(cluster).Any()) return false;
+            if (cluster == null) return false;
+
+            var anyQueryable = (await _helpers.GetQueryableHostsAsync(cluster, ct)).Any();
+            var anyConfigured = cluster.Hosts?.Any() ?? false;
+
+            if (!anyQueryable && !anyConfigured) return false;
+
 
             var vmid = int.Parse(model.VmId).ToString();
             var payload = _helpers.FlattenConfig(config);

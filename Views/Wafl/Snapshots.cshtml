@@ -1,5 +1,14 @@
 ﻿@model List<BareProx.Models.NetappControllerTreeDto>
 
+@{
+    ViewData["Title"] = "Proxmox Volumes with Snapshots";
+
+    // Null-safe ViewBag access
+    var clusters = ViewBag.Clusters as IEnumerable<BareProx.Models.ProxmoxCluster> 
+                   ?? Enumerable.Empty<BareProx.Models.ProxmoxCluster>();
+    int? selectedClusterId = ViewBag.SelectedClusterId as int?;
+}
+
 <h2>Proxmox Volumes with Snapshots</h2>
 
 <input type="text" id="searchBox" class="form-control mb-3" placeholder="Search volumes or snapshots..." />
@@ -7,61 +16,68 @@
 <form method="get" asp-action="Snapshots" class="mb-3">
     <label for="clusterSelect"><strong>Select Proxmox Cluster:</strong></label>
     <select id="clusterSelect" name="clusterId" class="form-select d-inline w-auto ms-2" onchange="this.form.submit()">
-        @foreach (var c in (IEnumerable<BareProx.Models.ProxmoxCluster>)ViewBag.Clusters)
+        @foreach (var c in clusters)
         {
-            <option value="@c.Id" selected="@(c.Id == (int)ViewBag.SelectedClusterId ? "selected" : null)">
-                @c.Name
-            </option>
+            if (selectedClusterId == c.Id)
+            {
+                <option value="@c.Id" selected>@c.Name</option>
+            }
+            else
+            {
+                <option value="@c.Id">@c.Name</option>
+            }
         }
     </select>
 </form>
 
 <div id="volumeTree">
-    @for (int controllerIdx = 0; controllerIdx < Model.Count; controllerIdx++)
+    @for (int controllerIdx = 0; controllerIdx < (Model?.Count ?? 0); controllerIdx++)
     {
         var controller = Model[controllerIdx];
         <div class="card mb-3 volume-card">
             <div class="card-header bg-dark text-white">
-                <strong>@controller.ControllerName</strong>
-                @if (!controller.IsPrimary)
+                <strong>@(controller?.ControllerName ?? "(unknown controller)")</strong>
+                @if (controller?.IsPrimary == false)
                 {
                     <span class="badge bg-warning text-dark ms-2">Secondary</span>
                 }
             </div>
             <div class="card-body">
-                @for (int svmIdx = 0; svmIdx < controller.Svms.Count; svmIdx++)
+                @for (int svmIdx = 0; svmIdx < (controller?.Svms?.Count ?? 0); svmIdx++)
                 {
-                    var svm = controller.Svms[svmIdx];
+                    var svm = controller!.Svms![svmIdx];
                     <div class="mb-2">
-                        <h6>@svm.Name</h6>
-                        @for (int volIdx = 0; volIdx < svm.Volumes.Count; volIdx++)
+                        <h6>@(svm?.Name ?? "(unknown SVM)")</h6>
+
+                        @for (int volIdx = 0; volIdx < (svm?.Volumes?.Count ?? 0); volIdx++)
                         {
-                            var volume = svm.Volumes[volIdx];
+                            var volume = svm!.Volumes![volIdx];
                             var collapseId = $"snapshots_{controllerIdx}_{svmIdx}_{volIdx}";
                             <div class="card mb-1 ms-3 volume-card">
                                 <div class="card-header p-2">
                                     <button class="btn btn-sm btn-link text-start w-100" type="button" data-bs-toggle="collapse" data-bs-target="#@collapseId">
-                                        📦 @volume.VolumeName
+                                        📦 @(volume?.VolumeName ?? "(unknown volume)")
                                     </button>
                                 </div>
                                 <div id="@collapseId" class="collapse">
                                     <div class="card-body p-2">
-                                        @if (volume.Snapshots?.Any() == true)
+                                        @if (volume?.Snapshots?.Any(s => !string.IsNullOrWhiteSpace(s)) == true)
                                         {
                                             <ul class="list-group snapshot-list">
-                                                @foreach (var snap in volume.Snapshots)
+                                                @foreach (var snap in volume.Snapshots.Where(s => !string.IsNullOrWhiteSpace(s)))
                                                 {
+                                                    var snapName = snap!.Trim();
                                                     <li class="list-group-item d-flex justify-content-between align-items-center">
-                                                        @snap
+                                                        @snapName
                                                         <button type="button"
                                                                 class="btn btn-sm btn-outline-primary"
                                                                 data-bs-toggle="modal"
                                                                 data-bs-target="#mountModal"
-                                                                data-volume="@volume.VolumeName"
-                                                                data-vserver="@volume.Vserver"
-                                                                data-snapshot="@snap"
-                                                                data-controller-id="@controller.ControllerId"
-                                                                data-is-primary="@(controller.IsPrimary ? "true" : "false")">
+                                                                data-volume="@(volume?.VolumeName ?? string.Empty)"
+                                                                data-vserver="@(volume?.Vserver ?? string.Empty)"
+                                                                data-snapshot="@snapName"
+                                                                data-controller-id="@(controller?.ControllerId ?? 0)"
+                                                                data-is-primary="@(controller?.IsPrimary == true ? "true" : "false")">
                                                             Mount
                                                         </button>
                                                     </li>
@@ -99,7 +115,7 @@
                     <input type="hidden" name="ControllerId" id="modalControllerId" />
                     <input type="hidden" name="IsSecondary" id="modalIsSecondary" />
 
-                    <!--
+                    <!-- Optional secondary warning
                     <div id="secondaryWarning" class="alert alert-warning" style="display: none;">
                         <strong>Warning:</strong> You are mounting from a secondary NetApp controller. Please verify that SnapMirror is up-to-date.
                     </div>
@@ -121,61 +137,63 @@
     </div>
 </div>
 
-
 @section Scripts {
     <script>
-        // Search/filter volumes and snapshots live
+        // Live search: match controller header OR any snapshot text inside card
         document.getElementById("searchBox").addEventListener("input", function () {
-            const query = this.value.toLowerCase();
+            const query = (this.value || "").toLowerCase();
             const cards = document.querySelectorAll(".volume-card");
 
             cards.forEach(card => {
-                const header = card.querySelector(".card-header").innerText.toLowerCase();
-                const snapshots = [...card.querySelectorAll(".snapshot-list li")].map(li => li.innerText.toLowerCase());
+                const headerEl = card.querySelector(".card-header");
+                const header = (headerEl ? headerEl.innerText : "").toLowerCase();
+
+                const snapshotItems = card.querySelectorAll(".snapshot-list li");
+                const snapshots = Array.from(snapshotItems).map(li => (li.innerText || "").toLowerCase());
 
                 card.style.display = (header.includes(query) || snapshots.some(s => s.includes(query))) ? "" : "none";
             });
         });
 
-        // When the Mount modal opens, fill its fields and load IPs
+        // Modal: fill values and load NFS IPs safely
         document.getElementById('mountModal').addEventListener('show.bs.modal', async function (event) {
             const button = event.relatedTarget;
-            const volume = button.getAttribute('data-volume');
-            const vserver = button.getAttribute('data-vserver');
-            const snapshot = button.getAttribute('data-snapshot');
-            const controllerId = button.getAttribute('data-controller-id');
-            const isPrimary = button.getAttribute('data-is-primary') === "true";
+            const volume = (button?.getAttribute('data-volume') || '').trim();
+            const vserver = (button?.getAttribute('data-vserver') || '').trim();
+            const snapshot = (button?.getAttribute('data-snapshot') || '').trim();
+            const controllerId = (button?.getAttribute('data-controller-id') || '0').trim();
+            const isPrimary = ((button?.getAttribute('data-is-primary') || 'false') === "true");
 
-            // Fill hidden modal fields
+            // Hidden fields
             document.getElementById('modalVolumeName').value   = volume;
             document.getElementById('modalVserver').value      = vserver;
             document.getElementById('modalSnapshotName').value = snapshot;
             document.getElementById('modalControllerId').value = controllerId;
-            document.getElementById('modalIsSecondary').value = isPrimary ? "false" : "true";
+            document.getElementById('modalIsSecondary').value  = isPrimary ? "false" : "true";
 
-            // Optionally show/hide secondary warning
+            // Optional warning
             const warningEl = document.getElementById('secondaryWarning');
-            if (warningEl)
-                warningEl.style.display = isPrimary ? 'none' : '';
+            if (warningEl) warningEl.style.display = isPrimary ? 'none' : '';
 
-            // Load NFS IPs for this controller/vserver
+            // Load NFS IPs
             const mountIpSelect = document.getElementById('modalMountIp');
             mountIpSelect.innerHTML = '<option disabled selected value="">Loading...</option>';
 
             try {
                 const url = `/Wafl/GetNfsIps?vserver=${encodeURIComponent(vserver)}&controllerId=${encodeURIComponent(controllerId)}`;
-                const response = await fetch(url);
-                const data = await response.json();
-                mountIpSelect.innerHTML = '';
+                const res = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+                const data = await res.json().catch(() => ({}));
+                const ips = Array.isArray(data.ips) ? data.ips : [];
 
-                if (!data.ips || data.ips.length === 0) {
+                if (ips.length === 0) {
                     mountIpSelect.innerHTML = '<option disabled>No mount IPs available</option>';
                 } else {
-                    data.ips.forEach(ip => {
-                        const option = document.createElement('option');
-                        option.value = ip;
-                        option.text = ip;
-                        mountIpSelect.appendChild(option);
+                    mountIpSelect.innerHTML = '';
+                    ips.forEach(ip => {
+                        const opt = document.createElement('option');
+                        opt.value = ip;
+                        opt.text = ip;
+                        mountIpSelect.appendChild(opt);
                     });
                 }
             } catch {

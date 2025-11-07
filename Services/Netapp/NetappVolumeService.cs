@@ -45,6 +45,29 @@ namespace BareProx.Services
             _logger = logger;
         }
 
+        private static IEnumerable<string> ReadServices(JsonElement lif)
+        {
+            // Prefer service_policy.services if present
+            if (lif.TryGetProperty("service_policy", out var sp) &&
+                sp.ValueKind == JsonValueKind.Object &&
+                sp.TryGetProperty("services", out var svcs1) &&
+                svcs1.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var x in svcs1.EnumerateArray())
+                    if (x.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(x.GetString()))
+                        yield return x.GetString()!;
+            }
+
+            // Fallback: top-level services
+            if (lif.TryGetProperty("services", out var svcs2) &&
+                svcs2.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var x in svcs2.EnumerateArray())
+                    if (x.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(x.GetString()))
+                        yield return x.GetString()!;
+            }
+        }
+
         private static string EnsureSlash(string baseUrl) =>
             string.IsNullOrEmpty(baseUrl) || baseUrl.EndsWith("/") ? baseUrl : baseUrl + "/";
 
@@ -63,71 +86,53 @@ namespace BareProx.Services
 
             var controller = await _context.NetappControllers
                 .AsNoTracking()
-                .FirstOrDefaultAsync(c => c.Id == netappControllerId, ct);
+                .FirstOrDefaultAsync(c => c.Id == netappControllerId, ct)
+                ?? throw new Exception($"NetApp controller {netappControllerId} not found.");
 
-            if (controller == null)
-            {
-                _logger.LogError("NetApp controller {Id} not found.", netappControllerId);
-                throw new Exception("NetApp controller not found.");
-            }
-
-            var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+            var http = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
             baseUrl = EnsureSlash(baseUrl);
 
             try
             {
-                _logger.LogDebug("Fetching SVM list.");
-                var vserverUrl = $"{baseUrl}svm/svms";
-                var vserverResponse = await httpClient.GetAsync(vserverUrl, ct);
-                if (!vserverResponse.IsSuccessStatusCode)
+                var svmUrl = $"{baseUrl}svm/svms?fields=name&max_records=10000";
+                _logger.LogDebug("Fetching SVMs: {Url}", svmUrl);
+
+                await foreach (var svm in EnumerateOntapRecordsAsync(http, svmUrl, ct))
                 {
-                    var body = await vserverResponse.Content.ReadAsStringAsync(ct);
-                    _logger.LogWarning("SVM list failed: {Status} {Body}", vserverResponse.StatusCode, body);
-                }
-                vserverResponse.EnsureSuccessStatusCode();
+                    var svmName = svm.TryGetProperty("name", out var pName) && pName.ValueKind == JsonValueKind.String
+                        ? pName.GetString()
+                        : null;
+                    if (string.IsNullOrWhiteSpace(svmName)) continue;
 
-                var vserverJson = await vserverResponse.Content.ReadAsStringAsync(ct);
-                using var vserverDoc = JsonDocument.Parse(vserverJson);
-                var vserverElements = vserverDoc.RootElement.GetProperty("records").EnumerateArray();
+                    var vdto = new VserverDto { Name = svmName };
 
-                foreach (var vserverElement in vserverElements)
-                {
-                    var vserverName = vserverElement.GetProperty("name").GetString() ?? string.Empty;
-                    var vserverDto = new VserverDto { Name = vserverName };
+                    var volsUrl = $"{baseUrl}storage/volumes?svm.name={Uri.EscapeDataString(svmName)}&fields=name,uuid&max_records=10000";
+                    _logger.LogDebug("Fetching volumes for SVM {SVM}: {Url}", svmName, volsUrl);
 
-                    _logger.LogDebug("Fetching volumes for SVM {SVM}.", vserverName);
-                    var volumesUrl = $"{baseUrl}storage/volumes?svm.name={Uri.EscapeDataString(vserverName)}&fields=name,uuid";
-                    var volumesResponse = await httpClient.GetAsync(volumesUrl, ct);
-                    if (!volumesResponse.IsSuccessStatusCode)
+                    await foreach (var vol in EnumerateOntapRecordsAsync(http, volsUrl, ct))
                     {
-                        var body = await volumesResponse.Content.ReadAsStringAsync(ct);
-                        _logger.LogWarning("Volume list for {SVM} failed: {Status} {Body}", vserverName, volumesResponse.StatusCode, body);
-                    }
-                    volumesResponse.EnsureSuccessStatusCode();
+                        var volName = vol.TryGetProperty("name", out var pVol) && pVol.ValueKind == JsonValueKind.String
+                            ? pVol.GetString()
+                            : null;
+                        if (string.IsNullOrWhiteSpace(volName)) continue;
 
-                    var volumesJson = await volumesResponse.Content.ReadAsStringAsync(ct);
-                    using var volumesDoc = JsonDocument.Parse(volumesJson);
-                    var volumeElements = volumesDoc.RootElement.GetProperty("records").EnumerateArray();
+                        string? uuid = null;
+                        if (vol.TryGetProperty("uuid", out var pUuid) && pUuid.ValueKind == JsonValueKind.String)
+                            uuid = pUuid.GetString();
 
-                    foreach (var volumeElement in volumeElements)
-                    {
-                        var volumeName = volumeElement.GetProperty("name").GetString() ?? string.Empty;
-                        var uuid = volumeElement.TryGetProperty("uuid", out var uuidProp) ? uuidProp.GetString() : string.Empty;
-
-                        vserverDto.Volumes.Add(new NetappVolumeDto
+                        vdto.Volumes.Add(new NetappVolumeDto
                         {
-                            VolumeName = volumeName,
-                            Uuid = uuid,
-                            // NOTE: If NetappVolumeDto exposes NetappControllerId, prefer that instead of ClusterId.
+                            VolumeName = volName!,
+                            Uuid = uuid ?? string.Empty,
                             ClusterId = controller.Id
                         });
                     }
 
-                    _logger.LogDebug("SVM {SVM} volume count: {Count}", vserverName, vserverDto.Volumes.Count);
-                    vservers.Add(vserverDto);
+                    _logger.LogDebug("SVM {SVM} volume count: {Count}", svmName, vdto.Volumes.Count);
+                    vservers.Add(vdto);
                 }
 
-                _logger.LogInformation("Fetched {SvmCount} SVMs.", vservers.Count);
+                _logger.LogInformation("Fetched {Count} SVMs.", vservers.Count);
                 return vservers;
             }
             catch (OperationCanceledException)
@@ -147,6 +152,57 @@ namespace BareProx.Services
             }
         }
 
+        private async IAsyncEnumerable<JsonElement> EnumerateOntapRecordsAsync(
+            HttpClient http,
+            string initialUrl,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+        {
+            string? url = initialUrl;
+
+            while (!string.IsNullOrEmpty(url))
+            {
+                using var resp = await http.GetAsync(url, ct);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    var body = await resp.Content.ReadAsStringAsync(ct);
+                    _logger.LogWarning("ONTAP list call failed: {Status} {Body}", resp.StatusCode, body);
+                }
+                resp.EnsureSuccessStatusCode();
+
+                using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+                if (doc.RootElement.TryGetProperty("records", out var recs) && recs.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in recs.EnumerateArray())
+                        yield return item;
+                }
+
+                string? next = null;
+                if (doc.RootElement.TryGetProperty("_links", out var links) &&
+                    links.ValueKind == JsonValueKind.Object &&
+                    links.TryGetProperty("next", out var nextObj) &&
+                    nextObj.ValueKind == JsonValueKind.Object &&
+                    nextObj.TryGetProperty("href", out var href) &&
+                    href.ValueKind == JsonValueKind.String)
+                {
+                    next = href.GetString();
+                }
+
+                url = string.IsNullOrWhiteSpace(next) ? null : EnsureAbsoluteOntapUrl(next, http.BaseAddress, initialUrl);
+            }
+        }
+
+        private static string EnsureAbsoluteOntapUrl(string href, Uri? baseAddress, string fallbackFrom)
+        {
+            if (Uri.TryCreate(href, UriKind.Absolute, out var abs)) return abs.ToString();
+            if (baseAddress != null && Uri.TryCreate(baseAddress, href, out var combined)) return combined.ToString();
+            if (Uri.TryCreate(fallbackFrom, UriKind.Absolute, out var first) &&
+                Uri.TryCreate(new Uri(first.GetLeftPart(UriPartial.Authority)), href, out var rebased))
+                return rebased.ToString();
+            return href;
+        }
+
+
+
         // ---------------------------------------------------------------------
         // Mount info: SVM -> NFS IPs + volumes
         // ---------------------------------------------------------------------
@@ -160,91 +216,194 @@ namespace BareProx.Services
 
             var controller = await _context.NetappControllers
                 .AsNoTracking()
-                .FirstOrDefaultAsync(c => c.Id == controllerId, ct);
+                .FirstOrDefaultAsync(c => c.Id == controllerId, ct)
+                ?? throw new Exception($"NetApp controller {controllerId} not found.");
 
-            if (controller == null)
-            {
-                _logger.LogError("NetApp controller {Id} not found.", controllerId);
-                throw new Exception("NetApp controller not found.");
-            }
-
-            var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+            var http = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
             baseUrl = EnsureSlash(baseUrl);
 
             try
             {
-                // NFS data LIFs per SVM
-                var interfaceUrl = $"{baseUrl}network/ip/interfaces?fields=ip.address,svm.name,services&services=data_nfs";
-                _logger.LogDebug("Fetching data LIFs: {Url}", interfaceUrl);
-                var interfaceResponse = await httpClient.GetAsync(interfaceUrl, ct);
-                if (!interfaceResponse.IsSuccessStatusCode)
+                // -----------------------------------------------------------------
+                // 1) SVM -> NFS LIF IPs
+                // -----------------------------------------------------------------
+                var lifUrl = $"{baseUrl}network/ip/interfaces" +
+                             "?fields=ip.address,svm.name,services,enabled,state,scope" +
+                             "&max_records=10000";
+                _logger.LogDebug("Fetching LIFs: {Url}", lifUrl);
+
+                using var lifResp = await http.GetAsync(lifUrl, ct);
+                var lifJson = await lifResp.Content.ReadAsStringAsync(ct);
+                if (!lifResp.IsSuccessStatusCode)
                 {
-                    var body = await interfaceResponse.Content.ReadAsStringAsync(ct);
-                    _logger.LogWarning("Interface list failed: {Status} {Body}", interfaceResponse.StatusCode, body);
+                    _logger.LogWarning("Interface list failed: {Status} {Body}", lifResp.StatusCode, lifJson);
+                    lifResp.EnsureSuccessStatusCode();
                 }
-                interfaceResponse.EnsureSuccessStatusCode();
 
-                var interfaceJson = await interfaceResponse.Content.ReadAsStringAsync(ct);
-                using var interfaceDoc = JsonDocument.Parse(interfaceJson);
-                var interfaceData = interfaceDoc.RootElement.GetProperty("records");
-
-                var svmToIps = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-                foreach (var iface in interfaceData.EnumerateArray())
+                var svmToIps = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+                using (var lifDoc = JsonDocument.Parse(lifJson))
                 {
-                    var ip = iface.GetProperty("ip").GetProperty("address").GetString();
-                    var svm = iface.GetProperty("svm").GetProperty("name").GetString();
-
-                    if (string.IsNullOrWhiteSpace(ip) || string.IsNullOrWhiteSpace(svm))
-                        continue;
-
-                    if (!svmToIps.TryGetValue(svm, out var list))
+                    if (lifDoc.RootElement.TryGetProperty("records", out var recs) && recs.ValueKind == JsonValueKind.Array)
                     {
-                        list = new List<string>();
-                        svmToIps[svm] = list;
+                        foreach (var lif in recs.EnumerateArray())
+                        {
+                            // enabled + state == "up"
+                            var enabled = lif.TryGetProperty("enabled", out var pEn) && pEn.ValueKind == JsonValueKind.True;
+                            if (!enabled) continue;
+
+                            var up = lif.TryGetProperty("state", out var pState) &&
+                                     pState.ValueKind == JsonValueKind.String &&
+                                     string.Equals(pState.GetString(), "up", StringComparison.OrdinalIgnoreCase);
+                            if (!up) continue;
+
+                            // scope must be "svm"
+                            var isSvm = lif.TryGetProperty("scope", out var pScope) &&
+                                        pScope.ValueKind == JsonValueKind.String &&
+                                        string.Equals(pScope.GetString(), "svm", StringComparison.OrdinalIgnoreCase);
+                            if (!isSvm) continue;
+
+                            // services must include "nfs" (flat array)
+                            bool hasNfs = false;
+                            if (lif.TryGetProperty("services", out var svcs) && svcs.ValueKind == JsonValueKind.Array)
+                            {
+                                foreach (var s in svcs.EnumerateArray())
+                                {
+                                    if (s.ValueKind == JsonValueKind.String &&
+                                        (s.GetString()?.IndexOf("nfs", StringComparison.OrdinalIgnoreCase) ?? -1) >= 0)
+                                    {
+                                        hasNfs = true; break;
+                                    }
+                                }
+                            }
+                            if (!hasNfs) continue;
+
+                            // get ip.address
+                            string? ip = null;
+                            if (lif.TryGetProperty("ip", out var pIp) && pIp.ValueKind == JsonValueKind.Object &&
+                                pIp.TryGetProperty("address", out var pAddr) && pAddr.ValueKind == JsonValueKind.String)
+                            {
+                                ip = pAddr.GetString();
+                            }
+
+                            // get svm.name
+                            string? svm = null;
+                            if (lif.TryGetProperty("svm", out var pSvm) && pSvm.ValueKind == JsonValueKind.Object &&
+                                pSvm.TryGetProperty("name", out var pSvmName) && pSvmName.ValueKind == JsonValueKind.String)
+                            {
+                                svm = pSvmName.GetString();
+                            }
+
+                            if (string.IsNullOrWhiteSpace(ip) || string.IsNullOrWhiteSpace(svm)) continue;
+
+                            if (!svmToIps.TryGetValue(svm, out var set))
+                            {
+                                set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                                svmToIps[svm] = set;
+                            }
+                            set.Add(ip);
+                        }
                     }
-                    list.Add(ip);
                 }
 
-                _logger.LogDebug("SVMs with data LIFs: {Count}", svmToIps.Count);
 
-                // All volumes with svm.name
-                var volumesUrl = $"{baseUrl}storage/volumes?fields=name,svm.name";
-                _logger.LogDebug("Fetching volumes: {Url}", volumesUrl);
-                var volumesResponse = await httpClient.GetAsync(volumesUrl, ct);
-                if (!volumesResponse.IsSuccessStatusCode)
+                _logger.LogDebug("SVMs with NFS LIFs: {Count}", svmToIps.Count);
+
+                // -----------------------------------------------------------------
+                // 2) Volumes (name, uuid, svm.name, nas.path, snapshot_locking_enabled)
+                // -----------------------------------------------------------------
+                var volUrl = $"{baseUrl}storage/volumes" +
+                             "?fields=name,uuid,svm.name,nas.path,snapshot_locking_enabled" +
+                             "&max_records=10000";
+                _logger.LogDebug("Fetching volumes: {Url}", volUrl);
+
+                using var volResp = await http.GetAsync(volUrl, ct);
+                var volJson = await volResp.Content.ReadAsStringAsync(ct);
+                if (!volResp.IsSuccessStatusCode)
                 {
-                    var body = await volumesResponse.Content.ReadAsStringAsync(ct);
-                    _logger.LogWarning("Volume list failed: {Status} {Body}", volumesResponse.StatusCode, body);
+                    _logger.LogWarning("Volume list failed: {Status} {Body}", volResp.StatusCode, volJson);
+                    volResp.EnsureSuccessStatusCode();
                 }
-                volumesResponse.EnsureSuccessStatusCode();
-
-                var volumesJson = await volumesResponse.Content.ReadAsStringAsync(ct);
-                using var volumesDoc = JsonDocument.Parse(volumesJson);
-                var volumeData = volumesDoc.RootElement.GetProperty("records");
 
                 var result = new List<NetappMountInfo>();
-                foreach (var volume in volumeData.EnumerateArray())
+                using (var volDoc = JsonDocument.Parse(volJson))
                 {
-                    var volumeName = volume.GetProperty("name").GetString();
-                    var svmName = volume.GetProperty("svm").GetProperty("name").GetString();
-                    if (string.IsNullOrWhiteSpace(volumeName) || string.IsNullOrWhiteSpace(svmName))
-                        continue;
+                    if (!volDoc.RootElement.TryGetProperty("records", out var recs) || recs.ValueKind != JsonValueKind.Array)
+                        return result;
 
-                    if (!svmToIps.TryGetValue(svmName, out var mountIps) || mountIps.Count == 0)
-                        continue;
-
-                    foreach (var mountIp in mountIps)
+                    foreach (var vol in recs.EnumerateArray())
                     {
-                        result.Add(new NetappMountInfo
+                        var volName = vol.TryGetProperty("name", out var pName) && pName.ValueKind == JsonValueKind.String
+                            ? pName.GetString()
+                            : null;
+                        if (string.IsNullOrWhiteSpace(volName)) continue;
+
+                        var uuid = vol.TryGetProperty("uuid", out var pUuid) && pUuid.ValueKind == JsonValueKind.String
+                            ? pUuid.GetString()
+                            : null;
+
+                        string? svmName = null;
+                        if (vol.TryGetProperty("svm", out var pSvm) &&
+                            pSvm.TryGetProperty("name", out var pSvmName) &&
+                            pSvmName.ValueKind == JsonValueKind.String)
                         {
-                            VolumeName = volumeName,
-                            VserverName = svmName,
-                            MountPath = $"{mountIp}:/{volumeName}", // NOTE: assumes junction == volumeName
-                            MountIp = mountIp,
-                            NetappControllerId = controllerId,
-                        });
+                            svmName = pSvmName.GetString();
+                        }
+                        if (string.IsNullOrWhiteSpace(svmName)) continue;
+
+                        // nas.path -> junction
+                        string? junction = null;
+                        if (vol.TryGetProperty("nas", out var pNas) &&
+                            pNas.TryGetProperty("path", out var pPath) &&
+                            pPath.ValueKind == JsonValueKind.String)
+                        {
+                            junction = pPath.GetString();
+                        }
+
+                        if (string.IsNullOrWhiteSpace(junction)) junction = null;
+                        else if (!junction.StartsWith("/", StringComparison.Ordinal)) junction = "/" + junction;
+
+                        // snapshot_locking_enabled (nullable)
+                        bool? snaplockEnabled = null;
+                        if (vol.TryGetProperty("snapshot_locking_enabled", out var pSle))
+                        {
+                            if (pSle.ValueKind == JsonValueKind.True) snaplockEnabled = true;
+                            else if (pSle.ValueKind == JsonValueKind.False) snaplockEnabled = false;
+                        }
+
+                        if (!svmToIps.TryGetValue(svmName!, out var ips) || ips.Count == 0)
+                            continue;
+
+                        var ipList = ips.Where(s => !string.IsNullOrWhiteSpace(s))
+                                        .Select(s => s.Trim())
+                                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                                        .ToList();
+
+                        var mountIpsJoined = ipList.Count > 0 ? string.Join(",", ipList) : null;
+                        var effectiveExport = junction ?? ("/" + volName);
+
+                        foreach (var ip in ipList)
+                        {
+                            result.Add(new NetappMountInfo
+                            {
+                                VolumeName = volName!,
+                                Uuid = uuid,
+                                VserverName = svmName!,
+                                JunctionPath = junction,
+                                MountPath = $"{ip}:{effectiveExport}",
+                                MountIp = ip,
+                                MountIps = mountIpsJoined,              // all SVM NFS IPs for this volume
+                                SnapshotLockingEnabled = snaplockEnabled,
+                                NetappControllerId = controllerId
+                            });
+                        }
                     }
                 }
+
+                // De-dupe identical rows
+                result = result
+                    .GroupBy(r => (r.NetappControllerId, r.VserverName, r.VolumeName, r.MountIp, r.MountPath))
+                    .Select(g => g.First())
+                    .ToList();
 
                 _logger.LogInformation("Built mount info: {Count} entries.", result.Count);
                 return result;
@@ -257,7 +416,7 @@ namespace BareProx.Services
             catch (HttpRequestException ex)
             {
                 _logger.LogError(ex, "HTTP error while fetching mount info.");
-                throw new Exception("Failed to retrieve volume mount info from NetApp API.", ex);
+                throw new Exception("Failed to retrieve NetApp volumes/LIFs.", ex);
             }
             catch (Exception ex)
             {
@@ -265,6 +424,188 @@ namespace BareProx.Services
                 throw;
             }
         }
+
+        public async Task<List<NetappMountInfo>> GetVolumesWithMountInfoByUuidAsync(int controllerId, string volumeUuid, CancellationToken ct = default)
+        {
+            using var scope = _logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["op"] = "GetVolumesWithMountInfoByUuid",
+                ["controllerId"] = controllerId,
+                ["uuid"] = volumeUuid
+            });
+
+            var result = new List<NetappMountInfo>();
+
+            if (string.IsNullOrWhiteSpace(volumeUuid))
+                return result;
+
+            var controller = await _context.NetappControllers
+                .AsNoTracking()
+                .FirstOrDefaultAsync(c => c.Id == controllerId, ct)
+                ?? throw new Exception($"NetApp controller {controllerId} not found.");
+
+            var http = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+            baseUrl = EnsureSlash(baseUrl);
+
+            // 1) Fetch volume by UUID (name, svm, nas.path, snapshot_locking_enabled)
+            var volUrl = $"{baseUrl}storage/volumes/{volumeUuid}?fields=name,uuid,svm.name,nas.path,snapshot_locking_enabled";
+            _logger.LogDebug("Fetching volume by uuid: {Url}", volUrl);
+
+            using var volResp = await http.GetAsync(volUrl, ct);
+            var volBody = await volResp.Content.ReadAsStringAsync(ct);
+            if (!volResp.IsSuccessStatusCode)
+            {
+                if ((int)volResp.StatusCode == 404)
+                {
+                    _logger.LogInformation("Volume uuid {Uuid} not found on controller {Ctl}.", volumeUuid, controllerId);
+                    return result; // empty list
+                }
+                _logger.LogWarning("Volume fetch failed: {Status} {Body}", volResp.StatusCode, volBody);
+                volResp.EnsureSuccessStatusCode();
+            }
+
+            using var volDoc = JsonDocument.Parse(volBody);
+            var root = volDoc.RootElement;
+
+            var volName = root.TryGetProperty("name", out var pName) && pName.ValueKind == JsonValueKind.String
+                ? pName.GetString()
+                : null;
+
+            string? svmName = null;
+            if (root.TryGetProperty("svm", out var pSvm) &&
+                pSvm.ValueKind == JsonValueKind.Object &&
+                pSvm.TryGetProperty("name", out var pSvmName) &&
+                pSvmName.ValueKind == JsonValueKind.String)
+            {
+                svmName = pSvmName.GetString();
+            }
+
+            // nas.path -> junction
+            string? junction = null;
+            if (root.TryGetProperty("nas", out var pNas) &&
+                pNas.ValueKind == JsonValueKind.Object &&
+                pNas.TryGetProperty("path", out var pPath) &&
+                pPath.ValueKind == JsonValueKind.String)
+            {
+                junction = pPath.GetString();
+            }
+            if (!string.IsNullOrWhiteSpace(junction) && !junction.StartsWith("/", StringComparison.Ordinal))
+                junction = "/" + junction;
+
+            // snapshot_locking_enabled
+            bool? snaplockEnabled = null;
+            if (root.TryGetProperty("snapshot_locking_enabled", out var pSle))
+            {
+                if (pSle.ValueKind == JsonValueKind.True) snaplockEnabled = true;
+                else if (pSle.ValueKind == JsonValueKind.False) snaplockEnabled = false;
+            }
+
+            if (string.IsNullOrWhiteSpace(volName) || string.IsNullOrWhiteSpace(svmName))
+                return result;
+
+            // 2) Fetch NFS LIF IPs for this SVM
+            var ips = await GetSvmNfsIpsAsync(http, baseUrl, svmName!, ct);
+            if (ips.Count == 0)
+                return result;
+
+            var ipList = ips.Where(s => !string.IsNullOrWhiteSpace(s))
+                            .Select(s => s.Trim())
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+
+            var mountIpsJoined = ipList.Count > 0 ? string.Join(",", ipList) : null;
+            var effectiveExport = !string.IsNullOrWhiteSpace(junction) ? junction! : ("/" + volName);
+
+            foreach (var ip in ipList)
+            {
+                result.Add(new NetappMountInfo
+                {
+                    VolumeName = volName!,
+                    Uuid = volumeUuid,
+                    VserverName = svmName!,
+                    JunctionPath = string.IsNullOrWhiteSpace(junction) ? null : junction,
+                    MountPath = $"{ip}:{effectiveExport}",
+                    MountIp = ip,
+                    MountIps = mountIpsJoined,
+                    SnapshotLockingEnabled = snaplockEnabled,
+                    NetappControllerId = controllerId
+                });
+            }
+
+            // De-dupe identical rows
+            result = result
+                .GroupBy(r => (r.NetappControllerId, r.VserverName, r.VolumeName, r.MountIp, r.MountPath))
+                .Select(g => g.First())
+                .ToList();
+
+            return result;
+        }
+
+        // Helper: NFS LIF IPs for a specific SVM (enabled + up + scope=svm + contains 'nfs')
+        private async Task<List<string>> GetSvmNfsIpsAsync(HttpClient http, string baseUrl, string svmName, CancellationToken ct)
+        {
+            var lifUrl = $"{baseUrl}network/ip/interfaces" +
+                         $"?svm.name={Uri.EscapeDataString(svmName)}" +
+                         "&fields=ip.address,svm.name,services,enabled,state,scope" +
+                         "&max_records=10000";
+            _logger.LogDebug("Fetching LIFs for SVM {SVM}: {Url}", svmName, lifUrl);
+
+            using var lifResp = await http.GetAsync(lifUrl, ct);
+            var lifJson = await lifResp.Content.ReadAsStringAsync(ct);
+            if (!lifResp.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Interface list failed: {Status} {Body}", lifResp.StatusCode, lifJson);
+                lifResp.EnsureSuccessStatusCode();
+            }
+
+            var ips = new List<string>();
+            using var lifDoc = JsonDocument.Parse(lifJson);
+            if (lifDoc.RootElement.TryGetProperty("records", out var recs) && recs.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var lif in recs.EnumerateArray())
+                {
+                    var enabled = lif.TryGetProperty("enabled", out var pEn) && pEn.ValueKind == JsonValueKind.True;
+                    if (!enabled) continue;
+
+                    var up = lif.TryGetProperty("state", out var pState) &&
+                             pState.ValueKind == JsonValueKind.String &&
+                             string.Equals(pState.GetString(), "up", StringComparison.OrdinalIgnoreCase);
+                    if (!up) continue;
+
+                    var isSvm = lif.TryGetProperty("scope", out var pScope) &&
+                                pScope.ValueKind == JsonValueKind.String &&
+                                string.Equals(pScope.GetString(), "svm", StringComparison.OrdinalIgnoreCase);
+                    if (!isSvm) continue;
+
+                    bool hasNfs = false;
+                    if (lif.TryGetProperty("services", out var svcs) && svcs.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var s in svcs.EnumerateArray())
+                        {
+                            if (s.ValueKind == JsonValueKind.String &&
+                                (s.GetString()?.IndexOf("nfs", StringComparison.OrdinalIgnoreCase) ?? -1) >= 0)
+                            {
+                                hasNfs = true; break;
+                            }
+                        }
+                    }
+                    if (!hasNfs) continue;
+
+                    if (lif.TryGetProperty("ip", out var pIp) &&
+                        pIp.ValueKind == JsonValueKind.Object &&
+                        pIp.TryGetProperty("address", out var pAddr) &&
+                        pAddr.ValueKind == JsonValueKind.String)
+                    {
+                        var ip = pAddr.GetString();
+                        if (!string.IsNullOrWhiteSpace(ip))
+                            ips.Add(ip!);
+                    }
+                }
+            }
+
+            return ips;
+        }
+
 
         // ---------------------------------------------------------------------
         // Volume listing helpers
@@ -615,12 +956,18 @@ namespace BareProx.Services
                 ["uuid"] = volumeUuid
             });
 
+            if (string.IsNullOrWhiteSpace(volumeUuid))
+                throw new ArgumentException("Volume UUID is required.", nameof(volumeUuid));
+
             var controller = await _context.NetappControllers
                 .AsNoTracking()
-                .FirstOrDefaultAsync(c => c.Id == controllerId, ct);
+                .FirstOrDefaultAsync(c => c.Id == controllerId, ct)
+                ?? throw new Exception($"Controller {controllerId} not found.");
 
-            if (controller == null)
-                throw new Exception($"Controller {controllerId} not found.");
+            // Fetch the row we will update (tracking enabled)
+            var selected = await _context.SelectedNetappVolumes
+                .FirstOrDefaultAsync(v => v.Uuid == volumeUuid && v.NetappControllerId == controllerId, ct)
+                ?? throw new Exception($"SelectedNetappVolume {volumeUuid} not found for controller {controllerId}");
 
             var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
             baseUrl = EnsureSlash(baseUrl);
@@ -628,44 +975,73 @@ namespace BareProx.Services
             var url = $"{baseUrl}storage/volumes/{volumeUuid}?fields=space,nas.export_policy.name,snapshot_locking_enabled";
             _logger.LogDebug("Sync GET: {Url}", url);
 
-            var resp = await httpClient.GetAsync(url, ct);
+            using var resp = await httpClient.GetAsync(url, ct);
+
             if (!resp.IsSuccessStatusCode)
             {
                 var body = await resp.Content.ReadAsStringAsync(ct);
                 _logger.LogWarning("Sync fetch failed for {Uuid}: {Status} {Body}", volumeUuid, resp.StatusCode, body);
+
+                // If the volume no longer exists on the array, clear metrics but keep the selection.
+                if ((int)resp.StatusCode == 404)
+                {
+                    selected.SpaceSize = null;
+                    selected.SpaceAvailable = null;
+                    selected.SpaceUsed = null;
+                    selected.ExportPolicyName = null;
+                    selected.SnapshotLockingEnabled = null;
+                    await _context.SaveChangesAsync(ct);
+                    return;
+                }
+
+                resp.EnsureSuccessStatusCode(); // throw for other errors
             }
-            resp.EnsureSuccessStatusCode();
 
             var json = await resp.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
-            var selected = await _context.SelectedNetappVolumes
-                .FirstOrDefaultAsync(v => v.Uuid == volumeUuid && v.NetappControllerId == controllerId, ct);
-            if (selected == null)
-                throw new Exception($"SelectedNetappVolume {volumeUuid} not found for controller {controllerId}");
-
-            if (root.TryGetProperty("space", out var spaceProp))
+            // space.{size,available,used}
+            if (root.TryGetProperty("space", out var spaceProp) && spaceProp.ValueKind == JsonValueKind.Object)
             {
-                selected.SpaceSize = spaceProp.TryGetProperty("size", out var sizeProp) ? sizeProp.GetInt64() : (long?)null;
-                selected.SpaceAvailable = spaceProp.TryGetProperty("available", out var availProp) ? availProp.GetInt64() : (long?)null;
-                selected.SpaceUsed = spaceProp.TryGetProperty("used", out var usedProp) ? usedProp.GetInt64() : (long?)null;
+                selected.SpaceSize = spaceProp.TryGetProperty("size", out var sizeProp) && sizeProp.ValueKind == JsonValueKind.Number
+                    ? sizeProp.GetInt64()
+                    : (long?)null;
+
+                selected.SpaceAvailable = spaceProp.TryGetProperty("available", out var availProp) && availProp.ValueKind == JsonValueKind.Number
+                    ? availProp.GetInt64()
+                    : (long?)null;
+
+                selected.SpaceUsed = spaceProp.TryGetProperty("used", out var usedProp) && usedProp.ValueKind == JsonValueKind.Number
+                    ? usedProp.GetInt64()
+                    : (long?)null;
+            }
+            else
+            {
+                selected.SpaceSize = null;
+                selected.SpaceAvailable = null;
+                selected.SpaceUsed = null;
             }
 
+            // nas.export_policy.name
             selected.ExportPolicyName =
-                root.TryGetProperty("nas", out var nasProp)
-                && nasProp.TryGetProperty("export_policy", out var expPolProp)
-                && expPolProp.TryGetProperty("name", out var expNameProp)
-                    ? expNameProp.GetString()
+                root.TryGetProperty("nas", out var nasProp) && nasProp.ValueKind == JsonValueKind.Object
+                && nasProp.TryGetProperty("export_policy", out var expPolProp) && expPolProp.ValueKind == JsonValueKind.Object
+                && expPolProp.TryGetProperty("name", out var expNameProp) && expNameProp.ValueKind == JsonValueKind.String
+                    ? (expNameProp.GetString() ?? string.Empty).Trim()
                     : null;
 
+            // snapshot_locking_enabled
             selected.SnapshotLockingEnabled =
-                root.TryGetProperty("snapshot_locking_enabled", out var snapLockProp)
-                    ? snapLockProp.GetBoolean()
-                    : (bool?)null;
+                root.TryGetProperty("snapshot_locking_enabled", out var snapLockProp) && snapLockProp.ValueKind == JsonValueKind.True
+                    ? true
+                    : root.TryGetProperty("snapshot_locking_enabled", out snapLockProp) && snapLockProp.ValueKind == JsonValueKind.False
+                        ? (bool?)false
+                        : (bool?)null;
 
             await _context.SaveChangesAsync(ct);
             _logger.LogInformation("Synced selected volume {Uuid}.", volumeUuid);
         }
+
     }
 }

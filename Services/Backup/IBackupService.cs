@@ -32,27 +32,38 @@ namespace BareProx.Services.Backup
         /// Starts a storage-wide backup job and returns true if the job finished successfully.
         /// </summary>
         Task<bool> StartBackupAsync(
-            string storageName,
-            int? SelectedNetappVolumeId,
-            bool isApplicationAware,
-            string label,
-            int clusterId,
-            int netappControllerId,
-            int retentionCount,
-            string retentionUnit,
-            bool enableIoFreeze,
-            bool useProxmoxSnapshot,
-            bool withMemory,
-            bool dontTrySuspend,
-            int scheduleId,
-            bool replicateToSecondary,
+        // identity / scope
+        string storageName,
+        int? selectedNetappVolumeId,
+        string? volumeUuid,
 
-            // Locking parameters
-            bool enableLocking,
-            int? lockRetentionCount,
-            string? lockRetentionUnit,
+        // context
+        bool isApplicationAware,
+        string label,
+        int clusterId,
+        int netappControllerId,
 
-            IEnumerable<string>? excludedVmIds = null,
-            CancellationToken ct = default);
+        // policy
+        int retentionCount,
+        string retentionUnit,
+
+        // behavior
+        bool enableIoFreeze,
+        bool useProxmoxSnapshot,
+        bool withMemory,
+        bool dontTrySuspend,
+
+        // scheduling / replication / locking
+        int scheduleId,
+        bool replicateToSecondary,
+        bool enableLocking,
+        int? lockRetentionCount,
+        string? lockRetentionUnit,
+
+        // extras
+        IEnumerable<string>? excludedVmIds = null,
+        CancellationToken ct = default
+        );
     }
+
 }

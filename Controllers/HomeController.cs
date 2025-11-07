@@ -33,18 +33,26 @@ namespace BareProx.Controllers
     {
         private readonly ApplicationDbContext _context;
         private readonly ProxmoxService _proxmoxService;
+        private readonly IDbFactory _dbf;          // main DB (ApplicationDbContext)
+        private readonly IQueryDbFactory _qdbf;    // query/inventory DB (QueryDbContext)
 
-        public HomeController(ApplicationDbContext context, ProxmoxService proxmoxService)
+        public HomeController(ApplicationDbContext context, ProxmoxService proxmoxService, IDbFactory dbf, IQueryDbFactory qdbf)
         {
             _context = context;
             _proxmoxService = proxmoxService;
+            _dbf = dbf;
+            _qdbf = qdbf;
         }
 
         public async Task<IActionResult> Index()
         {
+            var ct = HttpContext.RequestAborted;
             var since = DateTime.UtcNow.AddHours(-24);
 
-            ViewBag.RecentJobs = await _context.Jobs
+            // ---------- MAIN DB (recent jobs) ----------
+            await using var db = await _dbf.CreateAsync(ct);
+            ViewBag.RecentJobs = await db.Jobs
+                .AsNoTracking()
                 .Where(j => j.StartedAt > since && (j.Status == "Failed" || j.Status == "Cancelled"))
                 .OrderByDescending(j => j.StartedAt)
                 .Select(j => new
@@ -55,41 +63,63 @@ namespace BareProx.Controllers
                     j.RelatedVm,
                     j.ErrorMessage
                 })
-                .ToListAsync();
+                .ToListAsync(ct);
 
-            // Helper to strip trailing ", storage ... active" (or any "storage ..." tail) from LastStatusMessage
+            // Helper to strip trailing ", storage ... active" (or any "storage ..." tail)
             static string TrimStorageTail(string? s)
             {
                 if (string.IsNullOrWhiteSpace(s)) return string.Empty;
                 return Regex.Replace(s, @"\s*,?\s*storage\s+.*$", "", RegexOptions.IgnoreCase).Trim();
             }
 
-            // Load clusters and hosts
-            var clusters = await _context.ProxmoxClusters
-                .Include(c => c.Hosts)
-                .ToListAsync();
+            // ---------- QUERY DB (cluster + host status) ----------
+            await using var qdb = await _qdbf.CreateAsync(ct);
 
-            // Project for the view
-            var proxmoxClusters = clusters.Select(cluster => new
-            {
-                Name = cluster.Name,
-                Status = cluster.LastStatus ?? "Unknown",
-                Hosts = cluster.Hosts
-                    .OrderBy(h => (h.Hostname ?? h.HostAddress))
-                    .Select(h => new
-                    {
-                        Name = h.Hostname ?? h.HostAddress,
-                        Status = (h.IsOnline == true) ? "Running" : "Offline",
-                        LastMessage = TrimStorageTail(h.LastStatusMessage)
-                    })
-                    .ToList()
-            })
-            .ToList();
+            var clusters = await qdb.InventoryClusterStatuses
+                .AsNoTracking()
+                .ToListAsync(ct);
+
+            var clusterIds = clusters.Select(c => c.ClusterId).ToList();
+
+            var hostStatuses = await qdb.InventoryHostStatuses
+                .AsNoTracking()
+                .Where(h => clusterIds.Contains(h.ClusterId))
+                .ToListAsync(ct);
+
+            // group hosts by cluster and project to dynamic
+            var hostsByCluster = hostStatuses
+                .GroupBy(h => h.ClusterId)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.OrderBy(h => string.IsNullOrWhiteSpace(h.Hostname) ? h.HostAddress : h.Hostname)
+                          .Select(h => new
+                          {
+                              Name = string.IsNullOrWhiteSpace(h.Hostname) ? h.HostAddress : h.Hostname,
+                              Status = h.IsOnline ? "Running" : "Offline",
+                              LastMessage = TrimStorageTail(h.LastStatusMessage)
+                          })
+                          .Cast<dynamic>()      // inner list dynamic
+                          .ToList()
+                );
+
+            // outer projection to dynamic for the view
+            var proxmoxClusters = clusters
+                .OrderBy(c => c.ClusterName ?? $"Cluster {c.ClusterId}")
+                .Select(c => new
+                {
+                    Name = c.ClusterName ?? $"Cluster {c.ClusterId}",
+                    Status = c.LastStatus ?? "Unknown",
+                    Hosts = hostsByCluster.TryGetValue(c.ClusterId, out var list) ? list : new List<dynamic>()
+                })
+                .Cast<dynamic>()              // outer list dynamic
+                .ToList();
 
             ViewBag.ProxmoxClusters = proxmoxClusters;
 
             return View();
         }
+
+
 
         public IActionResult About()
         {
@@ -110,7 +140,7 @@ namespace BareProx.Controllers
             {
                 // If you want to pass dynamic info (version, contact), do it here
                 ViewBag.ProductName = "BareProx";
-                ViewBag.ContactEmail = "admin@example.com"; // TODO: set real contact
+                ViewBag.ContactEmail = "nwtobbe@gmail.com"; 
                 return View();
             }
 

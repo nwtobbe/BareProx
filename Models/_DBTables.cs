@@ -80,14 +80,22 @@ namespace BareProx.Models
         public string Name { get; set; } = default!;
         public string Username { get; set; } = default!;        // include realm, e.g. "root@pam"
         public string PasswordHash { get; set; } = default!;    // encrypted
+        // Prefer token mode when present
+        public bool UseApiToken { get; set; }  // toggle in UI
 
-        // Diagnostics
-        public string? LastStatus { get; set; }
-        public DateTime? LastChecked { get; set; }
-        public bool? HasQuorum { get; set; }
-        public int? OnlineHostCount { get; set; }
-        public int? TotalHostCount { get; set; }
-        public string? LastStatusMessage { get; set; }
+        // Example: "root@pam!bareprox"  (user@realm!tokenid)
+        public string? ApiTokenId { get; set; }
+
+        // Encrypted secret (store with your IEncryptionService)
+        public string? ApiTokenSecretEnc { get; set; }
+
+        public bool HasApiToken() =>
+            UseApiToken &&
+            !string.IsNullOrWhiteSpace(ApiTokenId) &&
+            !string.IsNullOrWhiteSpace(ApiTokenSecretEnc);
+        public DateTime? ApiTokenExpiresUtc { get; set; }
+        public int? ApiTokenLifetimeDays { get; set; }       // default in code: 180
+        public int ApiTokenRenewBeforeMinutes { get; set; } = 59; // rotate 59m before expiry
 
         public ICollection<ProxmoxHost> Hosts { get; set; } = new List<ProxmoxHost>();
     }
@@ -100,13 +108,8 @@ namespace BareProx.Models
         // Existing property
         public string HostAddress { get; set; }
 
-        // New property for hostname
+        //  property for hostname
         public string? Hostname { get; set; }
-
-        // New status/health columns:
-        public bool? IsOnline { get; set; }
-        public string? LastStatus { get; set; }      // e.g. "Online", "Offline", "Error"
-        public string? LastStatusMessage { get; set; } // Any error or status description
         public DateTime? LastChecked { get; set; }
         public ProxmoxCluster Cluster { get; set; }
         // NEW: Host-scoped auth
@@ -153,22 +156,7 @@ namespace BareProx.Models
         public bool? SnapshotLockingEnabled { get; set; } // maps to "snapshot_locking_enabled"
         public bool? Disabled { get; set; }              // Is this volume disabled for selection?
     }
-    public class NetappSnapshot
-    {
-        public int Id { get; set; }
-        public int JobId { get; set; }
-        public string SnapshotName { get; set; }
-        public string PrimaryVolume { get; set; } = null!;
-        public string? SecondaryVolume { get; set; }
-        public int PrimaryControllerId { get; set; }
-        public int? SecondaryControllerId { get; set; }
-        public bool ExistsOnPrimary { get; set; }
-        public bool ExistsOnSecondary { get; set; }
-        public DateTime CreatedAt { get; set; }         // Local time (converted via AppTimeZoneService)
-        public string SnapmirrorLabel { get; set; }     // Optional
-        public bool IsReplicated { get; set; }          // Did replication succeed
-        public DateTime LastChecked { get; set; }
-    }
+
     public class SnapMirrorRelation
     {
         public int Id { get; set; }
@@ -216,6 +204,7 @@ namespace BareProx.Models
         public string Name { get; set; }
         public string StorageName { get; set; }
         public int? SelectedNetappVolumeId { get; set; }
+        public string? VolumeUuid { get; set; }          // ONTAP volume UUID (primary)
         public string Schedule { get; set; }
         public string Frequency { get; set; }
         public TimeSpan? TimeOfDay { get; set; }
@@ -249,6 +238,8 @@ namespace BareProx.Models
         public string StorageName { get; set; }
         public string SnapshotName { get; set; }
         public int ControllerId { get; set; }
+        public string? VolumeUuid { get; set; }          // ONTAP volume UUID (primary)
+        public int? SelectedNetappVolumeId { get; set; }
         public string Label { get; set; }
         public string ConfigurationJson { get; set; }
         public int RetentionCount { get; set; }

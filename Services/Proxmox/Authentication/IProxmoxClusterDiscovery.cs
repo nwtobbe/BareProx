@@ -18,6 +18,9 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
+using System;
+using System.Threading;
+using System.Threading.Tasks;
 using BareProx.Models;
 
 namespace BareProx.Services.Proxmox.Authentication
@@ -25,23 +28,30 @@ namespace BareProx.Services.Proxmox.Authentication
     public interface IProxmoxClusterDiscoveryService
     {
         /// <summary>
-        /// Full discovery: SSH to seed host, read /etc/pve/.members, build node list with reverse-DNS + SSH checks.
-        /// Returns logs for UI.
+        /// Full discovery using the Proxmox HTTP API:
+        /// - Authenticates against the seed host
+        /// - Reads /cluster/status to discover cluster name and nodes
+        /// - Optionally probes node APIs
+        /// All progress is written to result.Logs and streamed via the optional log callback.
         /// </summary>
         Task<ProxmoxClusterDiscoveryResult> DiscoverAsync(
             string seedHost,
             string username,
             string password,
+            Action<string>? log = null,
             CancellationToken ct = default);
 
         /// <summary>
-        /// Lightweight verification used before persisting:
-        /// checks SSH connectivity + that /etc/pve/.members is readable and structurally sane.
+        /// Lightweight verification using the Proxmox HTTP API:
+        /// - Authenticates against the seed host
+        /// - Confirms /cluster/status is reachable and structurally valid
+        /// All progress is written to result.Logs and streamed via the optional log callback.
         /// </summary>
         Task<ProxmoxClusterDiscoveryResult> VerifyAsync(
             string seedHost,
             string username,
             string password,
+            Action<string>? log = null,
             CancellationToken ct = default);
     }
 }

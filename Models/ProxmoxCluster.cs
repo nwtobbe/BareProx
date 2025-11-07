@@ -19,6 +19,7 @@
  */
 
 
+using System.ComponentModel.DataAnnotations;
 using System.Text.Json.Serialization;
 
 namespace BareProx.Models
@@ -50,6 +51,7 @@ namespace BareProx.Models
         public int NetappControllerId { get; set; }
         public bool IsReplicable { get; set; }
         public bool SnapshotLockingEnabled { get; set; }  // New property for snapshot locking
+        public string? VolumeUuid { get; set; }
     }
 
     public class StorageConfig
@@ -102,6 +104,32 @@ namespace BareProx.Models
         public bool SshOk { get; set; }
     }
 
+    // ---- ViewModel for auth options (place wherever you keep VMs) ----
+    public class ProxmoxClusterAuthOptionsVm : IValidatableObject
+    {
+        public int Id { get; set; }
+        public bool UseApiToken { get; set; } = true;
+        public string? ApiTokenId { get; set; } // user@realm!tokenid or just tokenid
+        public int? ApiTokenLifetimeDays { get; set; } = 180;
+        public int ApiTokenRenewBeforeMinutes { get; set; } = 1440;
 
+        // Info only
+        public DateTime? ApiTokenExpiresUtc { get; set; }
+        public string? ApiTokenSecretPreview { get; set; }
+        public bool HasSecret => !string.IsNullOrWhiteSpace(ApiTokenSecretPreview);
+
+        public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+        {
+            if (!UseApiToken) yield break;
+            var days = ApiTokenLifetimeDays ?? 180;
+            var lifetimeMinutes = days * 24 * 60;
+            if (ApiTokenRenewBeforeMinutes >= lifetimeMinutes)
+            {
+                yield return new ValidationResult(
+                    $"Renew-before must be lower than the lifetime ({lifetimeMinutes} minutes).",
+                    new[] { nameof(ApiTokenRenewBeforeMinutes) });
+            }
+        }
+    }
 
 }

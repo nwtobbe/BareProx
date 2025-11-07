@@ -18,365 +18,270 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
-
 using BareProx.Data;
-using BareProx.Models;
-using BareProx.Services.Netapp;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
 namespace BareProx.Services.Background
 {
-    public class JanitorService : BackgroundService
+    /// <summary>
+    /// DB-only housekeeping: orphan purges and old/stuck job pruning.
+    /// NetApp snapshot retention & presence checks are enforced by CollectionService.
+    /// Snapshot tracking is stored in the Query DB.
+    /// </summary>
+    public sealed class JanitorService : BackgroundService
     {
-        private readonly IServiceProvider _services;
-        private readonly TimeSpan _interval = TimeSpan.FromMinutes(5);
+        private readonly IDbFactory _dbf;
+        private readonly IQueryDbFactory _qdbf;
         private readonly ILogger<JanitorService> _logger;
 
-        public JanitorService(IServiceProvider services, ILogger<JanitorService> logger)
+        private static readonly TimeSpan Cadence = TimeSpan.FromMinutes(5);
+
+        public JanitorService(
+            IDbFactory dbf,
+            IQueryDbFactory qdbf,
+            ILogger<JanitorService> logger)
         {
-            _services = services;
+            _dbf = dbf;
+            _qdbf = qdbf;
             _logger = logger;
         }
 
+        private static readonly TimeSpan WarmupMaxWait = TimeSpan.FromMinutes(3);
+        private static readonly TimeSpan WarmupPoll = TimeSpan.FromSeconds(10);
+
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            while (!stoppingToken.IsCancellationRequested)
+            // --- Warm-up: avoid pruning before CollectionService seeds tracker after fresh boot/DB move ---
+            var warmupMaxWait = TimeSpan.FromMinutes(3);
+            var warmupPoll = TimeSpan.FromSeconds(10);
+
+            try
             {
-                try
+                await using var main = await _dbf.CreateAsync(stoppingToken);
+                await using var qdb = await _qdbf.CreateAsync(stoppingToken);
+
+                bool trackerEmpty = !await qdb.NetappSnapshots.AnyAsync(stoppingToken);
+
+                // Only bother warming up if there's anything historical that we might prune
+                bool hasAnythingToPrune =
+                    await main.BackupRecords.AnyAsync(stoppingToken) ||
+                    await main.Jobs.AnyAsync(stoppingToken);
+
+                if (trackerEmpty && hasAnythingToPrune)
                 {
-                    // New: prune orphaned SelectedStorages before other cleanups
-                    await CleanupOrphanedSelectedStorages(stoppingToken);
+                    _logger.LogInformation("Janitor: snapshot tracker empty; delaying cleanup until tracker is warm.");
 
-                    await CleanupExpired(stoppingToken);
-                    await TrackNetappSnapshots(stoppingToken);
-                    await PruneOldOrStuckJobs(stoppingToken);
+                    var deadline = DateTime.UtcNow + warmupMaxWait;
+                    while (DateTime.UtcNow < deadline && !stoppingToken.IsCancellationRequested)
+                    {
+                        // Re-check tracker or a readiness flag set by CollectionService
+                        bool trackerHasRows = await qdb.NetappSnapshots.AnyAsync(stoppingToken);
+                        var meta = await qdb.InventoryMetadata.FindAsync(new object[] { "SnapshotTrackerReady" }, stoppingToken);
+                        bool flaggedReady = string.Equals(meta?.Value, "true", StringComparison.OrdinalIgnoreCase);
 
-                    //await CleanupOrphanedBackupRecords(stoppingToken);
+                        if (trackerHasRows || flaggedReady)
+                        {
+                            _logger.LogInformation("Janitor: tracker is warm; starting regular maintenance.");
+                            break;
+                        }
+
+                        _logger.LogDebug("Janitor warm-up: tracker not ready; re-checking in {s}s.", warmupPoll.TotalSeconds);
+                        await Task.Delay(warmupPoll, stoppingToken);
+                    }
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Janitor pass failed");
-                }
-
-                await Task.Delay(_interval, stoppingToken);
             }
+            catch (OperationCanceledException) { /* shutting down */ }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Janitor: warm-up check failed; continuing with regular loop.");
+            }
+
+            // --- Regular periodic maintenance loop ---
+            var timer = new PeriodicTimer(Cadence);
+            try
+            {
+                do
+                {
+                    try
+                    {
+                        await CleanupOrphanedSelectedStorages(stoppingToken);
+                        await CleanupExpiredDbOnly(stoppingToken); // DB-only cleanup after CollectionService retention
+                        await PruneOldOrStuckJobs(stoppingToken);
+                    }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                    {
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Janitor pass failed.");
+                    }
+                }
+                while (await timer.WaitForNextTickAsync(stoppingToken));
+            }
+            catch (OperationCanceledException) { /* timer canceled */ }
         }
 
-        /// <summary>
-        /// Remove rows from SelectedStorages where ClusterId no longer exists in ProxmoxClusters.
-        /// </summary>
+
         private async Task CleanupOrphanedSelectedStorages(CancellationToken ct)
         {
-            using var scope = _services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            await using var db = await _dbf.CreateAsync(ct);
 
-            // Find orphans via anti-join
             var orphaned = await db.SelectedStorages
                 .Where(ss => !db.ProxmoxClusters.Any(pc => pc.Id == ss.ClusterId))
                 .ToListAsync(ct);
 
             if (orphaned.Count == 0)
             {
-                _logger.LogDebug("SelectedStorages cleanup: no orphaned rows found.");
+                _logger.LogDebug("SelectedStorages cleanup: no orphaned rows.");
                 return;
             }
 
-            // Retry on SQLITE_BUSY like other routines
-            for (int attempt = 0; attempt < 3; attempt++)
+            await WithSqliteBusyRetryAsync(async () =>
             {
-                using var tx = await db.Database.BeginTransactionAsync(ct);
-                try
-                {
-                    db.SelectedStorages.RemoveRange(orphaned);
-                    var affected = await db.SaveChangesAsync(ct);
-                    await tx.CommitAsync(ct);
+                await using var tx = await db.Database.BeginTransactionAsync(ct);
+                db.SelectedStorages.RemoveRange(orphaned);
+                var affected = await db.SaveChangesAsync(ct);
+                await tx.CommitAsync(ct);
 
-                    _logger.LogInformation(
-                        "SelectedStorages cleanup: removed {Count} orphaned rows (no matching ProxmoxClusters).",
-                        affected
-                    );
-                    break;
-                }
-                catch (DbUpdateException ey) when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
-                {
-                    await tx.RollbackAsync(ct);
-                    if (attempt == 2) throw;
-                    await Task.Delay(500, ct);
-                }
-            }
+                _logger.LogInformation("SelectedStorages cleanup: removed {Count} orphaned rows.", affected);
+            }, ct);
         }
 
         /// <summary>
-        /// 1) Delete primary snapshots past retention,
-        ///    verify deletion by re-listing, then remove DB rows only if truly gone.
+        /// DB-only cleanup for expired snapshots that CollectionService has already removed from NetApp.
+        /// Uses QUERY DB NetappSnapshots flags to decide if safe to delete app rows, and prunes those
+        /// NetappSnapshots rows from the QUERY DB once removed.
         /// </summary>
-        private async Task CleanupExpired(CancellationToken ct)
+        private async Task CleanupExpiredDbOnly(CancellationToken ct)
         {
-            using var scope = _services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var netappSnapshotService = scope.ServiceProvider.GetRequiredService<INetappSnapshotService>();
+            await using var main = await _dbf.CreateAsync(ct);
+            await using var qdb = await _qdbf.CreateAsync(ct);
+
             var now = DateTime.UtcNow;
 
-            var relations = await db.SnapMirrorRelations.AsNoTracking().ToListAsync(ct);
-            var relLookup = relations.ToDictionary(
-                r => (r.SourceControllerId, r.SourceVolume),
-                r => r);
-
-            var expired = await db.BackupRecords
+            var records = await main.BackupRecords
                 .Include(r => r.Job)
-                .Where(r =>
-                    (r.RetentionUnit == "Hours" && r.TimeStamp.AddHours(r.RetentionCount) < now) ||
-                    (r.RetentionUnit == "Days" && r.TimeStamp.AddDays(r.RetentionCount) < now) ||
-                    (r.RetentionUnit == "Weeks" && r.TimeStamp.AddDays(r.RetentionCount * 7) < now)
-                )
+                .AsNoTracking()
+                .Select(r => new
+                {
+                    r.Id,
+                    r.JobId,
+                    r.ControllerId,
+                    r.StorageName,
+                    r.SnapshotName,
+                    r.TimeStamp,
+                    r.RetentionCount,
+                    r.RetentionUnit,
+                    JobStatus = r.Job!.Status
+                })
                 .ToListAsync(ct);
 
-            foreach (var grp in expired.GroupBy(r => new
-            {
-                r.JobId,
-                r.StorageName,
-                r.SnapshotName,
-                r.ControllerId
-            }))
-            {
-                var ex = grp.First();
-
-                using var transaction = await db.Database.BeginTransactionAsync(ct);
-
-                try
+            static bool IsExpired(DateTime ts, int count, string? unit, DateTime nowUtc) =>
+                (unit ?? "").ToLowerInvariant() switch
                 {
-                    var deleteRes = await netappSnapshotService.DeleteSnapshotAsync(
-                        ex.ControllerId, ex.StorageName, ex.SnapshotName, ct);
+                    "hours" => ts.AddHours(count) < nowUtc,
+                    "days" => ts.AddDays(count) < nowUtc,
+                    "weeks" => ts.AddDays(7 * count) < nowUtc,
+                    _ => false
+                };
 
-                    if (!deleteRes.Success && !(deleteRes.ErrorMessage?.Contains("not found", StringComparison.OrdinalIgnoreCase) ?? false))
-                    {
-                        _logger.LogWarning("Failed to delete snapshot {snap}: {error}", ex.SnapshotName, deleteRes.ErrorMessage);
-                        continue;
-                    }
+            var jobIds = records.Select(r => r.JobId).Distinct().ToList();
 
-                    // Verify snapshot deletion explicitly
-                    var primarySnapshots = await netappSnapshotService.GetSnapshotsAsync(ex.ControllerId, ex.StorageName, ct);
-                    if (primarySnapshots.Any(n => n.Equals(ex.SnapshotName, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        _logger.LogWarning("Snapshot {snap} still exists on primary after deletion attempt", ex.SnapshotName);
-                        continue;
-                    }
-
-                    // If replicated, keep DB rows and update flags
-                    if (relLookup.TryGetValue((ex.ControllerId, ex.StorageName), out var rel))
-                    {
-                        var secondarySnapshots = await netappSnapshotService.GetSnapshotsAsync(rel.DestinationControllerId, rel.DestinationVolume, ct);
-                        bool existsOnSecondary = secondarySnapshots.Any(n => n.Equals(ex.SnapshotName, StringComparison.OrdinalIgnoreCase));
-
-                        var snapRecord = await db.NetappSnapshots.FirstOrDefaultAsync(s =>
-                            s.JobId == ex.JobId &&
-                            s.SnapshotName == ex.SnapshotName, ct);
-
-                        if (existsOnSecondary)
-                        {
-                            if (snapRecord != null)
-                            {
-                                snapRecord.ExistsOnPrimary = false;
-                                snapRecord.ExistsOnSecondary = true;
-                                snapRecord.SecondaryControllerId = rel.DestinationControllerId;
-                                snapRecord.SecondaryVolume = rel.DestinationVolume;
-                                snapRecord.IsReplicated = true;
-                                snapRecord.LastChecked = now;
-                            }
-
-                            _logger.LogInformation("Snapshot {snap} exists on secondary, preserving record.", ex.SnapshotName);
-                            await db.SaveChangesAsync(ct);
-                            await transaction.CommitAsync(ct);
-                            continue;
-                        }
-                    }
-
-                    // ---- No secondary copy: remove related DB rows ----------------------
-
-                    // Gather VM-result IDs for this job to delete logs by JobVmResultId
-                    var vmResultIds = await db.JobVmResults
-                        .Where(r => r.JobId == ex.JobId)
-                        .Select(r => r.Id)
-                        .ToListAsync(ct);
-
-                    if (vmResultIds.Count > 0)
-                    {
-                        db.JobVmLogs.RemoveRange(
-                            db.JobVmLogs.Where(l => vmResultIds.Contains(l.JobVmResultId)));
-                    }
-
-                    db.JobVmResults.RemoveRange(
-                        db.JobVmResults.Where(r => r.JobId == ex.JobId));
-
-                    db.NetappSnapshots.RemoveRange(
-                        db.NetappSnapshots.Where(s => s.JobId == ex.JobId && s.SnapshotName == ex.SnapshotName));
-
-                    db.BackupRecords.RemoveRange(grp);
-
-                    if (ex.Job != null)
-                        db.Jobs.Remove(ex.Job);
-
-                    await db.SaveChangesAsync(ct);
-                    await transaction.CommitAsync(ct);
-
-                    _logger.LogInformation("Successfully removed snapshot {snap} and related records.", ex.SnapshotName);
-                }
-                catch (Exception e)
-                {
-                    await transaction.RollbackAsync(ct);
-                    _logger.LogError(e, "Error processing expired snapshot {snap}", ex.SnapshotName);
-                }
-            }
-        }
-
-        /// <summary>
-        /// 2) Refresh ExistsOnPrimary/Secondary flags and LastChecked for each tracked NetappSnapshot.
-        /// </summary>
-        private async Task TrackNetappSnapshots(CancellationToken ct)
-        {
-            using var scope = _services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var netappSnapshotService = scope.ServiceProvider.GetRequiredService<INetappSnapshotService>();
-            var now = DateTime.UtcNow;
-
-            // 0) Preload all valid NetappController IDs
-            var validControllerIds = await db.NetappControllers
-                .Select(n => n.Id)
-                .ToListAsync(ct);
-            var validSet = new HashSet<int>(validControllerIds);
-
-            // 1) Load all SnapMirror relations up‐front
-            var relations = await db.SnapMirrorRelations.ToListAsync(ct);
-
-            // 2) Load every snapshot row you’re currently tracking
-            var trackedSnaps = await db.NetappSnapshots
-                .AsTracking()
+            // Read presence flags from QUERY DB (new location)
+            var qSnaps = await qdb.NetappSnapshots
+                .Where(s => jobIds.Contains(s.JobId))
+                .Select(s => new { s.JobId, s.SnapshotName, s.ExistsOnPrimary, s.ExistsOnSecondary })
                 .ToListAsync(ct);
 
-            // Build a lookup keyed by (JobId, SnapshotName)
-            var trackedLookup = trackedSnaps
-                .ToDictionary(
-                    s => new JobSnapKey(s.JobId, s.SnapshotName),
-                    s => s,
-                    new JobSnapKeyComparer()
-                );
+            var bothGone = qSnaps.ToDictionary(
+                k => (k.JobId, k.SnapshotName),
+                v => (v.ExistsOnPrimary != true) && (v.ExistsOnSecondary != true));
 
-            // 3) For each SnapMirror relation (primary→secondary):
-            foreach (var rel in relations)
+            var candidates = records
+                .Where(r => r.JobStatus != "Running" && IsExpired(r.TimeStamp, r.RetentionCount, r.RetentionUnit, now))
+                .GroupBy(r => new { r.JobId, r.SnapshotName })
+                .Where(g =>
+                {
+                    if (bothGone.TryGetValue((g.Key.JobId, g.Key.SnapshotName), out var gone))
+                        return gone;              // only when both sides are gone
+                    return true;                  // missing tracker row → treat as purged
+                })
+                .Select(g => new { g.Key.JobId, g.Key.SnapshotName, RecordIds = g.Select(x => x.Id).ToList() })
+                .ToList();
+
+            if (candidates.Count == 0) return;
+
+            var jobIdsToPurge = candidates.Select(c => c.JobId).Distinct().ToList();
+
+            var vmResultIds = await main.JobVmResults
+                .Where(r => jobIdsToPurge.Contains(r.JobId))
+                .Select(r => r.Id)
+                .ToListAsync(ct);
+
+            await WithSqliteBusyRetryAsync(async () =>
             {
-                if (!validSet.Contains(rel.SourceControllerId)
-                    || !validSet.Contains(rel.DestinationControllerId))
-                {
-                    _logger.LogWarning(
-                        "Skipping relation {Uuid} because source or destination controller is invalid ({src} → {dst})",
-                        rel.Uuid,
-                        rel.SourceControllerId,
-                        rel.DestinationControllerId
-                    );
-                    continue;
-                }
+                await using var tx = await main.Database.BeginTransactionAsync(ct);
 
-                // Secondary and primary snapshot listings
-                var secList = await netappSnapshotService.GetSnapshotsAsync(
-                    rel.DestinationControllerId,
-                    rel.DestinationVolume, ct);
+                if (vmResultIds.Count > 0)
+                    await main.JobVmLogs.Where(l => vmResultIds.Contains(l.JobVmResultId)).ExecuteDeleteAsync(ct);
 
-                var primaryList = await netappSnapshotService.GetSnapshotsAsync(
-                    rel.SourceControllerId,
-                    rel.SourceVolume, ct);
+                await main.JobVmResults.Where(r => jobIdsToPurge.Contains(r.JobId)).ExecuteDeleteAsync(ct);
 
-                foreach (var snapName in secList)
-                {
-                    // Look up the JobId by BackupRecords (StorageName+SnapshotName)
-                    var matchingJobId = await db.BackupRecords
-                        .Where(r => r.StorageName == rel.SourceVolume && r.SnapshotName == snapName)
-                        .Select(r => r.JobId)
-                        .FirstOrDefaultAsync(ct);
+                // Remove only the expired snapshot’s BackupRecords (MAIN DB)
+                foreach (var c in candidates)
+                    await main.BackupRecords
+                        .Where(r => r.JobId == c.JobId && r.SnapshotName == c.SnapshotName)
+                        .ExecuteDeleteAsync(ct);
 
-                    if (matchingJobId == 0)
-                        continue;
+                // Remove orphan Jobs that no longer have any BackupRecords/VM results
+                var stillUsedJobIds = await main.BackupRecords
+                    .Where(r => jobIdsToPurge.Contains(r.JobId))
+                    .Select(r => r.JobId)
+                    .Distinct()
+                    .ToListAsync(ct);
 
-                    var key = new JobSnapKey(matchingJobId, snapName);
+                var orphanJobs = jobIdsToPurge.Except(stillUsedJobIds).ToList();
+                if (orphanJobs.Count > 0)
+                    await main.Jobs.Where(j => orphanJobs.Contains(j.Id)).ExecuteDeleteAsync(ct);
 
-                    if (trackedLookup.TryGetValue(key, out var existingSnap))
-                    {
-                        existingSnap.ExistsOnSecondary = true;
-                        existingSnap.LastChecked = now;
-                        existingSnap.ExistsOnPrimary = primaryList
-                            .Any(x => x.Equals(snapName, StringComparison.OrdinalIgnoreCase));
-                        existingSnap.SecondaryControllerId = rel.DestinationControllerId;
-                        existingSnap.SecondaryVolume = rel.DestinationVolume;
-                        existingSnap.IsReplicated = true;
-                    }
-                    else
-                    {
-                        var label = await db.BackupRecords
-                            .Where(r => r.JobId == matchingJobId &&
-                                        r.StorageName == rel.SourceVolume &&
-                                        r.SnapshotName == snapName)
-                            .Select(r => r.RetentionUnit.ToLower())
-                            .FirstOrDefaultAsync(ct)
-                            ?? "not_found";
+                await tx.CommitAsync(ct);
+            }, ct);
 
-                        var newSnap = new NetappSnapshot
-                        {
-                            CreatedAt = now,
-                            ExistsOnPrimary = primaryList.Any(x => x.Equals(snapName, StringComparison.OrdinalIgnoreCase)),
-                            ExistsOnSecondary = true,
-                            IsReplicated = true,
-                            JobId = matchingJobId,
-                            LastChecked = now,
-                            PrimaryControllerId = rel.SourceControllerId,
-                            PrimaryVolume = rel.SourceVolume,
-                            SecondaryControllerId = rel.DestinationControllerId,
-                            SecondaryVolume = rel.DestinationVolume,
-                            SnapmirrorLabel = label,
-                            SnapshotName = snapName
-                        };
-
-                        db.NetappSnapshots.Add(newSnap);
-                        trackedLookup[key] = newSnap;
-                    }
-                }
+            // Also prune the associated snapshot tracker rows from QUERY DB
+            foreach (var c in candidates)
+            {
+                await qdb.NetappSnapshots
+                    .Where(s => s.JobId == c.JobId && s.SnapshotName == c.SnapshotName)
+                    .ExecuteDeleteAsync(ct);
             }
 
-            // Save with SQLITE_BUSY retry
-            for (int i = 0; i < 3; i++)
-            {
-                try
-                {
-                    await db.SaveChangesAsync(ct);
-                    break;
-                }
-                catch (DbUpdateException ey)
-                    when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
-                {
-                    if (i == 2) throw;
-                    await Task.Delay(500, ct);
-                }
-            }
+            _logger.LogInformation("Janitor: DB-only retention purged {Count} snapshot group(s).", candidates.Count);
         }
 
         private async Task PruneOldOrStuckJobs(CancellationToken ct)
         {
-            using var scope = _services.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var now = DateTime.UtcNow;
-            var cutoff = now.AddDays(-30);
+            await using var db = await _dbf.CreateAsync(ct);
+            await using var qdb = await _qdbf.CreateAsync(ct);
 
-            // 30d policy
-            string[] failedStatuses = { "Failed", "Error", "Aborted", "Cancelled" };
-            string[] inProgressStatuses = { "Pending", "Queued", "Running", "InProgress",
-                                            "Started", "Creating Proxmox snapshots", "Waiting for Proxmox snapshots",
-                                            "Proxmox snapshots completed", "Paused VMs", "NetApp snapshot created", "Triggering SnapMirror update" };
+            var cutoff = DateTime.UtcNow.AddDays(-30);
+
+            string[] failed = { "Failed", "Error", "Aborted", "Cancelled" };
+            string[] active =
+            {
+                "Pending","Queued","Running","InProgress","Started",
+                "Creating Proxmox snapshots","Waiting for Proxmox snapshots",
+                "Proxmox snapshots completed","Paused VMs","NetApp snapshot created",
+                "Triggering SnapMirror update"
+            };
 
             var toDeleteIds = await db.Jobs
                 .AsNoTracking()
                 .Where(j => (j.CompletedAt ?? j.StartedAt) < cutoff &&
                             (j.Type == "Restore" ||
-                             (j.Type == "Backup" && j.Status != null && failedStatuses.Contains(j.Status)) ||
-                             (j.Status == null || inProgressStatuses.Contains(j.Status))))
+                             (j.Type == "Backup" && j.Status != null && failed.Contains(j.Status)) ||
+                             (j.Status == null || active.Contains(j.Status))))
                 .Select(j => j.Id)
                 .ToListAsync(ct);
 
@@ -386,91 +291,75 @@ namespace BareProx.Services.Background
                 return;
             }
 
-            // Collect VM-result IDs for log deletion
-            var vmResultIds = await db.JobVmResults
-                .Where(r => toDeleteIds.Contains(r.JobId))
-                .Select(r => r.Id)
-                .ToListAsync(ct);
-
-            for (int attempt = 0; attempt < 3; attempt++)
+            await WithSqliteBusyRetryAsync(async () =>
             {
-                using var tx = await db.Database.BeginTransactionAsync(ct);
-                try
-                {
-                    // 1) Logs -> via JobVmResultId
-                    if (vmResultIds.Count > 0)
-                    {
-                        db.JobVmLogs.RemoveRange(
-                            db.JobVmLogs.Where(l => vmResultIds.Contains(l.JobVmResultId)));
-                    }
+                await using var tx = await db.Database.BeginTransactionAsync(ct);
 
-                    // 2) VM results -> via JobId
-                    db.JobVmResults.RemoveRange(
-                        db.JobVmResults.Where(r => toDeleteIds.Contains(r.JobId)));
+                await db.JobVmLogs.Where(l => db.JobVmResults
+                        .Where(r => toDeleteIds.Contains(r.JobId))
+                        .Select(r => r.Id)
+                        .Contains(l.JobVmResultId))
+                    .ExecuteDeleteAsync(ct);
 
-                    // 3) Snapshot tracking & backup records
-                    db.NetappSnapshots.RemoveRange(
-                        db.NetappSnapshots.Where(s => toDeleteIds.Contains(s.JobId)));
-                    db.BackupRecords.RemoveRange(
-                        db.BackupRecords.Where(r => toDeleteIds.Contains(r.JobId)));
+                await db.JobVmResults.Where(r => toDeleteIds.Contains(r.JobId)).ExecuteDeleteAsync(ct);
+                await db.BackupRecords.Where(r => toDeleteIds.Contains(r.JobId)).ExecuteDeleteAsync(ct);
+                await db.Jobs.Where(j => toDeleteIds.Contains(j.Id)).ExecuteDeleteAsync(ct);
 
-                    // 4) Finally the jobs
-                    db.Jobs.RemoveRange(
-                        db.Jobs.Where(j => toDeleteIds.Contains(j.Id)));
+                await tx.CommitAsync(ct);
+            }, ct);
 
-                    var affected = await db.SaveChangesAsync(ct);
-                    await tx.CommitAsync(ct);
+            // Prune any remaining snapshot tracker rows for those jobs in QUERY DB
+            await qdb.NetappSnapshots
+                .Where(s => toDeleteIds.Contains(s.JobId))
+                .ExecuteDeleteAsync(ct);
 
-                    _logger.LogInformation(
-                        "Pruned {JobCount} jobs older than {Days} days (Restore:any, Backup:failed, stale in-progress). Rows affected: {Rows}.",
-                        toDeleteIds.Count, 30, affected);
-                    break;
-                }
-                catch (DbUpdateException ey) when (ey.InnerException is Microsoft.Data.Sqlite.SqliteException se && se.SqliteErrorCode == 5)
-                {
-                    await tx.RollbackAsync(ct);
-                    if (attempt == 2) throw;
-                    await Task.Delay(500, ct);
-                }
-                catch (Exception ex)
-                {
-                    await tx.RollbackAsync(ct);
-                    _logger.LogError(ex, "Failed pruning jobs.");
-                    throw;
-                }
-            }
+            _logger.LogInformation("Pruned {Count} old/stale jobs.", toDeleteIds.Count);
         }
 
-        private readonly struct JobSnapKey
+        private static async Task WithSqliteBusyRetryAsync(Func<Task> action, CancellationToken ct, int attempts = 3, int delayMs = 500)
         {
-            public int JobId { get; }
-            public string SnapshotName { get; }
-
-            public JobSnapKey(int jobId, string snapshotName)
+            for (var i = 0; i < attempts; i++)
             {
-                JobId = jobId;
-                SnapshotName = snapshotName;
+                try { await action(); return; }
+                catch (DbUpdateException ey) when (ey.InnerException is SqliteException se && se.SqliteErrorCode == 5)
+                {
+                    if (i == attempts - 1) throw;
+                    await Task.Delay(delayMs, ct);
+                }
             }
-
-            public override bool Equals(object? obj)
-            {
-                if (obj is not JobSnapKey other) return false;
-                return JobId == other.JobId
-                    && string.Equals(SnapshotName, other.SnapshotName, StringComparison.OrdinalIgnoreCase);
-            }
-
-            public override int GetHashCode()
-                => HashCode.Combine(JobId, SnapshotName?.ToLowerInvariant());
         }
 
-        private class JobSnapKeyComparer : IEqualityComparer<JobSnapKey>
+        /// <summary>
+        /// Waits for the snapshot tracker (QUERY DB) to be seeded at least once, or
+        /// for a metadata flag to be set by CollectionService. Returns true if ready,
+        /// false if timed out. Never throws on timeout.
+        /// </summary>
+        private async Task<bool> WaitForTrackerWarmupAsync(CancellationToken ct)
         {
-            public bool Equals(JobSnapKey x, JobSnapKey y)
-                => x.JobId == y.JobId
-                && string.Equals(x.SnapshotName, y.SnapshotName, StringComparison.OrdinalIgnoreCase);
+            var deadline = DateTime.UtcNow + WarmupMaxWait;
 
-            public int GetHashCode(JobSnapKey obj)
-                => HashCode.Combine(obj.JobId, obj.SnapshotName?.ToLowerInvariant());
+            while (DateTime.UtcNow < deadline)
+            {
+                await using var qdb = await _qdbf.CreateAsync(ct);
+
+                // Option A: tracker has rows
+                bool trackerHasRows = await qdb.NetappSnapshots.AnyAsync(ct);
+
+                // Option B: metadata flag set by CollectionService once it finished the first pass
+                // (CollectionService can set this with: InventoryMetadata { Key="SnapshotTrackerReady", Value="true" })
+                var meta = await qdb.InventoryMetadata.FindAsync(new object[] { "SnapshotTrackerReady" }, ct);
+                bool flaggedReady = string.Equals(meta?.Value, "true", StringComparison.OrdinalIgnoreCase);
+
+                if (trackerHasRows || flaggedReady)
+                    return true;
+
+                _logger.LogDebug("Janitor warm-up: tracker not ready; will re-check in {Poll}s.", WarmupPoll.TotalSeconds);
+                await Task.Delay(WarmupPoll, ct);
+            }
+
+            _logger.LogWarning("Janitor warm-up: timed out after {Seconds}s; proceeding cautiously.", WarmupMaxWait.TotalSeconds);
+            return false;
         }
+
     }
 }

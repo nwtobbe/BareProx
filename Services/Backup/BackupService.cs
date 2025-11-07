@@ -38,6 +38,7 @@ namespace BareProx.Services.Backup
     public class BackupService : IBackupService
     {
         private readonly IDbContextFactory<ApplicationDbContext> _dbf;
+        private readonly IQueryDbFactory _qdbf;
         private readonly ProxmoxService _proxmoxService;
         private readonly IProxmoxOpsService _proxmoxOps;
         private readonly INetappSnapmirrorService _netAppSnapmirrorService;
@@ -67,7 +68,8 @@ namespace BareProx.Services.Backup
             IProxmoxInventoryCache invCache,
             IJobService jobs,
             IEmailSender email,
-            IProxmoxSnapChains snapChains) // NEW
+            IProxmoxSnapChains snapChains,
+            IQueryDbFactory qdbf) // NEW
         {
             _dbf = dbf;
             _proxmoxService = proxmoxService;
@@ -84,28 +86,42 @@ namespace BareProx.Services.Backup
             _jobs = jobs;
             _email = email;
             _snapChains = snapChains; // NEW
+            _qdbf = qdbf;
         }
 
         public async Task<bool> StartBackupAsync(
+            // identity / scope
             string storageName,
             int? selectedNetappVolumeId,
+            string? volumeUuid,
+
+            // context
             bool isApplicationAware,
             string label,
             int clusterId,
             int netappControllerId,
+
+            // policy
             int retentionCount,
             string retentionUnit,
+
+            // behavior
             bool enableIoFreeze,
             bool useProxmoxSnapshot,
             bool withMemory,
             bool dontTrySuspend,
+
+            // scheduling / replication / locking
             int scheduleId,
             bool replicateToSecondary,
             bool enableLocking,
             int? lockRetentionCount,
             string? lockRetentionUnit,
-            IEnumerable<string>? excludedVmIds,
-            CancellationToken ct)
+
+            // extras
+            IEnumerable<string>? excludedVmIds = null,
+            CancellationToken ct = default
+        )
         {
             ProxmoxCluster? cluster = null;
             List<ProxmoxVM>? vms = null;
@@ -116,6 +132,8 @@ namespace BareProx.Services.Backup
             var vmHadWarnings = new HashSet<int>();
             var skippedCount = 0;
             string? createdSnapshotName = null;
+
+            string? svmName = null;
 
             var excludedSet = new HashSet<int>();
             if (excludedVmIds != null)
@@ -137,39 +155,88 @@ namespace BareProx.Services.Backup
                 // ---- Resolve SelectedNetappVolumeId / Disabled enforcement ----
                 using (var db0 = await _dbf.CreateDbContextAsync(ct))
                 {
-                    if (selectedNetappVolumeId.HasValue && selectedNetappVolumeId.Value > 0)
-                    {
-                        var row = await db0.SelectedNetappVolumes
-                                           .AsNoTracking()
-                                           .FirstOrDefaultAsync(v => v.Id == selectedNetappVolumeId.Value, ct);
+                    SelectedNetappVolumes? sel = null;
 
-                        var check = ValidateSelectedVolumeRow(row, null);
+                    if (selectedNetappVolumeId is int selId && selId > 0)
+                    {
+                        sel = await db0.SelectedNetappVolumes
+                            .AsNoTracking()
+                            .FirstOrDefaultAsync(v => v.Id == selId, ct);
+
+                        var check = ValidateSelectedVolumeRow(sel, null);
                         if (check.error is not null)
                             return await FailAndNotifyAsync(jobId, storageName, label, check.error, scheduleId, ct);
 
                         if (check.row is null)
                             return await FailAndNotifyAsync(jobId, storageName, label, "SelectedNetappVolumeId not found.", scheduleId, ct);
 
-                        // Override effective inputs for the rest of the job
+                        // UUID consistency guard
+                        if (!string.IsNullOrWhiteSpace(volumeUuid) &&
+                            !string.IsNullOrWhiteSpace(check.row.Uuid) &&
+                            !string.Equals(volumeUuid, check.row.Uuid, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return await FailAndNotifyAsync(
+                                jobId, storageName, label,
+                                $"Volume UUID mismatch for '{check.row.VolumeName}' on controller {check.row.NetappControllerId}: " +
+                                $"param='{volumeUuid}', db='{check.row.Uuid}'.",
+                                scheduleId, ct);
+                        }
+
+                        // Override effective inputs
                         storageName = check.row.VolumeName;
                         netappControllerId = check.row.NetappControllerId;
+
+                        if (string.IsNullOrWhiteSpace(volumeUuid) && !string.IsNullOrWhiteSpace(check.row.Uuid))
+                            volumeUuid = check.row.Uuid;
+
+                        if (string.IsNullOrWhiteSpace(svmName) && !string.IsNullOrWhiteSpace(check.row.Vserver))
+                            svmName = check.row.Vserver;
                     }
                     else
                     {
-                        var row = await db0.SelectedNetappVolumes
-                                           .AsNoTracking()
-                                           .FirstOrDefaultAsync(v =>
-                                               v.NetappControllerId == netappControllerId &&
-                                               v.VolumeName == storageName, ct);
+                        sel = await db0.SelectedNetappVolumes
+                            .AsNoTracking()
+                            .FirstOrDefaultAsync(v =>
+                                v.NetappControllerId == netappControllerId &&
+                                v.VolumeName == storageName, ct);
 
-                        var check = ValidateSelectedVolumeRow(row, storageName);
+                        var check = ValidateSelectedVolumeRow(sel, storageName);
                         if (check.error is not null)
                             return await FailAndNotifyAsync(jobId, storageName, label, check.error, scheduleId, ct);
 
-                        // (optional) selectedNetappVolumeId = check.row?.Id;
+                        if (!string.IsNullOrWhiteSpace(volumeUuid) &&
+                            !string.IsNullOrWhiteSpace(check.row?.Uuid) &&
+                            !string.Equals(volumeUuid, check.row!.Uuid, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return await FailAndNotifyAsync(
+                                jobId, storageName, label,
+                                $"Volume UUID mismatch for '{storageName}' on controller {netappControllerId}: " +
+                                $"param='{volumeUuid}', db='{check.row!.Uuid}'.",
+                                scheduleId, ct);
+                        }
+
+                        if (string.IsNullOrWhiteSpace(volumeUuid) && !string.IsNullOrWhiteSpace(check.row?.Uuid))
+                            volumeUuid = check.row!.Uuid;
+
+                        if (string.IsNullOrWhiteSpace(svmName) && !string.IsNullOrWhiteSpace(check.row?.Vserver))
+                            svmName = check.row!.Vserver;
                     }
                 }
                 // ---- END resolve/validate ----
+
+                // ---- Fallback: pull UUID from inventory (QUERY DB) if still missing ----
+                if (string.IsNullOrWhiteSpace(volumeUuid))
+                {
+                    await using var qdb0 = await _qdbf.CreateAsync(ct);
+                    var invUuid = await qdb0.InventoryStorages
+                        .AsNoTracking()
+                        .Where(s => s.ClusterId == clusterId && s.StorageId == storageName)
+                        .Select(s => s.NetappVolumeUuid)
+                        .FirstOrDefaultAsync(ct);
+
+                    if (!string.IsNullOrWhiteSpace(invUuid))
+                        volumeUuid = invUuid;
+                }
 
                 using (var db = await _dbf.CreateDbContextAsync(ct))
                 {
@@ -181,7 +248,7 @@ namespace BareProx.Services.Backup
                 if (cluster == null)
                     return await FailAndNotifyAsync(jobId, storageName, label, $"Cluster with ID {clusterId} not found.", scheduleId, ct);
 
-                // Discover VMs eligible on this storage
+                // Eligible VMs on this storage
                 bool snapChainActive = false;
                 try
                 {
@@ -310,7 +377,7 @@ namespace BareProx.Services.Backup
                 }
 
                 // 4) Proxmox snapshots (optional)
-                var localTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _timeZoneInfo);
+                var localTime = _tz.ConvertUtcToApp(DateTime.UtcNow);
                 var proxmoxSnapshotName = $"BareProx-{label}_{localTime:yyyy-MM-dd-HH-mm-ss}";
                 var snapshotTasks = new Dictionary<int, string>();
 
@@ -401,6 +468,8 @@ namespace BareProx.Services.Backup
                 }
 
                 // 5a) NetApp snapshot (storage-wide)
+                LogUuidFallbackIfNeeded(volumeUuid, netappControllerId, storageName);
+
                 var snapshotResult = await _netAppSnapshotService.CreateSnapshotAsync(
                     netappControllerId,
                     storageName,
@@ -408,6 +477,8 @@ namespace BareProx.Services.Backup
                     snapLocking: enableLocking,
                     lockRetentionCount: enableLocking ? lockRetentionCount : null,
                     lockRetentionUnit: enableLocking ? lockRetentionUnit : null,
+                    volumeUuid: volumeUuid,
+                    svmName: svmName,
                     ct: ct);
 
                 if (!snapshotResult.Success)
@@ -444,6 +515,8 @@ namespace BareProx.Services.Backup
                             VmName = vm.Name,
                             HostName = vm.HostName,
                             StorageName = storageName,
+                            VolumeUuid = volumeUuid,
+                            SelectedNetappVolumeId = selectedNetappVolumeId,
                             Label = label,
                             RetentionCount = retentionCount,
                             RetentionUnit = retentionUnit,
@@ -487,10 +560,11 @@ namespace BareProx.Services.Backup
                     }
                 }
 
-                // Track NetApp snapshot
-                using (var db = await _dbf.CreateDbContextAsync(ct))
+                // --- CHANGED: Track NetApp snapshot in QUERY DB ---
                 {
-                    db.NetappSnapshots.Add(new NetappSnapshot
+                    await using var qdb = await _qdbf.CreateAsync(ct);
+
+                    qdb.NetappSnapshots.Add(new NetappSnapshot
                     {
                         JobId = jobId,
                         PrimaryVolume = storageName,
@@ -503,7 +577,14 @@ namespace BareProx.Services.Backup
                         LastChecked = _tz.ConvertUtcToApp(DateTime.UtcNow),
                         IsReplicated = false
                     });
-                    await db.SaveChangesAsync(ct);
+
+                    // optional SQLITE_BUSY retry:
+                    for (int i = 0; i < 3; i++)
+                    {
+                        try { await qdb.SaveChangesAsync(ct); break; }
+                        catch (DbUpdateException ey) when (ey.InnerException is Microsoft.Data.Sqlite.SqliteException se && se.SqliteErrorCode == 5)
+                        { if (i == 2) throw; await Task.Delay(500, ct); }
+                    }
                 }
 
                 // 5c) Cleanup Proxmox snapshots (if taken)
@@ -593,22 +674,33 @@ namespace BareProx.Services.Backup
                                 {
                                     var nowApp = _tz.ConvertUtcToApp(DateTime.UtcNow);
 
-                                    var snapRow = await db.NetappSnapshots
-                                        .FirstOrDefaultAsync(s =>
-                                            s.SnapshotName == secondarySnap
-                                            && s.PrimaryVolume == storageName
-                                            && s.PrimaryControllerId == netappControllerId, ct);
-
-                                    if (snapRow != null)
+                                    // --- CHANGED: update snapshot row in QUERY DB ---
+                                    await using (var qdb = await _qdbf.CreateAsync(ct))
                                     {
-                                        snapRow.ExistsOnSecondary = true;
-                                        snapRow.SecondaryVolume = secondaryVolume;
-                                        snapRow.SecondaryControllerId = secondaryControllerId;
-                                        snapRow.IsReplicated = true;
-                                        snapRow.LastChecked = nowApp;
-                                        await db.SaveChangesAsync(ct);
+                                        var snapRow = await qdb.NetappSnapshots
+                                            .FirstOrDefaultAsync(s =>
+                                                s.SnapshotName == secondarySnap
+                                                && s.PrimaryVolume == storageName
+                                                && s.PrimaryControllerId == netappControllerId, ct);
+
+                                        if (snapRow != null)
+                                        {
+                                            snapRow.ExistsOnSecondary = true;
+                                            snapRow.SecondaryVolume = secondaryVolume;
+                                            snapRow.SecondaryControllerId = secondaryControllerId;
+                                            snapRow.IsReplicated = true;
+                                            snapRow.LastChecked = nowApp;
+
+                                            for (int i = 0; i < 3; i++)
+                                            {
+                                                try { await qdb.SaveChangesAsync(ct); break; }
+                                                catch (DbUpdateException ey) when (ey.InnerException is Microsoft.Data.Sqlite.SqliteException se && se.SqliteErrorCode == 5)
+                                                { if (i == 2) throw; await Task.Delay(500, ct); }
+                                            }
+                                        }
                                     }
 
+                                    // keep BackupRecords update on MAIN DB
                                     await db.BackupRecords
                                         .Where(br => br.JobId == jobId)
                                         .ExecuteUpdateAsync(s => s.SetProperty(b => b.ReplicateToSecondary, true), ct);
@@ -632,7 +724,7 @@ namespace BareProx.Services.Backup
                     }
                 }
 
-                // 7) Cancellation check
+                // 7) Cancellation check (MAIN DB)
                 using (var db = await _dbf.CreateDbContextAsync(ct))
                 {
                     var jobRow = await db.Jobs.FindAsync(new object?[] { jobId }, ct);
@@ -702,6 +794,7 @@ namespace BareProx.Services.Backup
                 }
             }
         }
+
 
         private async Task UnpauseIfNeeded(ProxmoxCluster cluster, IEnumerable<ProxmoxVM> vms, bool isAppAware, bool ioFreeze, bool vmsWerePaused, CancellationToken ct = default)
         {
@@ -862,6 +955,13 @@ namespace BareProx.Services.Backup
                 return (null, $"Volume '{vol}' on controller #{row.NetappControllerId} is not selected.");
             }
             return (row, null);
+        }
+
+        // Prefer UUID when present; log once when we fall back to name-only.
+        private void LogUuidFallbackIfNeeded(string? volumeUuid, int controllerId, string storageName)
+        {
+            if (string.IsNullOrWhiteSpace(volumeUuid))
+                _logger.LogWarning("[No UUID] Falling back to name-based NetApp ops: volume='{Storage}' controller={ControllerId}", storageName, controllerId);
         }
     }
 }

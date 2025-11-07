@@ -5,11 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),  
 and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
-
-## [1.0.2511.0519] - 2025-11-05
+## [1.0.2511.0713] - 2025-11-xx
 
 ## Added
-- Possibility to add certificates in the form of .pfx (PKCS#12
+- BareProx_qeryDB, extra DB
+- API Tokens, default for new clusters, enabled in settings for existing cluster
+
+### Changed
+- When adding a Proxmox cluster now we can use the API instead of SSH for discovery
+- Help! Started writing the booring help-text
+
+
+
+## [1.0.2511.0713] - 2025-11-07
+
+## Added
+- Possibility to add certificates in the form of .pfx (PKCS#12)
 
 ### Changed
 - Page Settings/System. New layout

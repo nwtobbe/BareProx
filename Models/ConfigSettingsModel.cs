@@ -210,6 +210,7 @@ namespace BareProx.Models
 
         // For pre-selecting a cluster via querystring ?selectedId=...
         public int? SelectedId { get; set; }
+        public Dictionary<int, InventoryClusterStatus> ClusterStatuses { get; set; } = new();
     }
 
     public class NetappHubViewModel

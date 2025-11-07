@@ -63,7 +63,10 @@ namespace BareProx.Services.Migration
                 {
                     v.Id,
                     v.NetappControllerId,
-                    v.VolumeName
+                    v.VolumeName,
+                    v.Uuid,
+                    v.Vserver,
+                    v.Disabled
                 })
                 .ToListAsync(ct);
 
@@ -79,16 +82,22 @@ namespace BareProx.Services.Migration
             {
                 ct.ThrowIfCancellationRequested();
 
+                if (v.Disabled == true)
+                    throw new InvalidOperationException(
+                        $"SelectedNetappVolume (Id={v.Id}, {v.VolumeName}) is disabled; aborting.");
+
                 _log.LogInformation("SnapshotCoordinator: creating snapshot for NetApp controller {ControllerId} volume '{Volume}' (SelVolId={Id}) with label '{Label}'",
                     v.NetappControllerId, v.VolumeName, v.Id, snapmirrorLabel);
 
                 var result = await _snapshots.CreateSnapshotAsync(
-                    controllerId: v.NetappControllerId, // ✅ use NetApp controller from the selected volume
-                    storageName: v.VolumeName,          // ✅ actual NetApp volume name
+                    controllerId: v.NetappControllerId,
+                    storageName: v.VolumeName,
                     snapmirrorLabel: snapmirrorLabel,
                     snapLocking: false,
                     lockRetentionCount: null,
                     lockRetentionUnit: null,
+                    volumeUuid: v.Uuid,          // ✅ prefer UUID
+                    svmName: v.Vserver,          // ✅ SVM hint if UUID missing
                     ct: ct);
 
                 if (result == null || !result.Success)
@@ -113,7 +122,7 @@ namespace BareProx.Services.Migration
                 return;
             }
 
-            // Keep behavior: require one active selection (used only for logging/trace).
+            // Require one active selection (for trace/log parity with existing behavior)
             var selection = await _db.MigrationSelections.AsNoTracking().FirstOrDefaultAsync(ct);
             if (selection == null)
                 throw new InvalidOperationException("No MigrationSelection found — cannot resolve migration context.");
@@ -129,15 +138,8 @@ namespace BareProx.Services.Migration
                 return;
             }
 
-            // Build a case-insensitive resolver: storageName -> preferred NetApp controllerId
-            // Prefer a SelectedNetappVolume that points to a PRIMARY controller; otherwise any mapping.
+            // Load controllers and mappings once
             var controllers = await _db.NetappControllers
-                .AsNoTracking()
-                .ToListAsync(ct);
-
-            // Pull only mappings for storages we care about (case-sensitive DB collation may differ),
-            // so fetch all and filter in-memory case-insensitively.
-            var selectedMaps = await _db.SelectedNetappVolumes
                 .AsNoTracking()
                 .ToListAsync(ct);
 
@@ -146,28 +148,39 @@ namespace BareProx.Services.Migration
                 .Select(c => c.Id)
                 .ToHashSet();
 
-            var storageToController = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            // Pull mappings (we filter in memory using CI matching to be safe across collations)
+            var selectedMaps = await _db.SelectedNetappVolumes
+                .AsNoTracking()
+                .ToListAsync(ct);
+
+            // Resolve a chosen mapping per storage (prefer PRIMARY controller)
+            var chosenMapByStorage =
+                new Dictionary<string, (int controllerId, string volumeName, string? uuid, string? svm, bool disabled)>(
+                    StringComparer.OrdinalIgnoreCase);
 
             foreach (var storage in distinctStorages)
             {
-                // all mappings for this storage (CI)
                 var mapsForStorage = selectedMaps
                     .Where(m => string.Equals(m.VolumeName, storage, StringComparison.OrdinalIgnoreCase))
                     .ToList();
 
                 if (mapsForStorage.Count == 0)
                 {
-                    // If you want to allow a fallback (e.g., "only one controller exists"), set it here.
-                    // Safer default: fail fast so we don't snapshot on the wrong array.
+                    // Safer default: fail fast to avoid acting on the wrong array
                     throw new InvalidOperationException(
                         $"No SelectedNetappVolume mapping found for storage '{storage}'. Cannot determine NetApp controller.");
                 }
 
-                // Prefer mapping on a PRIMARY controller
                 var preferred = mapsForStorage.FirstOrDefault(m => primaryControllerIds.Contains(m.NetappControllerId))
-                                ?? mapsForStorage.First(); // fallback to *any* mapping
+                                ?? mapsForStorage.First();
 
-                storageToController[storage] = preferred.NetappControllerId;
+                chosenMapByStorage[storage] = (
+                    controllerId: preferred.NetappControllerId,
+                    volumeName: preferred.VolumeName,
+                    uuid: string.IsNullOrWhiteSpace(preferred.Uuid) ? null : preferred.Uuid,
+                    svm: string.IsNullOrWhiteSpace(preferred.Vserver) ? null : preferred.Vserver,
+                    disabled: preferred.Disabled == true
+                );
             }
 
             const string snapmirrorLabel = "Migration";
@@ -176,33 +189,52 @@ namespace BareProx.Services.Migration
             {
                 ct.ThrowIfCancellationRequested();
 
-                var controllerId = storageToController[storage];
+                var chosen = chosenMapByStorage[storage];
 
-                _log.LogInformation("SnapshotCoordinator: creating snapshot on controller {ControllerId} for storage '{Storage}' (selection ClusterId={ClusterId}) with label '{Label}'",
-                    controllerId, storage, selection.ClusterId, snapmirrorLabel);
+                if (chosen.disabled)
+                    throw new InvalidOperationException(
+                        $"Storage '{storage}' is mapped but disabled; aborting.");
+
+                if (string.IsNullOrWhiteSpace(chosen.uuid))
+                {
+                    _log.LogWarning("[No UUID] Falling back to name-based NetApp ops for storage '{Storage}' on controller {ControllerId}{SvmHint}",
+                        storage,
+                        chosen.controllerId,
+                        string.IsNullOrWhiteSpace(chosen.svm) ? "" : $" (svm={chosen.svm})");
+                }
+
+                _log.LogInformation(
+                    "SnapshotCoordinator: creating snapshot on controller {ControllerId} for storage '{Storage}' (selection ClusterId={ClusterId}) with label '{Label}'",
+                    chosen.controllerId, storage, selection.ClusterId, snapmirrorLabel);
 
                 var result = await _snapshots.CreateSnapshotAsync(
-                    controllerId: controllerId,          // ✅ correct: NetApp controller id
-                    storageName: storage,
+                    controllerId: chosen.controllerId,
+                    storageName: chosen.volumeName,        // actual NetApp volume name
                     snapmirrorLabel: snapmirrorLabel,
-                    snapLocking: false,                  // pre-migration safety point; no lock
+                    snapLocking: false,                    // pre-migration safety point; no lock
                     lockRetentionCount: null,
                     lockRetentionUnit: null,
+                    volumeUuid: chosen.uuid,               // ✅ prefer UUID when available
+                    svmName: chosen.svm,                   // ✅ SVM hint only used when UUID is missing
                     ct: ct);
 
                 if (result == null || !result.Success)
                 {
                     var err = result?.ErrorMessage ?? "Unknown error";
-                    _log.LogError("SnapshotCoordinator: snapshot failed for storage '{Storage}' on controller {ControllerId}: {Error}",
-                        storage, controllerId, err);
-                    throw new InvalidOperationException($"Snapshot failed for storage '{storage}' on controller {controllerId}: {err}");
+                    _log.LogError(
+                        "SnapshotCoordinator: snapshot failed for storage '{Storage}' on controller {ControllerId}: {Error}",
+                        storage, chosen.controllerId, err);
+                    throw new InvalidOperationException(
+                        $"Snapshot failed for storage '{storage}' on controller {chosen.controllerId}: {err}");
                 }
 
-                _log.LogInformation("SnapshotCoordinator: snapshot created for storage '{Storage}' on controller {ControllerId} -> {SnapshotName}",
-                    storage, controllerId, result.SnapshotName);
+                _log.LogInformation(
+                    "SnapshotCoordinator: snapshot created for storage '{Storage}' on controller {ControllerId} -> {SnapshotName}",
+                    storage, chosen.controllerId, result.SnapshotName);
             }
 
             _log.LogInformation("SnapshotCoordinator: all datastore snapshots ensured for {Count} storage(s).", distinctStorages.Count);
         }
+
     }
 }

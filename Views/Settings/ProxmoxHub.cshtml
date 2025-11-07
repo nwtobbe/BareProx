@@ -7,6 +7,7 @@
 
     var clusterCount = Model.Clusters?.Count() ?? 0;
     var allowAddCluster = clusterCount == 0; // single-cluster mode
+    var statusMap = Model.ClusterStatuses ?? new Dictionary<int, InventoryClusterStatus>();
 }
 
 <style>
@@ -130,7 +131,8 @@
                 <tbody>
                     @foreach (var c in Model.Clusters ?? Enumerable.Empty<ProxmoxCluster>())
                     {
-                        var status = string.IsNullOrWhiteSpace(c.LastStatus) ? "Unknown" : c.LastStatus;
+                        var hasRow = statusMap.TryGetValue(c.Id, out var st);
+                        var status = string.IsNullOrWhiteSpace(st?.LastStatus) ? "Unknown" : st!.LastStatus!;
                         var badge =
                         status.Equals("working", StringComparison.OrdinalIgnoreCase) ? "success" :
                         status.Equals("configured", StringComparison.OrdinalIgnoreCase) ? "info" :
@@ -138,7 +140,7 @@
 
                         var editUrl = Url.Action("ProxmoxHub", "Settings", new { selectedId = c.Id, tab = "edit" }) + "#pane-edit";
                         var storageUrl = Url.Action("ProxmoxHub", "Settings", new { selectedId = c.Id, tab = "storage" }) + "#pane-storage";
-
+                        DateTime? lastChecked = hasRow ? st!.LastCheckedUtc : (DateTime?)null;
                         <tr class="cluster-row"
                             data-selected-id="@c.Id"
                             data-edit-url="@editUrl"
@@ -152,9 +154,9 @@
                             </td>
                             <td><span class="badge bg-@badge text-uppercase">@status</span></td>
                             <td>
-                                @if (c.LastChecked.HasValue)
+                                @if (lastChecked.HasValue)
                                 {
-                                    @c.LastChecked.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+                                    @lastChecked.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
                                 }
                                 else
                                 {
@@ -202,6 +204,7 @@
                             <label for="Password" class="form-label">API Password</label>
                             <input type="password" name="Password" id="Password" class="form-control" autocomplete="new-password" required />
                         </div>
+                        @* Defaults for tokens are applied server-side on create *@
                         <div class="col-12">
                             <button type="submit" class="btn btn-success">Add Cluster (Manual)</button>
                         </div>
@@ -221,7 +224,7 @@
         {
             <div class="row g-4">
                 <div class="col-lg-6">
-                    <div class="card">
+                    <div class="card mb-3">
                         <div class="card-header">Cluster Settings — @m.Name</div>
                         <div class="card-body">
                             <form asp-action="EditCluster" asp-controller="Settings" method="post">
@@ -251,6 +254,78 @@
                             </form>
                         </div>
                     </div>
+
+                    @* --- NEW: Authentication Options --- *@
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span>Authentication Options</span>
+                            @if (m.UseApiToken && m.ApiTokenExpiresUtc is DateTime dtExp)
+                            {
+                                <small class="text-muted">Expires: @dtExp.ToUniversalTime().ToString("u")</small>
+                            }
+                        </div>
+                        <div class="card-body">
+                            <form asp-action="EditClusterAuth" asp-controller="Settings" method="post" id="authOptionsForm">
+                                @Html.AntiForgeryToken()
+                                <input type="hidden" name="Id" value="@m.Id" />
+
+                                <div class="form-check form-switch mb-3">
+                                    <input class="form-check-input"
+                                           type="checkbox"
+                                           id="UseApiToken"
+                                           name="UseApiToken"
+                                           value="true"
+                                           @(m.UseApiToken ? "checked" : "") />
+                                    <label class="form-check-label" for="UseApiToken">Use API tokens (no CSRF)</label>
+                                </div>
+                                <!-- Hidden false MUST come AFTER the checkbox so uncheck -> false posts -->
+                                <input type="hidden" name="UseApiToken" value="false" />
+
+                                <div id="tokenOptions" style="display:@(m.UseApiToken ? "block" : "none")">
+                                    <div class="mb-3">
+                                        <label class="form-label">Token Id</label>
+                                        <input class="form-control"
+                                               name="ApiTokenId"
+                                               value="@m.ApiTokenId"
+                                               placeholder="user@realm!bareprox"
+                                               @(m.UseApiToken ? "" : "disabled") />
+                                    </div>
+
+                                    <div class="row">
+                                        <div class="col-md-5 mb-3">
+                                            <label class="form-label">Lifetime (days)</label>
+                                            <input class="form-control"
+                                                   type="number" min="1" max="3650"
+                                                   id="ApiTokenLifetimeDays" name="ApiTokenLifetimeDays"
+                                                   value="@(m.ApiTokenLifetimeDays ?? 180)"
+                                                   @(m.UseApiToken ? "" : "disabled") />
+                                        </div>
+                                        <div class="col-md-5 mb-3">
+                                            <label class="form-label">Renew before (minutes)</label>
+                                            <input class="form-control"
+                                                   type="number" min="1"
+                                                   id="ApiTokenRenewBeforeMinutes" name="ApiTokenRenewBeforeMinutes"
+                                                   value="@(m.ApiTokenRenewBeforeMinutes <= 0 ? 1440 : m.ApiTokenRenewBeforeMinutes)"
+                                                   @(m.UseApiToken ? "" : "disabled") />
+                                        </div>
+                                        <div class="col-md-2 mb-3 d-flex align-items-end">
+                                            <button class="btn btn-outline-secondary w-100"
+                                                    name="action" value="RotateTokenNow"
+                                                    @(m.UseApiToken ? "" : "disabled")>
+                                                Rotate now
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="mt-3">
+                                    <button class="btn btn-primary" type="submit">Save</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+
+                    @* --- end Authentication Options --- *@
                 </div>
 
                 <div class="col-lg-6">
@@ -425,7 +500,7 @@
                 <!-- Step 2: Discovery log -->
                 <div class="wizard-step" id="wizard-step-2">
                     <p class="small text-muted mb-2">
-                        Running discovery… resolving IPs, probing SSH.
+                        Running discovery… resolving IPs, probing API.
                     </p>
                     <div id="clusterDiscoveryLog"></div>
                 </div>
@@ -448,7 +523,7 @@
                                     <th>Nodes</th>
                                     <th>IP Address</th>
                                     <th>Fqdn (Clear to use IP)</th>
-                                    <th>SSH OK</th>
+                                    <th>API OK</th>
                                 </tr>
                             </thead>
                             <tbody id="wizNodesBody">
@@ -557,302 +632,306 @@
                 updateSelectedCount();
             })();
 
-        // ===== Cluster Discovery Wizard (async with live logs) =====
-        const modalEl = document.getElementById('clusterWizardModal');
-        if (!modalEl) return;
-        const modal = new bootstrap.Modal(modalEl);
+            // ===== Auth Options UI guard (renew-before < lifetime) =====
+            (function () {
+                const useSwitch = document.getElementById('UseApiToken');
+                const tokenOptions = document.getElementById('tokenOptions');
+                const lifeDays = document.getElementById('ApiTokenLifetimeDays');
+                const renewBefore = document.getElementById('ApiTokenRenewBeforeMinutes');
+                const form = document.getElementById('authOptionsForm');
 
-        const step1 = document.getElementById('wizard-step-1');
-        const step2 = document.getElementById('wizard-step-2');
-        const step3 = document.getElementById('wizard-step-3');
+                if (!form) return;
 
-        const btnPrev = document.getElementById('wizPrev');
-        const btnNext = document.getElementById('wizNext');
-        const btnSave = document.getElementById('wizSave');
+                function toggle() {
+                    tokenOptions.style.display = useSwitch.checked ? 'block' : 'none';
+                }
+                function clampRenewBefore() {
+                    const days = parseInt(lifeDays.value || '180', 10);
+                    const lifetimeMinutes = Math.max(1, days * 24 * 60);
+                    const rb = parseInt(renewBefore.value || '1440', 10);
+                    if (rb >= lifetimeMinutes) {
+                        renewBefore.value = lifetimeMinutes - 1;
+                    }
+                    renewBefore.max = lifetimeMinutes - 1;
+                }
+                form.addEventListener('submit', function (e) {
+                    if (!useSwitch.checked) return;
+                    const days = parseInt(lifeDays.value || '180', 10);
+                    const lifetimeMinutes = Math.max(1, days * 24 * 60);
+                    const rb = parseInt(renewBefore.value || '1440', 10);
+                    if (rb >= lifetimeMinutes) {
+                        e.preventDefault();
+                        alert(`Renew-before must be lower than the lifetime (${lifetimeMinutes} minutes).`);
+                    }
+                });
 
-        const seedHost = document.getElementById('wizSeedHost');
-        const username = document.getElementById('wizUsername');
-        const password = document.getElementById('wizPassword');
-        const logBox = document.getElementById('clusterDiscoveryLog');
-        const clusterNameInput = document.getElementById('wizClusterName');
-        const nodesBody = document.getElementById('wizNodesBody');
-        const errorSummary = document.getElementById('wizErrorSummary');
+                useSwitch?.addEventListener('change', toggle);
+                lifeDays?.addEventListener('input', clampRenewBefore);
+                renewBefore?.addEventListener('input', clampRenewBefore);
 
-        // Correct endpoints
-        const startUrl = '@Url.Action("StartProxmoxDiscovery", "Settings")';
-        const statusUrl = '@Url.Action("GetProxmoxDiscoveryStatus", "Settings")';
+                toggle();
+                clampRenewBefore();
+            })();
 
-        let discoveryId = null;
-        let lastLogCount = 0;
-        let pollTimer = null;
-        let discoveryResult = null;
+            // ===== Cluster Discovery Wizard (async with live logs) =====
+            const modalEl = document.getElementById('clusterWizardModal');
+            if (!modalEl) return;
+            const modal = new bootstrap.Modal(modalEl);
 
-        function setStep(n) {
-            [step1, step2, step3].forEach((s, i) => {
-                s.classList.toggle('active', i === (n - 1));
+            const step1 = document.getElementById('wizard-step-1');
+            const step2 = document.getElementById('wizard-step-2');
+            const step3 = document.getElementById('wizard-step-3');
+
+            const btnPrev = document.getElementById('wizPrev');
+            const btnNext = document.getElementById('wizNext');
+            const btnSave = document.getElementById('wizSave');
+
+            const seedHost = document.getElementById('wizSeedHost');
+            const username = document.getElementById('wizUsername');
+            const password = document.getElementById('wizPassword');
+            const logBox = document.getElementById('clusterDiscoveryLog');
+            const clusterNameInput = document.getElementById('wizClusterName');
+            const nodesBody = document.getElementById('wizNodesBody');
+            const errorSummary = document.getElementById('wizErrorSummary');
+
+            // Correct endpoints
+            const startUrl = '@Url.Action("StartProxmoxDiscovery", "Settings")';
+            const statusUrl = '@Url.Action("GetProxmoxDiscoveryStatus", "Settings")';
+
+            let discoveryId = null;
+            let lastLogCount = 0;
+            let pollTimer = null;
+            let discoveryResult = null;
+
+            function setStep(n) {
+                [step1, step2, step3].forEach((s, i) => s.classList.toggle('active', i === (n - 1)));
+                btnPrev.classList.toggle('d-none', n === 1);
+                btnNext.classList.toggle('d-none', n !== 1);
+                btnSave.classList.toggle('d-none', n !== 3);
+                errorSummary.classList.add('d-none');
+                errorSummary.textContent = '';
+            }
+
+            function appendLog(line) {
+                if (!logBox) return;
+                logBox.textContent += line + "\n";
+                logBox.scrollTop = logBox.scrollHeight;
+            }
+
+            async function pollDiscovery() {
+                if (!discoveryId) return;
+                try {
+                    const resp = await fetch(statusUrl + '?id=' + encodeURIComponent(discoveryId));
+                    if (!resp.ok) {
+                        appendLog("Polling failed with HTTP " + resp.status);
+                        clearInterval(pollTimer); pollTimer = null;
+                        setStep(1); return;
+                    }
+                    const data = await resp.json();
+                    const logs = data.logs || [];
+                    for (let i = lastLogCount; i < logs.length; i++) appendLog(logs[i]);
+                    lastLogCount = logs.length;
+
+                    if (!data.completed) return;
+
+                    clearInterval(pollTimer); pollTimer = null; discoveryId = null;
+
+                    if (!data.success) {
+                        appendLog("Discovery failed: " + (data.error || "Unknown error"));
+                        alert("Discovery failed: " + (data.error || "Unknown error"));
+                        setStep(1); return;
+                    }
+
+                    if (!data.result || !data.result.nodes || !data.result.nodes.length) {
+                        appendLog("Discovery returned no nodes.");
+                        alert("Discovery returned no nodes.");
+                        setStep(1); return;
+                    }
+
+                    discoveryResult = data.result;
+                    setStep(3);
+
+                    clusterNameInput.value = discoveryResult.clusterName || "";
+                    clusterNameInput.readOnly = true;
+
+                    nodesBody.innerHTML = "";
+                    const nodes = (discoveryResult.nodes || []).slice()
+                        .sort((a, b) => (a.nodeName || '').localeCompare(b.nodeName || '', undefined, { sensitivity: 'base' }));
+
+                    // Render rows: Node (read-only input), IP (editable), FQDN (editable)
+                    nodes.forEach((n, idx) => {
+                        const safe = s => (s || "").replaceAll("<", "&lt;");
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `
+                            <td>
+                                <input type="checkbox" class="form-check-input wiz-node-use" checked data-index="${idx}" />
+                            </td>
+                            <td>
+                                <input type="text"
+                                       class="form-control form-control-sm small-input wiz-node-name"
+                                       value="${safe(n.nodeName)}"
+                                       data-index="${idx}"
+                                       readonly
+                                       aria-readonly="true"
+                                       title="Node name discovered from Proxmox (read-only)" />
+                            </td>
+                            <td>
+                                <input type="text" class="form-control form-control-sm small-input wiz-node-ip"
+                                       value="${safe(n.ip)}" data-index="${idx}" />
+                            </td>
+                            <td>
+                                <input type="text" class="form-control form-control-sm wiz-node-host"
+                                       value="${safe(n.reverseName)}" placeholder="optional" data-index="${idx}" />
+                            </td>
+                            <td>
+                                <span class="badge ${n.sshOk ? "bg-success" : "bg-warning"}">
+                                    ${n.sshOk ? "OK" : "Check"}
+                                </span>
+                            </td>
+                        `;
+                        nodesBody.appendChild(tr);
+                    });
+
+                } catch (e) {
+                    appendLog("Polling exception: " + e);
+                    clearInterval(pollTimer); pollTimer = null;
+                    setStep(1);
+                }
+            }
+
+            btnNext.addEventListener('click', async function () {
+                if (!seedHost.value || !username.value || !password.value) {
+                    alert("Please fill in seed host, username and password."); return;
+                }
+
+                setStep(2);
+                logBox.textContent = "";
+                appendLog("Connecting to seed host " + seedHost.value + " ...");
+
+                lastLogCount = 0; discoveryId = null; discoveryResult = null;
+                if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+
+                try {
+                    const resp = await fetch(startUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            seedHost: seedHost.value,
+                            username: username.value,
+                            password: password.value
+                        })
+                    });
+
+                    if (!resp.ok) {
+                        appendLog("Discovery failed with HTTP " + resp.status);
+                        alert("Discovery failed. Check logs and credentials.");
+                        setStep(1); return;
+                    }
+
+                    const data = await resp.json();
+                    if (data.success === false) {
+                        appendLog("Failed to start discovery: " + (data.error || "Unknown error"));
+                        alert("Failed to start discovery: " + (data.error || "Unknown error"));
+                        setStep(1); return;
+                    }
+                    if (!data.id) {
+                        appendLog("Failed to start discovery: missing id");
+                        alert("Failed to start discovery: missing id.");
+                        setStep(1); return;
+                    }
+
+                    discoveryId = data.id;
+                    pollTimer = setInterval(pollDiscovery, 1000);
+                } catch (e) {
+                    appendLog("Discovery start exception: " + e);
+                    alert("Discovery failed: " + e);
+                    setStep(1);
+                }
             });
-            btnPrev.classList.toggle('d-none', n === 1);
-            btnNext.classList.toggle('d-none', n !== 1);
-            btnSave.classList.toggle('d-none', n !== 3);
-            errorSummary.classList.add('d-none');
-            errorSummary.textContent = '';
-        }
 
-        function appendLog(line) {
-            if (!logBox) return;
-            logBox.textContent += line + "\n";
-            logBox.scrollTop = logBox.scrollHeight;
-        }
+            btnPrev.addEventListener('click', function () { setStep(1); });
 
-        async function pollDiscovery() {
-            if (!discoveryId) return;
+            btnSave.addEventListener('click', async function () {
+                if (!discoveryResult) return;
 
-            try {
-                const resp = await fetch(statusUrl + '?id=' + encodeURIComponent(discoveryId));
-                if (!resp.ok) {
-                    appendLog("Polling failed with HTTP " + resp.status);
-                    clearInterval(pollTimer);
-                    pollTimer = null;
-                    setStep(1);
+                const clusterName = (clusterNameInput.value || "").trim();
+                if (!clusterName) {
+                    errorSummary.textContent = "Cluster name is required.";
+                    errorSummary.classList.remove('d-none');
                     return;
                 }
 
-                const data = await resp.json();
+                const rows = nodesBody.querySelectorAll('tr');
+                const nodes = [];
+                rows.forEach(tr => {
+                    const useCb = tr.querySelector('.wiz-node-use');
+                    if (!useCb || !useCb.checked) return;
 
-                // Append any new logs
-                const logs = data.logs || [];
-                for (let i = lastLogCount; i < logs.length; i++) {
-                    appendLog(logs[i]);
-                }
-                lastLogCount = logs.length;
+                    const name = tr.querySelector('.wiz-node-name')?.value?.trim();
+                    const ip   = tr.querySelector('.wiz-node-ip')?.value?.trim();
+                    const host = tr.querySelector('.wiz-node-host')?.value?.trim();
 
-                // If not completed yet, just keep polling
-                if (!data.completed) {
+                    if (!name || !ip) return;
+
+                    nodes.push({ nodeName: name, ip: ip, hostAddress: host || ip });
+                });
+
+                if (nodes.length === 0) {
+                    errorSummary.textContent = "Select at least one node to add.";
+                    errorSummary.classList.remove('d-none');
                     return;
                 }
 
-                // Completed → stop polling
-                clearInterval(pollTimer);
-                pollTimer = null;
-                discoveryId = null;
+                try {
+                    const resp = await fetch('@Url.Action("CreateClusterFromDiscovery", "Settings")', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            clusterName: clusterName,
+                            username: username.value,
+                            password: password.value,
+                            nodes: nodes
+                        })
+                    });
 
-                // On completion, success MUST be true; otherwise it's a failure
-                if (!data.success) {
-                    appendLog("Discovery failed: " + (data.error || "Unknown error"));
-                    alert("Discovery failed: " + (data.error || "Unknown error"));
-                    setStep(1);
-                    return;
+                    if (!resp.ok) {
+                        const txt = await resp.text();
+                        errorSummary.textContent = "Failed to save cluster: " + txt;
+                        errorSummary.classList.remove('d-none');
+                        return;
+                    }
+
+                    const data = await resp.json();
+                    if (!data || !data.clusterId) {
+                        errorSummary.textContent = "Cluster saved but response was missing cluster id.";
+                        errorSummary.classList.remove('d-none');
+                        return;
+                    }
+
+                    // Jump straight to Storage tab for the new cluster
+                    window.location = '@Url.Action("ProxmoxHub", "Settings")'
+                        + '?selectedId=' + encodeURIComponent(data.clusterId)
+                        + '&tab=storage#pane-storage';
+
+                } catch (e) {
+                    errorSummary.textContent = "Error saving cluster: " + e;
+                    errorSummary.classList.remove('d-none');
                 }
+            });
 
-                if (!data.result || !data.result.nodes || !data.result.nodes.length) {
-                    appendLog("Discovery returned no nodes.");
-                    alert("Discovery returned no nodes.");
-                    setStep(1);
-                    return;
-                }
-
-                // Success → build step 3 UI
-                discoveryResult = data.result;
-                setStep(3);
-
-                clusterNameInput.value = discoveryResult.clusterName || "";
-                clusterNameInput.readOnly = true;
-
+            // Reset wizard on open
+            modalEl.addEventListener('show.bs.modal', function () {
+                setStep(1);
+                seedHost.value = "";
+                username.value = "root@pam";
+                password.value = "";
+                logBox.textContent = "";
                 nodesBody.innerHTML = "";
-                const nodes = (discoveryResult.nodes || [])
-                    .slice()
-                    .sort((a, b) =>
-                        (a.nodeName || '').localeCompare(b.nodeName || '', undefined, { sensitivity: 'base' })
-                    );
-
-                nodes.forEach((n, idx) => {
-                    const tr = document.createElement('tr');
-                    tr.innerHTML = `
-                        <td>
-                            <input type="checkbox" class="form-check-input wiz-node-use" checked data-index="${idx}" />
-                        </td>
-                        <td>
-                            <input type="text" class="form-control form-control-sm small-input wiz-node-name"
-                                   value="${n.nodeName || ""}" data-index="${idx}" />
-                        </td>
-                        <td>
-                            <input type="text" class="form-control form-control-sm small-input wiz-node-ip"
-                                   value="${n.ip || ""}" data-index="${idx}" />
-                        </td>
-                        <td>
-                            <input type="text" class="form-control form-control-sm wiz-node-host"
-                                   value="${n.reverseName || ""}" placeholder="optional" data-index="${idx}" />
-                        </td>
-                        <td>
-                            <span class="badge ${n.sshOk ? "bg-success" : "bg-warning"}">
-                                ${n.sshOk ? "OK" : "Check"}
-                            </span>
-                        </td>
-                    `;
-                    nodesBody.appendChild(tr);
-                });
-
-            } catch (e) {
-                appendLog("Polling exception: " + e);
-                clearInterval(pollTimer);
-                pollTimer = null;
-                setStep(1);
-            }
-        }
-
-        btnNext.addEventListener('click', async function () {
-            if (!seedHost.value || !username.value || !password.value) {
-                alert("Please fill in seed host, username and password.");
-                return;
-            }
-
-            setStep(2);
-            logBox.textContent = "";
-            appendLog("Connecting to seed host " + seedHost.value + " ...");
-
-            lastLogCount = 0;
-            discoveryId = null;
-            discoveryResult = null;
-            if (pollTimer) {
-                clearInterval(pollTimer);
-                pollTimer = null;
-            }
-
-            try {
-                const resp = await fetch(startUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        seedHost: seedHost.value,
-                        username: username.value,
-                        password: password.value
-                    })
-                });
-
-                if (!resp.ok) {
-                    appendLog("Discovery failed with HTTP " + resp.status);
-                    alert("Discovery failed. Check logs and credentials.");
-                    setStep(1);
-                    return;
-                }
-
-                const data = await resp.json();
-
-                if (data.success === false) {
-                    appendLog("Failed to start discovery: " + (data.error || "Unknown error"));
-                    alert("Failed to start discovery: " + (data.error || "Unknown error"));
-                    setStep(1);
-                    return;
-                }
-
-                if (!data.id) {
-                    appendLog("Failed to start discovery: missing id");
-                    alert("Failed to start discovery: missing id.");
-                    setStep(1);
-                    return;
-                }
-
-                discoveryId = data.id;
-                pollTimer = setInterval(pollDiscovery, 1000);
-            } catch (e) {
-                appendLog("Discovery start exception: " + e);
-                alert("Discovery failed: " + e);
-                setStep(1);
-            }
-        });
-
-        btnPrev.addEventListener('click', function () {
-            setStep(1);
-        });
-
-        btnSave.addEventListener('click', async function () {
-            if (!discoveryResult) return;
-
-            const clusterName = (clusterNameInput.value || "").trim();
-            if (!clusterName) {
-                errorSummary.textContent = "Cluster name is required.";
-                errorSummary.classList.remove('d-none');
-                return;
-            }
-
-            const rows = nodesBody.querySelectorAll('tr');
-            const nodes = [];
-            rows.forEach(tr => {
-                const useCb = tr.querySelector('.wiz-node-use');
-                if (!useCb || !useCb.checked) return;
-
-                const name = tr.querySelector('.wiz-node-name')?.value?.trim();
-                const ip = tr.querySelector('.wiz-node-ip')?.value?.trim();
-                const host = tr.querySelector('.wiz-node-host')?.value?.trim();
-
-                if (!name || !ip) return;
-
-                nodes.push({
-                    nodeName: name,
-                    ip: ip,
-                    hostAddress: host || ip
-                });
+                discoveryResult = null;
+                discoveryId = null;
+                lastLogCount = 0;
+                if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
             });
-
-            if (nodes.length === 0) {
-                errorSummary.textContent = "Select at least one node to add.";
-                errorSummary.classList.remove('d-none');
-                return;
-            }
-
-            try {
-                const resp = await fetch('@Url.Action("CreateClusterFromDiscovery", "Settings")', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        clusterName: clusterName,
-                        username: username.value,
-                        password: password.value,
-                        nodes: nodes
-                    })
-                });
-
-        if (!resp.ok) {
-            const txt = await resp.text();
-            errorSummary.textContent = "Failed to save cluster: " + txt;
-            errorSummary.classList.remove('d-none');
-            return;
-        }
-
-        const data = await resp.json();
-        if (!data || !data.clusterId) {
-            errorSummary.textContent = "Cluster saved but response was missing cluster id.";
-            errorSummary.classList.remove('d-none');
-            return;
-        }
-
-        // 🔽 Jump straight to Storage tab for the new cluster
-        window.location = '@Url.Action("ProxmoxHub", "Settings")'
-            + '?selectedId=' + encodeURIComponent(data.clusterId)
-            + '&tab=storage#pane-storage';
-
-            } catch (e) {
-                errorSummary.textContent = "Error saving cluster: " + e;
-                errorSummary.classList.remove('d-none');
-            }
-        });
-
-        // Reset wizard on open
-        modalEl.addEventListener('show.bs.modal', function () {
-            setStep(1);
-            seedHost.value = "";
-            username.value = "root@pam";
-            password.value = "";
-            logBox.textContent = "";
-            nodesBody.innerHTML = "";
-            discoveryResult = null;
-            discoveryId = null;
-            lastLogCount = 0;
-            if (pollTimer) {
-                clearInterval(pollTimer);
-                pollTimer = null;
-            }
-        });
 
         });
     </script>

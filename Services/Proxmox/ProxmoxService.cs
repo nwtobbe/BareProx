@@ -21,28 +21,28 @@
 
 using BareProx.Data;
 using BareProx.Models;
+using BareProx.Services.Proxmox.Authentication;
+using BareProx.Services.Proxmox.Helpers;
+using BareProx.Services.Proxmox.Ops;
+using BareProx.Services.Proxmox.Snapshots;
+using BareProx.Services.Restore;
 using Microsoft.EntityFrameworkCore;
+using Polly;
+using Renci.SshNet;
 using System.Diagnostics;
+using System.Linq;                    // for OrderBy/Select
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;   // for SHA1
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using System.Linq;                    // for OrderBy/Select
-using System.Security.Cryptography;   // for SHA1
-using Renci.SshNet;
-using BareProx.Services.Proxmox.Authentication;
-using BareProx.Services.Proxmox.Helpers;
-using BareProx.Services.Restore;
-using BareProx.Services.Proxmox.Ops;
-using BareProx.Services.Proxmox.Snapshots;
 
 namespace BareProx.Services.Proxmox
 {
     public class ProxmoxService
     {
-        private readonly ApplicationDbContext _context;
         private readonly IEncryptionService _encryptionService;
         private readonly INetappVolumeService _netappVolumeService;
         private readonly ILogger<ProxmoxService> _logger;
@@ -51,9 +51,10 @@ namespace BareProx.Services.Proxmox
         private readonly IProxmoxInventoryCache _invCache;
         private readonly IProxmoxOpsService _proxmoxOps;
         private readonly IProxmoxSnapshotsService _proxmoxSnapshots;
+        private readonly IDbFactory _dbf;
 
         public ProxmoxService(
-            ApplicationDbContext context,
+            IDbFactory dbf,
             IEncryptionService encryptionService,
             INetappVolumeService netappVolumeService,
             ILogger<ProxmoxService> logger,
@@ -63,7 +64,7 @@ namespace BareProx.Services.Proxmox
             IProxmoxOpsService proxmoxOps,
             IProxmoxSnapshotsService proxmoxSnapshots)
         {
-            _context = context;
+            _dbf = dbf;
             _encryptionService = encryptionService;
             _netappVolumeService = netappVolumeService;
             _logger = logger;
@@ -113,7 +114,8 @@ namespace BareProx.Services.Proxmox
      CancellationToken ct = default)
         {
             // 1) Load cluster + hosts
-            var cluster = await _context.ProxmoxClusters
+            await using var db = await _dbf.CreateAsync(ct);
+            var cluster = await db.ProxmoxClusters
                 .Include(c => c.Hosts)
                 .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
             if (cluster == null)
@@ -121,7 +123,9 @@ namespace BareProx.Services.Proxmox
 
             // 2) Discover which NFS storages Proxmox actually has mounted
             var proxmoxStorageNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var host in _proxmoxHelpers.GetQueryableHosts(cluster))
+            var hosts = _proxmoxHelpers.GetQueryableHostsAsync(cluster, CancellationToken.None).GetAwaiter().GetResult();
+
+            foreach (var host in hosts)
             {
                 var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/storage";
                 var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
@@ -141,7 +145,7 @@ namespace BareProx.Services.Proxmox
             }
 
             // 3) Load *selected* NetApp volumes for this controller (Disabled != true)
-            var selectedEnabledForController = await _context.SelectedNetappVolumes
+            var selectedEnabledForController = await db.SelectedNetappVolumes
                 .AsNoTracking()
                 .Where(v => v.NetappControllerId == netappControllerId && v.Disabled != true)
                 .Select(v => v.VolumeName)
@@ -167,7 +171,9 @@ namespace BareProx.Services.Proxmox
             // 6) For each host, list its VMs and scan their configs
             var diskRegex = new Regex(@"^(scsi|virtio|ide|sata|efidisk|tpmstate)\d+$", RegexOptions.IgnoreCase);
 
-            foreach (var host in _proxmoxHelpers.GetQueryableHosts(cluster))
+            var Onlinehosts = _proxmoxHelpers.GetQueryableHostsAsync(cluster, CancellationToken.None).GetAwaiter().GetResult();
+
+            foreach (var host in Onlinehosts)
             {
                 // a) list VMs
                 var vmListUrl = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/qemu";
@@ -237,20 +243,33 @@ namespace BareProx.Services.Proxmox
         }
 
         public async Task<string> GetVmConfigAsync(
-    ProxmoxCluster cluster,
-    string host,
-    int vmId,
-    CancellationToken ct = default)
+            ProxmoxCluster cluster,
+            string host,                  // node name or host address
+            int vmId,
+            CancellationToken ct = default)
         {
-            // Find the correct host address
-            var hostAddress = _proxmoxHelpers.GetQueryableHosts(cluster).First(h => h.Hostname == host).HostAddress;
-            // Prepare SSH user (strip @pam/@pve if present)
-            var sshUser = cluster.Username;
-            int atIndex = sshUser.IndexOf('@');
-            if (atIndex > 0)
-                sshUser = sshUser.Substring(0, atIndex);
+            // Prefer inventory-backed "queryable" hosts; fall back to any configured host
+            var hosts = await _proxmoxHelpers.GetQueryableHostsAsync(cluster, ct);
 
-            // Get raw config text via SSH
+            var h =
+                hosts.FirstOrDefault(x =>
+                    string.Equals(x.Hostname, host, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(x.HostAddress, host, StringComparison.OrdinalIgnoreCase))
+                ?? cluster.Hosts?.FirstOrDefault(x =>
+                    string.Equals(x.Hostname, host, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(x.HostAddress, host, StringComparison.OrdinalIgnoreCase));
+
+            if (h is null || string.IsNullOrWhiteSpace(h.HostAddress))
+                throw new InvalidOperationException("No matching Proxmox host (by name or address) with a usable HostAddress.");
+
+            var hostAddress = h.HostAddress!;
+
+            // Prepare SSH user (strip realm like @pam / @pve)
+            var sshUser = cluster.Username ?? "root@pam";
+            var atIndex = sshUser.IndexOf('@');
+            if (atIndex > 0) sshUser = sshUser[..atIndex];
+
+            // Get raw config via SSH
             var rawConfig = await GetRawProxmoxVmConfigAsync(
                 hostAddress,
                 sshUser,
@@ -258,24 +277,19 @@ namespace BareProx.Services.Proxmox
                 vmId
             );
 
-            // Parse raw config into a C# object with:
-            // - root config
-            // - snapshots (dictionary: name => dictionary)
+            // Parse raw config and build JSON
             var (rootConfig, snapshots) = ParseProxmoxConfigWithSnapshots(rawConfig);
 
-            // Build JSON result
             var result = new Dictionary<string, object>
             {
                 ["config"] = rootConfig
             };
-
             if (snapshots.Count > 0)
-            {
                 result["snapshots"] = snapshots;
-            }
 
             return JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
         }
+
 
         private (Dictionary<string, string> config, Dictionary<string, Dictionary<string, string>> snapshots)
        ParseProxmoxConfigWithSnapshots(string raw)
@@ -455,9 +469,16 @@ namespace BareProx.Services.Proxmox
             string options = "vers=3",
             CancellationToken ct = default)
         {
-            var nodeHost = _proxmoxHelpers
-                .GetQueryableHosts(cluster)
-                .FirstOrDefault(h => h.Hostname == node)?.HostAddress ?? string.Empty;
+            var nodeHost =
+                (await _proxmoxHelpers.GetQueryableHostsAsync(cluster, ct))
+                    .FirstOrDefault(h =>
+                        string.Equals(h.Hostname, node, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(h.HostAddress, node, StringComparison.OrdinalIgnoreCase))?.HostAddress
+                ?? cluster.Hosts?.FirstOrDefault(h =>
+                        string.Equals(h.Hostname, node, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(h.HostAddress, node, StringComparison.OrdinalIgnoreCase))?.HostAddress
+                ?? string.Empty;
+
 
             if (string.IsNullOrWhiteSpace(nodeHost))
                 return false;
@@ -553,7 +574,14 @@ namespace BareProx.Services.Proxmox
         // Shutdown VM
         public async Task ShutdownAndRemoveVmAsync(ProxmoxCluster cluster, string nodeName, int vmId, CancellationToken ct = default)
         {
-            var host = _proxmoxHelpers.GetQueryableHosts(cluster).First(h => h.Hostname == nodeName);
+            var host =
+                (await _proxmoxHelpers.GetQueryableHostsAsync(cluster, ct))
+                    .FirstOrDefault(h => string.Equals(h.Hostname, nodeName, StringComparison.OrdinalIgnoreCase))
+                ?? cluster.Hosts?.FirstOrDefault(h => string.Equals(h.Hostname, nodeName, StringComparison.OrdinalIgnoreCase));
+
+            if (host is null)
+                throw new InvalidOperationException($"No Proxmox host with node name '{nodeName}' found in cluster {cluster.Id}.");
+
             var baseApiUrl = $"https://{host.HostAddress}:8006/api2/json/nodes/{nodeName}/qemu/{vmId}";
 
             // 1) Get current VM status
@@ -650,7 +678,13 @@ namespace BareProx.Services.Proxmox
             {
                 result[storage] = new List<ProxmoxVM>();
 
-                foreach (var host in _proxmoxHelpers.GetQueryableHosts(cluster))
+                var hosts = _proxmoxHelpers.GetQueryableHostsAsync(cluster, CancellationToken.None)
+                           .GetAwaiter().GetResult()
+                           .ToList();
+                if (hosts.Count == 0 && cluster.Hosts != null)
+                    hosts = cluster.Hosts.ToList();
+
+                foreach (var host in hosts)
                 {
                     var vms = await GetVmsOnNodeAsync(cluster, host.Hostname, storage, ct);
                     result[storage].AddRange(vms);
@@ -665,7 +699,13 @@ namespace BareProx.Services.Proxmox
             var result = new List<ProxmoxStorageDto>();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase); // avoid duplicates by name
 
-            foreach (var host in _proxmoxHelpers.GetQueryableHosts(cluster))
+            var hosts = _proxmoxHelpers.GetQueryableHostsAsync(cluster, CancellationToken.None)
+                           .GetAwaiter().GetResult()
+                           .ToList();
+            if (hosts.Count == 0 && cluster.Hosts != null)
+                hosts = cluster.Hosts.ToList();
+
+            foreach (var host in hosts)
             {
                 var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/storage";
 
@@ -811,34 +851,66 @@ namespace BareProx.Services.Proxmox
 
         // Helper: find a cluster + host that matches the given node (by Hostname or HostAddress)
         private async Task<(ProxmoxCluster Cluster, ProxmoxHost Host)?> ResolveClusterAndHostAsync(
-            string node,
-            CancellationToken ct = default)
+     string node,
+     CancellationToken ct = default)
         {
-            var clusters = await _context.ProxmoxClusters
+            var wanted = node?.Trim() ?? string.Empty;
+
+            // Load clusters + hosts without tracking to reduce overhead
+            await using var db = await _dbf.CreateAsync(ct);
+
+            var clusters = await db.ProxmoxClusters
                 .Include(c => c.Hosts)
+                .AsNoTracking()
                 .ToListAsync(ct);
 
-            if (clusters.Count == 0) return null;
+            if (clusters.Count == 0)
+                return null;
 
-            // Try to find a host whose Hostname or HostAddress matches the node string
-            foreach (var c in clusters)
+            // 1) If caller provided a node hint, try to match an ONLINE (queryable) host first
+            if (!string.IsNullOrEmpty(wanted))
             {
-                var h = c.Hosts.FirstOrDefault(x =>
-                    x.Hostname.Equals(node, StringComparison.OrdinalIgnoreCase) ||
-                    x.HostAddress.Equals(node, StringComparison.OrdinalIgnoreCase));
+                foreach (var c in clusters)
+                {
+                    var onlineHosts = await _proxmoxHelpers.GetQueryableHostsAsync(c, ct);
+                    var oh = onlineHosts.FirstOrDefault(h =>
+                                string.Equals(h.Hostname, wanted, StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(h.HostAddress, wanted, StringComparison.OrdinalIgnoreCase));
+                    if (oh != null)
+                        return (c, oh);
+                }
 
-                if (h != null) return (c, h);
+                // 2) If not online, try any configured host in any cluster
+                foreach (var c in clusters)
+                {
+                    var h = c.Hosts?.FirstOrDefault(x =>
+                                string.Equals(x.Hostname, wanted, StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(x.HostAddress, wanted, StringComparison.OrdinalIgnoreCase));
+                    if (h != null)
+                        return (c, h);
+                }
             }
 
-            // Fallback: just use the first cluster/host
-            var fallbackCluster = clusters.First();
-            var fallbackHost = fallbackCluster.Hosts.FirstOrDefault();
-            if (fallbackHost == null) return null;
+            // 3) No hint or no match: prefer the first cluster with any ONLINE host
+            foreach (var c in clusters)
+            {
+                var onlineHosts = await _proxmoxHelpers.GetQueryableHostsAsync(c, ct);
+                var oh = onlineHosts.FirstOrDefault();
+                if (oh != null)
+                    return (c, oh);
+            }
 
-            return (fallbackCluster, fallbackHost);
+            // 4) Final fallback: first configured host we can find
+            var fbCluster = clusters.FirstOrDefault(c => c.Hosts != null && c.Hosts.Count > 0);
+            if (fbCluster == null)
+                return null;
+
+            var fbHost = fbCluster.Hosts.FirstOrDefault();
+            return fbHost == null ? null : (fbCluster, fbHost);
         }
 
-    
+
+
         public async Task<bool> RenameVmDirectoryAndFilesAsync(
             string nodeName,
             string storageName,

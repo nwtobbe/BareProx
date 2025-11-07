@@ -49,6 +49,8 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using TimeZoneConverter;
+using IOPath = System.IO.Path;
+using IODirectory = System.IO.Directory;
 
 namespace BareProx.Controllers
 {
@@ -72,6 +74,7 @@ namespace BareProx.Controllers
         private readonly IConfiguration _configuration;
         private readonly IProxmoxClusterDiscoveryService _clusterDiscovery;
         private readonly ICollectionService _collector;
+        private readonly IQueryDbFactory _qdb;
 
         // Live Proxmox discovery states (for wizard log polling)
         private static readonly ConcurrentDictionary<Guid, ProxmoxDiscoveryState> _proxmoxDiscoveryStates
@@ -136,14 +139,15 @@ namespace BareProx.Controllers
             IOptionsMonitor<CertificateOptions> certOptions,
             IConfiguration configuration,
             IProxmoxClusterDiscoveryService clusterDiscovery,
-            ICollectionService collector
+            ICollectionService collector,
+            IQueryDbFactory qdb
         )
         {
             _context = context;
             _features = features;
             _proxmoxService = proxmoxService;
             _encryptionService = encryptionService;
-            _configFile = Path.Combine("/config", "appsettings.json");
+            _configFile = IOPath.Combine("/config", "appsettings.json");
             _certService = certService;
             _appLifetime = appLifetime;
             _netappVolumeService = netappVolumeService;
@@ -155,6 +159,7 @@ namespace BareProx.Controllers
             _certOptions = certOptions;
             _configuration = configuration;
             _collector = collector;
+            _qdb = qdb;
         }
 
         // =====================================================================
@@ -347,23 +352,39 @@ namespace BareProx.Controllers
                 return RedirectToAction(nameof(Config), new { pane = "certificates" });
             }
 
-            var configCertsDir = Path.Combine("/config", "Certs");
-            Directory.CreateDirectory(configCertsDir);
-            var targetPath = Path.Combine(configCertsDir, "https.pfx");
+            var configCertsDir = IOPath.Combine("/config", "Certs");
+            IODirectory.CreateDirectory(configCertsDir);
+            var targetPath = IOPath.Combine(configCertsDir, "https.pfx");
 
             if (System.IO.File.Exists(targetPath))
             {
                 var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
-                var backupPath = Path.Combine(configCertsDir, $"https.pfx.{stamp}.old");
-                try
+                var baseName = $"https.pfx.{stamp}";
+                var backupPath = IOPath.Combine(configCertsDir, $"{baseName}.old");
+
+                // Try the plain stamped name first, then add a short counter if that exists too
+                const int maxAttempts = 10;
+                var attempt = 0;
+
+                while (true)
                 {
-                    System.IO.File.Move(targetPath, backupPath, overwrite: false);
-                }
-                catch
-                {
-                    var rnd = Guid.NewGuid().ToString("N")[..8];
-                    var backupPath2 = Path.Combine(configCertsDir, $"https.pfx.{stamp}-{rnd}.old");
-                    System.IO.File.Move(targetPath, backupPath2, overwrite: false);
+                    try
+                    {
+                        System.IO.File.Move(targetPath, backupPath, overwrite: false);
+                        break; // moved successfully
+                    }
+                    catch (IOException) when (attempt < maxAttempts)
+                    {
+                        // Likely name collision; try another variant
+                        attempt++;
+                        backupPath = IOPath.Combine(configCertsDir, $"{baseName}-{attempt:D2}.old");
+                        continue;
+                    }
+                    catch
+                    {
+                        // Re-throw anything that's not a simple collision or after too many attempts
+                        throw;
+                    }
                 }
             }
 
@@ -552,7 +573,7 @@ namespace BareProx.Controllers
 
             TempData["Success"] = "Certificate regenerated successfully.";
             TempData["RestartRequired"] = true;
-            return RedirectToAction(nameof(Config));
+            return RedirectToAction(nameof(Config), new { pane = "certificates" });
         }
 
         [HttpPost]
@@ -575,6 +596,18 @@ namespace BareProx.Controllers
                 .Include(c => c.Hosts)
                 .ToListAsync(ct);
 
+            // NEW: pull statuses from Query DB
+            var statusMap = new Dictionary<int, InventoryClusterStatus>();
+            await using (var q = await _qdb.CreateAsync(ct))
+            {
+                var ids = clusters.Select(c => c.Id).ToList();
+                var rows = await q.InventoryClusterStatuses
+                                  .Where(s => ids.Contains(s.ClusterId))
+                                  .ToListAsync(ct);
+                foreach (var r in rows)
+                    statusMap[r.ClusterId] = r;
+            }
+
             ProxmoxCluster? selected = null;
             SelectStorageViewModel? storageView = null;
 
@@ -591,11 +624,13 @@ namespace BareProx.Controllers
                 SelectedCluster = selected,
                 StorageView = storageView,
                 SelectedId = selectedId,
-                Message = TempData["Message"] as string
+                Message = TempData["Message"] as string,
+                ClusterStatuses = statusMap            // NEW
             };
 
             return View(vm);
         }
+
 
         [HttpPost]
         public async Task<IActionResult> AuthenticateCluster(int id, CancellationToken ct)
@@ -620,19 +655,59 @@ namespace BareProx.Controllers
 
 
         [HttpPost]
+        [ValidateAntiForgeryToken]
         public async Task<IActionResult> AddCluster(string name, string username, string password, CancellationToken ct)
         {
+            // Single-cluster guard (your UI is single-cluster mode)
+            var existingCount = await _context.ProxmoxClusters.CountAsync(ct);
+            if (existingCount > 0)
+            {
+                TempData["Message"] = "A cluster is already configured. Only one Proxmox cluster is supported.";
+                return RedirectToAction(nameof(ProxmoxHub));
+            }
+
+            // Normalize inputs
+            var clusterName = (name ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(clusterName))
+                clusterName = "ProxmoxCluster";
+
+            var userTrim = string.IsNullOrWhiteSpace(username) ? "root@pam" : username.Trim();
+            var pwd = password ?? string.Empty;
+
+            // Token defaults
+            var lifetimeDays = 180;                           // ~6 months
+            var renewBeforeMinutes = 10080;                   // 7 days
+            var lifetimeMinutes = checked(lifetimeDays * 24 * 60);
+            if (renewBeforeMinutes >= lifetimeMinutes)
+                renewBeforeMinutes = Math.Max(1, lifetimeMinutes - 1); // guard
+
+            // Ensure token id has user!token format
+            var tokenId = $"{userTrim}!bareprox";
+
             var cluster = new ProxmoxCluster
             {
-                Name = name,
-                Username = username,
-                PasswordHash = _encryptionService.Encrypt(password),
-                LastStatus = "configured",
-                LastChecked = DateTime.UtcNow
+                Name = clusterName,
+                Username = userTrim,
+                PasswordHash = _encryptionService.Encrypt(pwd),
+
+                // removed: LastStatus / LastChecked
+                UseApiToken = true,
+                ApiTokenId = tokenId,
+                ApiTokenLifetimeDays = lifetimeDays,
+                ApiTokenRenewBeforeMinutes = renewBeforeMinutes
             };
 
             _context.ProxmoxClusters.Add(cluster);
             await _context.SaveChangesAsync(ct);
+
+            // Write initial status to Query DB
+            await UpsertClusterStatusAsync(
+                cluster.Id,
+                cluster.Name,
+                lastStatus: "configured",
+                lastStatusMessage: null,
+                utcNow: DateTime.UtcNow,
+                ct);
 
             var success = await _proxmoxAuthenticator.AuthenticateAndStoreTokenCidAsync(cluster.Id, ct);
 
@@ -642,6 +717,7 @@ namespace BareProx.Controllers
 
             return RedirectToAction(nameof(ProxmoxHub), new { selectedId = cluster.Id, tab = "storage" });
         }
+
 
 
 
@@ -664,6 +740,7 @@ namespace BareProx.Controllers
 
             await _context.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
+            await RemoveClusterStatusAsync(id, ct);
 
             TempData["Message"] = $"Cluster \"{cluster.Name}\" and related data were deleted.";
             return RedirectToAction(nameof(ProxmoxHub));
@@ -675,7 +752,8 @@ namespace BareProx.Controllers
             var existing = await _context.ProxmoxClusters.FindAsync(cluster.Id, ct);
             if (existing == null) return NotFound();
 
-            existing.Username = cluster.Username;
+            if (!string.IsNullOrWhiteSpace(cluster.Username))
+                existing.Username = cluster.Username.Trim();
 
             if (!string.IsNullOrWhiteSpace(cluster.PasswordHash))
                 existing.PasswordHash = _encryptionService.Encrypt(cluster.PasswordHash);
@@ -684,6 +762,96 @@ namespace BareProx.Controllers
             TempData["Message"] = $"Cluster \"{existing.Name}\" saved.";
             return RedirectToAction(nameof(ProxmoxHub), new { selectedId = existing.Id, tab = "edit" });
         }
+
+
+        [HttpPost]
+        [ValidateAntiForgeryToken]
+        public async Task<IActionResult> EditClusterAuth(
+      ProxmoxClusterAuthOptionsVm vm,
+      string? action,
+      CancellationToken ct)
+        {
+            var c = await _context.ProxmoxClusters
+                .Include(x => x.Hosts)
+                .FirstOrDefaultAsync(x => x.Id == vm.Id, ct);
+            if (c == null) return NotFound();
+
+            // ---- Normalize + clamp lifetimes ----
+            var lifetimeDays = vm.ApiTokenLifetimeDays ?? c.ApiTokenLifetimeDays ?? 180;
+            if (lifetimeDays <= 0) lifetimeDays = 180;
+
+            var lifetimeMinutes = checked(lifetimeDays * 24 * 60);
+            var renewBefore = vm.ApiTokenRenewBeforeMinutes > 0
+                ? vm.ApiTokenRenewBeforeMinutes
+                : (c.ApiTokenRenewBeforeMinutes > 0 ? c.ApiTokenRenewBeforeMinutes : 1440);
+
+            if (vm.UseApiToken && renewBefore >= lifetimeMinutes)
+            {
+                TempData["Message"] = $"Renew-before must be lower than the lifetime ({lifetimeMinutes} minutes).";
+                return RedirectToAction(nameof(ProxmoxHub), new { selectedId = c.Id, tab = "edit" });
+            }
+
+            // Always persist lifetime settings (even if disabling)
+            c.ApiTokenLifetimeDays = lifetimeDays;
+            c.ApiTokenRenewBeforeMinutes = Math.Max(1, Math.Min(renewBefore, lifetimeMinutes - 1));
+
+            // ---- Handle DISABLE: keep stored secret so user can re-enable later ----
+            if (!vm.UseApiToken)
+            {
+                c.UseApiToken = false;
+                await _context.SaveChangesAsync(ct);
+                TempData["Message"] = "API token mode disabled. Using ticket/CSRF.";
+                return RedirectToAction(nameof(ProxmoxHub), new { selectedId = c.Id, tab = "edit" });
+            }
+
+            // ---- Enabling / staying enabled: normalize ApiTokenId ----
+            if (!string.IsNullOrWhiteSpace(vm.ApiTokenId))
+            {
+                var user = string.IsNullOrWhiteSpace(c.Username) ? "root@pam" : c.Username.Trim();
+                var id = vm.ApiTokenId.Trim();
+                c.ApiTokenId = id.Contains('!') ? id : $"{user}!{id}";
+            }
+            else if (string.IsNullOrWhiteSpace(c.ApiTokenId))
+            {
+                var user = string.IsNullOrWhiteSpace(c.Username) ? "root@pam" : c.Username.Trim();
+                // stable per-cluster default
+                c.ApiTokenId = $"{user}!bareprox-{c.Id}";
+            }
+
+            // Mark intent to use token mode
+            c.UseApiToken = true;
+            await _context.SaveChangesAsync(ct);
+
+            // ---- Rotate now (force recreate) OR ensure present/valid ----
+            bool ok;
+            if (string.Equals(action, "RotateTokenNow", StringComparison.OrdinalIgnoreCase))
+            {
+                // Make it "expiring now" so authenticator will recreate
+                c.ApiTokenExpiresUtc = DateTime.UtcNow.AddMinutes(1);
+                await _context.SaveChangesAsync(ct);
+                ok = await _proxmoxAuthenticator.AuthenticateAndStoreTokenCidAsync(c.Id, ct);
+            }
+            else
+            {
+                ok = await _proxmoxAuthenticator.AuthenticateAndStoreTokenCidAsync(c.Id, ct);
+            }
+
+            if (!ok)
+            {
+                // Could not create/rotate a token → revert to ticket mode so UI doesn't get stuck
+                c.UseApiToken = false;
+                await _context.SaveChangesAsync(ct);
+                TempData["Message"] = "Failed to enable API token mode (couldn’t create/rotate token). Check credentials/permissions.";
+                return RedirectToAction(nameof(ProxmoxHub), new { selectedId = c.Id, tab = "edit" });
+            }
+
+            TempData["Message"] = string.Equals(action, "RotateTokenNow", StringComparison.OrdinalIgnoreCase)
+                ? "Token rotated and API token mode enabled."
+                : "API token mode enabled.";
+            return RedirectToAction(nameof(ProxmoxHub), new { selectedId = c.Id, tab = "edit" });
+        }
+
+
 
         [HttpPost]
         public async Task<IActionResult> AddHost(int clusterId, string hostAddress, string hostname, CancellationToken ct)
@@ -722,29 +890,38 @@ namespace BareProx.Controllers
 
         [HttpPost]
         public async Task<IActionResult> StartProxmoxDiscovery(
-       [FromBody] StartProxmoxDiscoveryRequest req,
-       CancellationToken ct)
+     [FromBody] StartProxmoxDiscoveryRequest req,
+     CancellationToken ct)
         {
             if (string.IsNullOrWhiteSpace(req.SeedHost) ||
                 string.IsNullOrWhiteSpace(req.Username) ||
                 string.IsNullOrWhiteSpace(req.Password))
             {
-                return BadRequest(new { success = false, error = "Missing seed host / username / password." });
+                return BadRequest(new
+                {
+                    success = false,
+                    error = "Missing seed host / username / password."
+                });
             }
 
             var existingCount = await _context.ProxmoxClusters.CountAsync(ct);
             if (existingCount > 0)
             {
-                return BadRequest(new { success = false, error = "A cluster is already configured." });
+                return BadRequest(new
+                {
+                    success = false,
+                    error = "A cluster is already configured."
+                });
             }
 
             var id = Guid.NewGuid();
             var state = new ProxmoxDiscoveryState();
             _proxmoxDiscoveryStates[id] = state;
 
+            // Run discovery in background; UI will poll a /status endpoint using this id.
             _ = Task.Run(async () =>
             {
-                void Log(string msg)
+                void LogToState(string msg)
                 {
                     lock (state.Logs)
                     {
@@ -754,121 +931,56 @@ namespace BareProx.Controllers
 
                 try
                 {
-                    Log($"Connecting to {req.SeedHost} ...");
+                    LogToState($"Starting Proxmox API discovery using seed host '{req.SeedHost}' and user '{req.Username}' ...");
 
-                    var sshUser = req.Username;
-                    var at = sshUser.IndexOf('@');
-                    if (at > 0) sshUser = sshUser[..at];
+                    // Use API-based discovery with live log callback.
+                    var result = await _clusterDiscovery.DiscoverAsync(
+                        req.SeedHost,
+                        req.Username,
+                        req.Password,
+                        LogToState,
+                        CancellationToken.None); // don't bind to HTTP request lifetime
 
-                    using var ssh = new SshClient(req.SeedHost, sshUser, req.Password);
-                    ssh.ConnectionInfo.Timeout = TimeSpan.FromSeconds(10);
-                    ssh.Connect();
-                    Log("Connected. Reading /etc/pve/.members ...");
-
-                    using var cmd = ssh.CreateCommand("cat /etc/pve/.members");
-                    var json = cmd.Execute();
-                    if (cmd.ExitStatus != 0 || string.IsNullOrWhiteSpace(json))
-                        throw new Exception("Failed to read /etc/pve/.members from seed node.");
-
-                    using var doc = JsonDocument.Parse(json);
-                    var root = doc.RootElement;
-
-                    if (!root.TryGetProperty("cluster", out var clusterEl))
-                        throw new Exception("No 'cluster' section in .members.");
-
-                    var clusterName = clusterEl.GetProperty("name").GetString() ?? "ProxmoxCluster";
-
-                    if (!root.TryGetProperty("nodelist", out var nodelistEl) ||
-                        nodelistEl.ValueKind != JsonValueKind.Object)
+                    if (!result.Success)
                     {
-                        throw new Exception("No 'nodelist' section in .members.");
+                        state.Error = result.Error ?? "Discovery failed.";
+                        state.Success = false;
+                        state.Completed = true;
+                        LogToState("ERROR: " + state.Error);
+                        return;
                     }
 
-                    var nodes = new List<ProxmoxDiscoveryNode>();
-
-                    foreach (var prop in nodelistEl.EnumerateObject())
-                    {
-                        var nodeName = prop.Name;
-                        var nodeObj = prop.Value;
-
-                        if (!nodeObj.TryGetProperty("ip", out var ipEl))
-                            continue;
-
-                        var ip = ipEl.GetString() ?? "";
-                        if (string.IsNullOrWhiteSpace(ip))
-                            continue;
-
-                        Log($"Found node {nodeName} ({ip}). Reverse DNS + SSH probe...");
-
-                        string? reverse = null;
-                        try
-                        {
-                            if (IPAddress.TryParse(ip, out var ipAddr))
-                            {
-                                var entry = await Dns.GetHostEntryAsync(ipAddr);
-                                reverse = entry.HostName;
-                                Log($"  Reverse: {reverse}");
-                            }
-                        }
-                        catch
-                        {
-                            Log("  Reverse lookup failed.");
-                        }
-
-                        var sshOk = false;
-                        try
-                        {
-                            using var sshProbe = new SshClient(ip, sshUser, req.Password);
-                            sshProbe.ConnectionInfo.Timeout = TimeSpan.FromSeconds(5);
-                            sshProbe.Connect();
-                            sshOk = sshProbe.IsConnected;
-                            sshProbe.Disconnect();
-                        }
-                        catch
-                        {
-                            // ignore
-                        }
-
-                        Log($"  SSH: {(sshOk ? "OK" : "FAILED")}");
-
-                        nodes.Add(new ProxmoxDiscoveryNode(
-                            nodeName,
-                            ip,
-                            reverse,
-                            sshOk
-                        ));
-                    }
-
-                    ssh.Disconnect();
-
-                    if (nodes.Count == 0)
-                        throw new Exception("No nodes discovered in /etc/pve/.members.");
-
-                    var ordered = nodes
+                    // Map service result -> wizard DTOs.
+                    var nodes = result.Nodes
                         .OrderBy(n => n.NodeName, StringComparer.OrdinalIgnoreCase)
+                        .Select(n => new ProxmoxDiscoveryNode(
+                            n.NodeName,
+                            n.IpAddress,
+                            n.ReverseName,
+                            n.SshOk // here: "API reachable"
+                        ))
                         .ToList();
 
-                    state.Result = new ProxmoxDiscoveryResult(clusterName, ordered);
+                    state.Result = new ProxmoxDiscoveryResult(
+                        result.ClusterName ?? "ProxmoxCluster",
+                        nodes);
+
                     state.Success = true;
                     state.Completed = true;
-                    Log("Discovery completed.");
+                    LogToState("Discovery completed successfully.");
                 }
                 catch (Exception ex)
                 {
                     state.Error = ex.Message;
                     state.Success = false;
                     state.Completed = true;
-                    lock (state.Logs)
-                    {
-                        state.Logs.Add("ERROR: " + ex.Message);
-                    }
+                    LogToState("ERROR: " + ex.Message);
                 }
-            }, ct);
+            }, CancellationToken.None);
 
-            // IMPORTANT: include success + id
+            // Return the discovery id immediately; frontend will poll using this id.
             return Ok(new { success = true, id });
         }
-
 
 
         // ---------- Live discovery: poll status ----------
@@ -911,47 +1023,73 @@ namespace BareProx.Controllers
 
         [HttpPost]
         public async Task<IActionResult> CreateClusterFromDiscovery(
-       [FromBody] CreateClusterFromDiscoveryRequest req,
-       CancellationToken ct)
+     [FromBody] CreateClusterFromDiscoveryRequest req,
+     CancellationToken ct)
         {
+            // Basic payload validation
             if (string.IsNullOrWhiteSpace(req.ClusterName) ||
-                string.IsNullOrWhiteSpace(req.Username) ||
                 string.IsNullOrWhiteSpace(req.Password) ||
-                req.Nodes == null || req.Nodes.Count == 0)
+                req.Nodes is null || req.Nodes.Count == 0)
             {
                 return BadRequest("Invalid payload.");
             }
 
+            // Normalize username (default to root@pam)
+            var userTrim = (req.Username ?? "root@pam").Trim();
+
+            // Enforce single-cluster mode
             var existingCount = await _context.ProxmoxClusters.CountAsync(ct);
             if (existingCount > 0)
                 return BadRequest("A cluster is already configured.");
 
+            // Pick a seed host and verify credentials before persisting anything
             var firstNode = req.Nodes.First();
             var seedHost = !string.IsNullOrWhiteSpace(firstNode.HostAddress)
                 ? firstNode.HostAddress
                 : firstNode.Ip;
 
-            // Verify credentials/seed node before we write anything
-            var verify = await _clusterDiscovery.VerifyAsync(seedHost, req.Username, req.Password, ct);
+            var verify = await _clusterDiscovery.VerifyAsync(
+                seedHost,
+                userTrim,
+                req.Password,
+                log: null,
+                ct: ct);
+
             if (!verify.Success)
             {
-                return BadRequest("Verification against seed node failed: " + (verify.Error ?? "Unknown error"));
+                return BadRequest("Verification against seed node failed: " +
+                                  (verify.Error ?? "Unknown error"));
             }
 
+            // Create cluster with API token defaults enabled
             var cluster = new ProxmoxCluster
             {
                 Name = req.ClusterName.Trim(),
-                Username = req.Username.Trim(),
+                Username = userTrim,
                 PasswordHash = _encryptionService.Encrypt(req.Password),
-                LastStatus = "configured",
-                LastChecked = DateTime.UtcNow
+
+                // removed: LastStatus / LastChecked
+                UseApiToken = true,
+                ApiTokenId = $"{userTrim}!bareprox",
+                ApiTokenLifetimeDays = 180,
+                ApiTokenRenewBeforeMinutes = 10080
             };
 
             await using var tx = await _context.Database.BeginTransactionAsync(ct);
-
             _context.ProxmoxClusters.Add(cluster);
             await _context.SaveChangesAsync(ct);
 
+            // Write initial status to Query DB
+            await UpsertClusterStatusAsync(
+                cluster.Id,
+                cluster.Name,
+                lastStatus: "configured",
+                lastStatusMessage: null,
+                utcNow: DateTime.UtcNow,
+                ct);
+
+
+            // Build host list
             var hosts = req.Nodes
                 .Where(n => !string.IsNullOrWhiteSpace(n.Ip))
                 .Select(n => new ProxmoxHost
@@ -972,14 +1110,15 @@ namespace BareProx.Controllers
 
             _context.ProxmoxHosts.AddRange(hosts);
             await _context.SaveChangesAsync(ct);
+
             await tx.CommitAsync(ct);
 
-            // Auto-authenticate discovered cluster
+            // Auto-authenticate discovered cluster (will create/rotate token when UseApiToken = true)
             var success = await _proxmoxAuthenticator.AuthenticateAndStoreTokenCidAsync(cluster.Id, ct);
 
             if (success)
             {
-                // Now cluster + hosts are fully present → run immediate health check
+                // Immediate health check to populate status fields
                 await _collector.RunProxmoxClusterStatusCheckAsync(ct);
             }
 
@@ -1271,6 +1410,19 @@ namespace BareProx.Controllers
             _context.SelectedStorages.AddRange(toAdd);
             await _context.SaveChangesAsync(ct);
 
+            _ = Task.Run(async () =>
+            {
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                linked.CancelAfter(TimeSpan.FromSeconds(60));
+                try
+                {
+                    await _collector.RunProxmoxClusterStatusCheckAsync(linked.Token);
+                    await _collector.RunInventoryVmSideAsync(linked.Token);
+                    await _collector.RunInventoryInfraSideAsync(CancellationToken.None);
+                }
+                catch { /* swallow/log */ }
+            });
+
             TempData["Message"] = "Selected storage updated.";
             return RedirectToAction(nameof(ProxmoxHub), new { selectedId = model.ClusterId, tab = "storage" });
         }
@@ -1335,6 +1487,13 @@ namespace BareProx.Controllers
 
             await _context.SaveChangesAsync(ct);
             await _netappVolumeService.UpdateAllSelectedVolumesAsync(ct);
+            _ = Task.Run(async () =>
+            {
+                try { await _collector.RunInventoryInfraSideAsync(CancellationToken.None); }
+                catch (Exception ex) {  }
+            });
+            TempData["Message"] = "Selected storage updated. Refresh started…";
+
             return Ok();
         }
 
@@ -1441,5 +1600,59 @@ namespace BareProx.Controllers
 
             return RedirectToAction(nameof(Config));
         }
+
+
+        private async Task UpsertClusterStatusAsync(
+    int clusterId,
+    string? clusterName,
+    string lastStatus,
+    string? lastStatusMessage,
+    DateTime utcNow,
+    CancellationToken ct)
+        {
+            await using var q = await _qdb.CreateAsync(ct);
+            var row = await q.InventoryClusterStatuses
+                .FirstOrDefaultAsync(x => x.ClusterId == clusterId, ct);
+
+            if (row is null)
+            {
+                row = new InventoryClusterStatus
+                {
+                    ClusterId = clusterId,
+                    ClusterName = clusterName,
+                    HasQuorum = false,
+                    OnlineHostCount = 0,
+                    TotalHostCount = 0,
+                    LastStatus = lastStatus,
+                    LastStatusMessage = lastStatusMessage,
+                    LastCheckedUtc = utcNow
+                };
+                q.InventoryClusterStatuses.Add(row);
+            }
+            else
+            {
+                row.ClusterName = clusterName ?? row.ClusterName;
+                row.LastStatus = lastStatus;
+                row.LastStatusMessage = lastStatusMessage;
+                row.LastCheckedUtc = utcNow;
+            }
+
+            await q.SaveChangesAsync(ct);
+        }
+
+        private async Task RemoveClusterStatusAsync(int clusterId, CancellationToken ct)
+        {
+            await using var q = await _qdb.CreateAsync(ct);
+            var row = await q.InventoryClusterStatuses
+                .FirstOrDefaultAsync(x => x.ClusterId == clusterId, ct);
+            if (row != null)
+            {
+                q.InventoryClusterStatuses.Remove(row);
+                await q.SaveChangesAsync(ct);
+            }
+        }
+
     }
+
+
 }

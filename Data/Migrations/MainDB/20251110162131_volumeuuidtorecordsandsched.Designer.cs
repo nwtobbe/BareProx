@@ -3,6 +3,7 @@ using System;
 using BareProx.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace BareProx.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251110162131_volumeuuidtorecordsandsched")]
+    partial class volumeuuidtorecordsandsched
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.10");
@@ -81,6 +84,9 @@ namespace BareProx.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("VmName")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("VolumeUuid")
                         .HasColumnType("TEXT");
 
                     b.Property<bool>("WithMemory")
@@ -175,6 +181,9 @@ namespace BareProx.Migrations
 
                     b.Property<bool>("UseProxmoxSnapshot")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("VolumeUuid")
+                        .HasColumnType("TEXT");
 
                     b.Property<bool>("WithMemory")
                         .HasColumnType("INTEGER");
@@ -654,30 +663,30 @@ namespace BareProx.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
-                    b.Property<bool?>("HasQuorum")
+                    b.Property<DateTime?>("ApiTokenExpiresUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ApiTokenId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("ApiTokenLifetimeDays")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTime?>("LastChecked")
-                        .HasColumnType("TEXT");
+                    b.Property<int>("ApiTokenRenewBeforeMinutes")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<string>("LastStatus")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("LastStatusMessage")
+                    b.Property<string>("ApiTokenSecretEnc")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<int?>("OnlineHostCount")
-                        .HasColumnType("INTEGER");
-
                     b.Property<string>("PasswordHash")
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<int?>("TotalHostCount")
+                    b.Property<bool>("UseApiToken")
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("Username")
@@ -708,16 +717,7 @@ namespace BareProx.Migrations
                     b.Property<string>("Hostname")
                         .HasColumnType("TEXT");
 
-                    b.Property<bool?>("IsOnline")
-                        .HasColumnType("INTEGER");
-
                     b.Property<DateTime?>("LastChecked")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("LastStatus")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("LastStatusMessage")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("TicketEnc")
