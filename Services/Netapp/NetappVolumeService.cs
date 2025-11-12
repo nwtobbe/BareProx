@@ -794,12 +794,14 @@ namespace BareProx.Services
                 ["volume"] = volumeName
             });
 
-
-            // Require "restore_" prefix to avoid accidental deletes
+            // Require "restore_" or "attach_" prefix to avoid accidental deletes
             if (string.IsNullOrWhiteSpace(volumeName) ||
-                !volumeName.StartsWith("restore_", StringComparison.OrdinalIgnoreCase))
+                (!volumeName.StartsWith("restore_", StringComparison.OrdinalIgnoreCase) &&
+                 !volumeName.StartsWith("attach_", StringComparison.OrdinalIgnoreCase)))
             {
-                _logger.LogWarning("Refusing to delete volume '{Volume}'. Name must start with 'restore_'.", volumeName);
+                _logger.LogWarning(
+                    "Refusing to delete volume '{Volume}'. Name must start with 'restore_' or 'attach_'.",
+                    volumeName);
                 return false;
             }
 
@@ -853,7 +855,9 @@ namespace BareProx.Services
                     if (!patchResp.IsSuccessStatusCode)
                     {
                         var body = await patchResp.Content.ReadAsStringAsync(ct);
-                        _logger.LogWarning("Unexport failed for {Name} (uuid={Uuid}): {Code} {Body}", volumeName, uuid, patchResp.StatusCode, body);
+                        _logger.LogWarning(
+                            "Unexport failed for {Name} (uuid={Uuid}): {Code} {Body}",
+                            volumeName, uuid, patchResp.StatusCode, body);
                         // proceed anyway
                     }
                 }
@@ -886,9 +890,14 @@ namespace BareProx.Services
                             }
                         }
                     }
-                    catch { /* ignore parse errors */ }
+                    catch
+                    {
+                        // ignore parse errors
+                    }
 
-                    _logger.LogInformation("Delete accepted (async). JobUuid={JobUuid} Link={JobHref}", jobUuid ?? "(n/a)", jobHref ?? "(n/a)");
+                    _logger.LogInformation(
+                        "Delete accepted (async). JobUuid={JobUuid} Link={JobHref}",
+                        jobUuid ?? "(n/a)", jobHref ?? "(n/a)");
                     return true;
                 }
 
@@ -896,7 +905,9 @@ namespace BareProx.Services
                 if (!ok)
                 {
                     var body = await deleteResp.Content.ReadAsStringAsync(ct);
-                    _logger.LogWarning("Delete failed for {Name} (uuid={Uuid}): {Code} {Body}", volumeName, uuid, deleteResp.StatusCode, body);
+                    _logger.LogWarning(
+                        "Delete failed for {Name} (uuid={Uuid}): {Code} {Body}",
+                        volumeName, uuid, deleteResp.StatusCode, body);
                 }
                 else
                 {
@@ -916,6 +927,7 @@ namespace BareProx.Services
                 throw;
             }
         }
+
 
         // ---------------------------------------------------------------------
         // Selected volumes sync

@@ -171,10 +171,12 @@ namespace BareProx.Services.Restore
                     {
                         await LogVmAsync(ctx, vmResultId, "Info", "Applying export policy on secondary.", backgroundCt);
 
-                        // FIX: look up latest snapshot for the job in the QUERY DB
+                        // Look up the matching snapshot row for this job + snapshot name
                         var snap = await qdb.NetappSnapshots
                             .AsNoTracking()
-                            .Where(s => s.JobId == backupMeta.JobId)
+                            .Where(s =>
+                                s.JobId == backupMeta.JobId &&
+                                s.SnapshotName == model.SnapshotName)
                             .OrderByDescending(s => s.CreatedAt)
                             .FirstOrDefaultAsync(backgroundCt);
 

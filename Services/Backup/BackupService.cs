@@ -601,6 +601,53 @@ namespace BareProx.Services.Backup
                     }
                 }
 
+                // 5c) --- Index storage disks for this backup job (snapshot of volume content) ---
+                try
+                {
+                    // pick a node that actually sees this storage; we already have VMs with HostName
+                    var anyVm = vms.FirstOrDefault();
+                    var nodeName = anyVm?.HostName ?? cluster.Hosts.First().Hostname;
+
+                    var disks = await _proxmoxService.GetStorageDisksAsync(
+                        cluster,
+                        nodeName,
+                        storageName,
+                        ct);
+
+                    if (disks.Count > 0)
+                    {
+                        using (var db = await _dbf.CreateDbContextAsync(ct))
+                        {
+                            var nowUtc = DateTime.UtcNow;
+
+                            foreach (var d in disks)
+                            {
+                                db.ProxmoxStorageDiskSnapshots.Add(new ProxmoxStorageDiskSnapshot
+                                {
+                                    JobId = jobId,
+                                    ClusterId = cluster.Id,
+                                    NodeName = nodeName,
+                                    StorageId = storageName,
+                                    VMID = int.TryParse(d.vmid, out var vmidVal) ? vmidVal : (int?)null,
+                                    VolId = d.volid,
+                                    ContentType = d.content,
+                                    Format = d.format,
+                                    SizeBytes = d.size,
+                                    CapturedAtUtc = nowUtc
+                                });
+                            }
+
+                            await db.SaveChangesAsync(ct);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex,
+                        "Failed to index Proxmox storage disks for job {JobId} on storage {Storage}.",
+                        jobId, storageName);
+                }
+
                 // 6) Replicate to secondary (optional)
                 if (replicateToSecondary)
                 {

@@ -18,7 +18,6 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
-
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services;
@@ -101,6 +100,16 @@ namespace BareProx.Controllers
                     // FlexClones for this controller
                     var allClones = await _netappFlexCloneService.ListFlexClonesAsync(controllerId, ct);
 
+                    // Only consider BareProx temporary clones for cleanup:
+                    //  - restore_* : created by MountSnapshot
+                    //  - attach_*  : created by MountDiskFromSnapshot
+                    allClones = allClones
+                        .Where(name =>
+                            !string.IsNullOrWhiteSpace(name) &&
+                            (name.StartsWith("restore_", StringComparison.OrdinalIgnoreCase) ||
+                             name.StartsWith("attach_", StringComparison.OrdinalIgnoreCase)))
+                        .ToList();
+
                     // Selected volumes from database (no tracking) — skip disabled (Disabled == true)
                     var selectedVolumes = await _context.SelectedNetappVolumes
                         .Where(v => v.NetappControllerId == controllerId && v.Disabled != true) // NULL or false => included
@@ -181,9 +190,23 @@ namespace BareProx.Controllers
                             {
                                 var info = new SnapshotInfo { SnapshotName = snap };
 
+                                // Try to find a matching BareProx FlexClone that looks related.
+                                // Old-style pattern (volume_snapshot*): keep for backward compat.
                                 var cloneForSnapshot = allClones.FirstOrDefault(cn =>
                                     cn.Contains(snap, StringComparison.OrdinalIgnoreCase) &&
                                     cn.StartsWith(selectedVolume.VolumeName + "_", StringComparison.OrdinalIgnoreCase));
+
+                                // For new-style restore_* clones we can at least associate by volume:
+                                //   restore_<volumeName>_<timestamp>
+                                if (cloneForSnapshot == null)
+                                {
+                                    var restorePrefix = $"restore_{selectedVolume.VolumeName}_";
+                                    cloneForSnapshot = allClones.FirstOrDefault(cn =>
+                                        cn.StartsWith(restorePrefix, StringComparison.OrdinalIgnoreCase));
+                                }
+
+                                // (attach_* clones are handled in the FlexClone section above;
+                                //  we generally don't know which snapshot they came from.)
 
                                 if (cloneForSnapshot != null)
                                 {

@@ -5,7 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),  
 and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.0.2511.0713] - 2025-11-xx
+
+
+## [1.0.2511.1413] - 2025-11-14
+
+## Added
+- Mount vm disks from snapshots to another vm under Netapp / Snapshots. It is available from backups created from this version and forward.
+
+### Changed
+- Small change to the restoreflow to better handle missmatch in volume names
+- Netapp / Snapshots
+- Selected NetApp volumes now displays the number of selected volumes.
+
+
+
+## [1.0.2511.1213] - 2025-11-12
 
 ## Added
 - BareProx_qeryDB, extra DB
@@ -14,6 +28,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 - When adding a Proxmox cluster now we can use the API instead of SSH for discovery
 - Help! Started writing the booring help-text
+- Updated restore functionality to better handle errors and volume lookups
 
 
 

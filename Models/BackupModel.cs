@@ -170,5 +170,30 @@ namespace BareProx.Models
         public int ClusterId { get; set; }
         public List<RestoreViewModel> RestorePoints { get; set; }
     }
+
+    public class ProxmoxStorageDiskSnapshot
+    {
+        public int Id { get; set; }
+
+        // Link to the backup job
+        public int JobId { get; set; }
+
+        // Proxmox identity
+        public int ClusterId { get; set; }
+        public string NodeName { get; set; } = default!;     // Proxmox node
+        public string StorageId { get; set; } = default!;    // "proxmox_ds1"
+
+        // Disk identity
+        public int? VMID { get; set; }                       // 100, 101...
+        public string VolId { get; set; } = default!;        // "proxmox_ds1:vm-100-disk-0"
+        public string ContentType { get; set; } = default!;  // "images" / "rootdir"
+        public string? Format { get; set; }                  // "raw", "qcow2", etc.
+        public long? SizeBytes { get; set; }                 // bytes, if provided
+
+        // When this snapshot of the list was taken
+        public DateTime CapturedAtUtc { get; set; }
+    }
+
+
 }
 

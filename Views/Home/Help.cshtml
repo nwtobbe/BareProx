@@ -173,11 +173,11 @@
                     </ul>
 
                     <h3>Schedules</h3>
-                    <p>Create recurring backups with retention and optional application-aware options.</p>
+                    <p>Create recurring backups with retention and optional With Proxmox Options.</p>
                     <ul>
                         <li><strong>Frequency:</strong> hourly / daily / weekly.</li>
                         <li><strong>Retention:</strong> keep N backups per schedule.</li>
-                        <li><strong>Application-aware:</strong> I/O freeze, Proxmox snapshot, Include RAM (where supported).</li>
+                        <li><strong>With Proxmox Options:</strong> I/O freeze (Suspend VMs), Proxmox snapshot, Include RAM (where supported).</li>
                         <li><strong>Replicate to secondary:</strong> available when SnapMirror policy/labels match.</li>
                     </ul>
 
@@ -190,9 +190,15 @@
 
                     <h3>Snapshots</h3>
                     <ul>
-                        <li>View NetApp snapshots per volume (BareProx groups shared storage across hosts).</li>
-                        <li><strong>Mount</strong> a snapshot as a FlexClone for testing, validation, or file recovery.</li>
+                        <li>Browse NetApp snapshots per volume (BareProx automatically groups shared storage across hosts).</li>
+                        <li><strong>Mount</strong> a snapshot as a FlexClone for testing, validation, or file-level recovery.</li>
+                        <li>
+                            A green dot after the snapshot name means its contents are indexed.
+                            Click the snapshot to expand the VM list, then right-click a VM disk to mount it
+                            to the same VM or to another VM.
+                        </li>
                     </ul>
+
 
                     <h3>Restore</h3>
                     <ol>

@@ -56,25 +56,40 @@ namespace BareProx.Services.Netapp
 
         public async Task<List<string>> ListFlexClonesAsync(int controllerId, CancellationToken ct = default)
         {
-            var controller = await _context.NetappControllers.FindAsync(controllerId, ct);
+            var controller = await _context.NetappControllers.FindAsync(new object[] { controllerId }, ct);
             if (controller == null)
                 throw new InvalidOperationException("Controller not found");
 
             var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
 
-            var url = $"{baseUrl}storage/volumes?name=restore_*";
-            var resp = await client.GetAsync(url, ct);
-            resp.EnsureSuccessStatusCode();
+            // We want to include both restore_* and attach_* style clones.
+            var patterns = new[] { "restore_*", "attach_*" };
+            var cloneNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-            return doc.RootElement
-                      .GetProperty("records")
-                      .EnumerateArray()
-                      .Select(r => r.GetProperty("name").GetString())
-                      .Where(n => !string.IsNullOrEmpty(n))
-                      .Distinct()
-                      .ToList();
+            foreach (var pattern in patterns)
+            {
+                var url = $"{baseUrl}storage/volumes?name={Uri.EscapeDataString(pattern)}";
+                using var resp = await client.GetAsync(url, ct);
+                resp.EnsureSuccessStatusCode();
+
+                var json = await resp.Content.ReadAsStringAsync(ct);
+                using var doc = JsonDocument.Parse(json);
+
+                if (doc.RootElement.TryGetProperty("records", out var records) &&
+                    records.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var r in records.EnumerateArray())
+                    {
+                        var name = r.GetProperty("name").GetString();
+                        if (!string.IsNullOrWhiteSpace(name))
+                            cloneNames.Add(name);
+                    }
+                }
+            }
+
+            return cloneNames.ToList();
         }
+
         public async Task<FlexCloneResult> CloneVolumeFromSnapshotAsync(
            string volumeName,
            string snapshotName,

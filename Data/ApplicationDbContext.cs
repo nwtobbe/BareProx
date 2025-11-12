@@ -49,6 +49,7 @@ namespace BareProx.Data
         public DbSet<MigrationSelection> MigrationSelections { get; set; }
         public DbSet<MigrationQueueItem> MigrationQueueItems { get; set; } = null!;
         public DbSet<MigrationQueueLog> MigrationQueueLogs => Set<MigrationQueueLog>();
+        public DbSet<ProxmoxStorageDiskSnapshot> ProxmoxStorageDiskSnapshots { get; set; } = default!;
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

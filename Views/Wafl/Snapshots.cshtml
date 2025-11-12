@@ -4,12 +4,38 @@
     ViewData["Title"] = "Proxmox Volumes with Snapshots";
 
     // Null-safe ViewBag access
-    var clusters = ViewBag.Clusters as IEnumerable<BareProx.Models.ProxmoxCluster> 
+    var clusters = ViewBag.Clusters as IEnumerable<BareProx.Models.ProxmoxCluster>
                    ?? Enumerable.Empty<BareProx.Models.ProxmoxCluster>();
-    int? selectedClusterId = ViewBag.SelectedClusterId as int?;
+
+    // SelectedClusterId should be an int in ViewBag; normalize safely
+    int clusterIdVal = 0;
+    if (ViewBag.SelectedClusterId is int cid)
+    {
+        clusterIdVal = cid;
+    }
 }
 
 <h2>Proxmox Volumes with Snapshots</h2>
+
+<style>
+    .snapshot-name {
+        cursor: pointer;
+    }
+
+        .snapshot-name.snapshot-has-vms {
+            text-decoration: underline;
+        }
+
+    .snapshot-index-flag {
+        font-size: 0.8rem;
+        margin-left: 0.35rem;
+        vertical-align: middle;
+    }
+
+    .vm-header {
+        cursor: pointer;
+    }
+</style>
 
 <input type="text" id="searchBox" class="form-control mb-3" placeholder="Search volumes or snapshots..." />
 
@@ -18,7 +44,7 @@
     <select id="clusterSelect" name="clusterId" class="form-select d-inline w-auto ms-2" onchange="this.form.submit()">
         @foreach (var c in clusters)
         {
-            if (selectedClusterId == c.Id)
+            if (clusterIdVal == c.Id)
             {
                 <option value="@c.Id" selected>@c.Name</option>
             }
@@ -30,7 +56,7 @@
     </select>
 </form>
 
-<div id="volumeTree">
+<div id="volumeTree" data-cluster-id="@clusterIdVal">
     @for (int controllerIdx = 0; controllerIdx < (Model?.Count ?? 0); controllerIdx++)
     {
         var controller = Model[controllerIdx];
@@ -55,7 +81,10 @@
                             var collapseId = $"snapshots_{controllerIdx}_{svmIdx}_{volIdx}";
                             <div class="card mb-1 ms-3 volume-card">
                                 <div class="card-header p-2">
-                                    <button class="btn btn-sm btn-link text-start w-100" type="button" data-bs-toggle="collapse" data-bs-target="#@collapseId">
+                                    <button class="btn btn-sm btn-link text-start w-100"
+                                            type="button"
+                                            data-bs-toggle="collapse"
+                                            data-bs-target="#@collapseId">
                                         📦 @(volume?.VolumeName ?? "(unknown volume)")
                                     </button>
                                 </div>
@@ -67,19 +96,40 @@
                                                 @foreach (var snap in volume.Snapshots.Where(s => !string.IsNullOrWhiteSpace(s)))
                                                 {
                                                     var snapName = snap!.Trim();
-                                                    <li class="list-group-item d-flex justify-content-between align-items-center">
-                                                        @snapName
-                                                        <button type="button"
-                                                                class="btn btn-sm btn-outline-primary"
-                                                                data-bs-toggle="modal"
-                                                                data-bs-target="#mountModal"
-                                                                data-volume="@(volume?.VolumeName ?? string.Empty)"
-                                                                data-vserver="@(volume?.Vserver ?? string.Empty)"
-                                                                data-snapshot="@snapName"
-                                                                data-controller-id="@(controller?.ControllerId ?? 0)"
-                                                                data-is-primary="@(controller?.IsPrimary == true ? "true" : "false")">
-                                                            Mount
-                                                        </button>
+                                                    var isIndexed = volume.IndexedSnapshotNames != null &&
+                                                    volume.IndexedSnapshotNames.Contains(snapName);
+
+                                                    <li class="list-group-item snapshot-item"
+                                                        data-volume="@(volume?.VolumeName ?? string.Empty)"
+                                                        data-vserver="@(volume?.Vserver ?? string.Empty)"
+                                                        data-snapshot="@snapName"
+                                                        data-controller-id="@(controller?.ControllerId ?? 0)"
+                                                        data-is-primary="@(controller?.IsPrimary == true ? "true" : "false")">
+
+                                                        <div class="d-flex justify-content-between align-items-center">
+                                                            <span class="snapshot-name">
+                                                                @snapName
+                                                                <span class="snapshot-index-flag @(isIndexed ? "text-success" : "text-muted")"
+                                                                      title="@(isIndexed ? "Indexed (VM disks known for this snapshot)" : "Not indexed yet")">
+                                                                    @(isIndexed ? "●" : "○")
+                                                                </span>
+                                                            </span>
+
+                                                            <button type="button"
+                                                                    class="btn btn-sm btn-outline-primary"
+                                                                    data-bs-toggle="modal"
+                                                                    data-bs-target="#mountModal"
+                                                                    data-volume="@(volume?.VolumeName ?? string.Empty)"
+                                                                    data-vserver="@(volume?.Vserver ?? string.Empty)"
+                                                                    data-snapshot="@snapName"
+                                                                    data-controller-id="@(controller?.ControllerId ?? 0)"
+                                                                    data-is-primary="@(controller?.IsPrimary == true ? "true" : "false")">
+                                                                Mount
+                                                            </button>
+                                                        </div>
+
+                                                        <!-- VM + disk tree will be rendered here via AJAX -->
+                                                        <div class="snapshot-vm-tree mt-2" style="display:none;"></div>
                                                     </li>
                                                 }
                                             </ul>
@@ -137,6 +187,129 @@
     </div>
 </div>
 
+<!-- VM Disk Context Menu -->
+<div id="diskContextMenu"
+     class="dropdown-menu"
+     style="position:absolute; display:none; z-index:2000;">
+    <button class="dropdown-item" type="button" data-action="mount-on-vm">
+        Mount on VM…
+    </button>
+</div>
+
+<!-- Attach Disk from Snapshot Modal -->
+<div class="modal fade" id="attachDiskModal" tabindex="-1" aria-labelledby="attachDiskModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="attachDiskModalLabel">Mount snapshot disk on VM</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <!-- Hidden context for server -->
+                <input type="hidden" id="attachClusterId" value="@clusterIdVal" />
+                <input type="hidden" id="attachVolumeName" />
+                <input type="hidden" id="attachSnapshotName" />
+                <input type="hidden" id="attachControllerId" />
+                <input type="hidden" id="attachIsPrimary" />
+                <input type="hidden" id="attachSourceVolid" />
+                <input type="hidden" id="attachSourceVmId" />
+                <input type="hidden" id="attachSourceNodeName" />
+                <!-- NEW: size/format from snapshot disk -->
+                <input type="hidden" id="attachSourceSizeBytes" />
+                <input type="hidden" id="attachSourceFormat" />
+
+                <div class="mb-3">
+                    <div><strong>Source snapshot disk</strong></div>
+                    <div id="attachSourceSummary" class="small text-muted"></div>
+                </div>
+
+                <div class="mb-3">
+                    <label for="attachTargetVm" class="form-label"><strong>Mount on VM</strong></label>
+                    <select id="attachTargetVm" class="form-select">
+                        <option value="">Loading VMs…</option>
+                    </select>
+                    <div id="attachTargetVmHint" class="form-text">
+                        Choose the VM that should receive this disk.
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label"><strong>Disk configuration</strong></label>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="small fw-bold mb-1">Existing disks</div>
+                            <pre id="attachExistingDisks"
+                                 class="border rounded p-2 small bg-light"
+                                 style="max-height:200px; overflow-y:auto;">(select a VM…)</pre>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="small fw-bold mb-1">Suggested new disk</div>
+
+                            <div class="mb-2">
+                                <label for="attachBusType" class="form-label small mb-1">Bus type</label>
+                                <select id="attachBusType" class="form-select form-select-sm">
+                                    <option value="scsi">SCSI</option>
+                                    <option value="sata">SATA</option>
+                                    <option value="ide">IDE</option>
+                                    <option value="virtio">VirtIO</option>
+                                </select>
+                            </div>
+
+                            <div class="mb-2">
+                                <label for="attachDiskIndex" class="form-label small mb-1">
+                                    Disk index <span class="text-muted">(optional)</span>
+                                </label>
+                                <input type="number"
+                                       id="attachDiskIndex"
+                                       class="form-control form-control-sm"
+                                       min="0"
+                                       step="1"
+                                       placeholder="auto" />
+                                <div class="form-text">
+                                    Leave empty to auto-pick next free index.
+                                </div>
+                            </div>
+
+                            <div class="mb-2">
+                                <label for="attachDiskKey" class="form-label small mb-1">Disk key (e.g. scsi0)</label>
+                                <input type="text"
+                                       id="attachDiskKey"
+                                       class="form-control form-control-sm"
+                                       placeholder="scsi0 / sata1 / ide2…"
+                                       readonly />
+                            </div>
+
+                            <div class="mb-2">
+                                <label for="attachDiskValue" class="form-label small mb-1">Disk value (config line)</label>
+                                <textarea id="attachDiskValue"
+                                          class="form-control form-control-sm"
+                                          rows="3"
+                                          placeholder="storage:vm-100-disk-0.qcow2,backup=0"
+                                          readonly></textarea>
+                            </div>
+
+                            <small class="text-muted">
+                                You can adjust bus/index before mounting. The filename will be aligned with the VM.
+                            </small>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="attachError" class="alert alert-danger d-none small"></div>
+                <div id="attachInfo" class="alert alert-info d-none small"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" id="attachMountBtn" class="btn btn-primary" disabled>
+                    Mount disk
+                </button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 @section Scripts {
     <script>
         // Live search: match controller header OR any snapshot text inside card
@@ -165,11 +338,11 @@
             const isPrimary = ((button?.getAttribute('data-is-primary') || 'false') === "true");
 
             // Hidden fields
-            document.getElementById('modalVolumeName').value   = volume;
-            document.getElementById('modalVserver').value      = vserver;
+            document.getElementById('modalVolumeName').value = volume;
+            document.getElementById('modalVserver').value = vserver;
             document.getElementById('modalSnapshotName').value = snapshot;
             document.getElementById('modalControllerId').value = controllerId;
-            document.getElementById('modalIsSecondary').value  = isPrimary ? "false" : "true";
+            document.getElementById('modalIsSecondary').value = isPrimary ? "false" : "true";
 
             // Optional warning
             const warningEl = document.getElementById('secondaryWarning');
@@ -200,5 +373,460 @@
                 mountIpSelect.innerHTML = '<option disabled>Error loading IPs</option>';
             }
         });
+
+        // Snapshot → VM/disk tree logic
+        (function () {
+            const tree = document.getElementById('volumeTree');
+            if (!tree) return;
+
+            const clusterId = parseInt(tree.getAttribute('data-cluster-id') || '0', 10) || 0;
+
+            // Click on snapshot-name to load/toggle VM list
+            tree.addEventListener('click', async function (e) {
+                const snapLabel = e.target.closest('.snapshot-name');
+                if (!snapLabel) return;
+
+                const li = snapLabel.closest('.snapshot-item');
+                if (!li) return;
+
+                const volumeName = (li.getAttribute('data-volume') || '').trim();
+                const snapshotName = (li.getAttribute('data-snapshot') || '').trim();
+                const vmTree = li.querySelector('.snapshot-vm-tree');
+                if (!vmTree) return;
+
+                if (!clusterId) {
+                    vmTree.style.display = '';
+                    vmTree.innerHTML = '<div class="text-muted">ClusterId is missing.</div>';
+                    return;
+                }
+
+                // If already loaded, just toggle visibility
+                if (li.getAttribute('data-vms-loaded') === 'true') {
+                    vmTree.style.display =
+                        (vmTree.style.display === 'none' || vmTree.style.display === '')
+                            ? 'block'
+                            : 'none';
+                    return;
+                }
+
+                // First time: load from server
+                vmTree.style.display = 'block';
+                vmTree.innerHTML = '<div class="text-muted">Loading VMs...</div>';
+
+                try {
+                    const url = `/Wafl/GetSnapshotVmDisks?clusterId=${encodeURIComponent(clusterId)}&volumeName=${encodeURIComponent(volumeName)}&snapshotName=${encodeURIComponent(snapshotName)}`;
+                    const res = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+                    const data = await res.json().catch(() => ({}));
+                    const vms = Array.isArray(data.vms) ? data.vms : [];
+
+                    if (vms.length === 0) {
+                        vmTree.innerHTML = '<div class="text-muted">No indexed VM disks for this snapshot yet.</div>';
+                    } else {
+                        // underline snapshot if it has VM/disks info
+                        snapLabel.classList.add('snapshot-has-vms');
+
+                        const ul = document.createElement('ul');
+                        ul.className = 'list-group';
+
+                        vms.forEach(vm => {
+                            const liVm = document.createElement('li');
+                            liVm.className = 'list-group-item vm-item';
+
+                            const header = document.createElement('div');
+                            header.className = 'd-flex justify-content-between align-items-center vm-header';
+
+                            const title = document.createElement('span');
+                            const vmIdForTitle = vm.vmId ?? vm.VmId;
+                            const vmNameForTitle = vm.vmName ?? vm.VmName ?? `VM ${vmIdForTitle}`;
+                            title.textContent = `${vmIdForTitle} — ${vmNameForTitle}`;
+
+                            const badge = document.createElement('span');
+                            badge.className = 'badge bg-light text-dark';
+                            const disksArr = vm.disks ?? vm.Disks ?? [];
+                            badge.textContent = `${disksArr.length} disk(s)`;
+
+                            header.appendChild(title);
+                            header.appendChild(badge);
+
+                            const diskList = document.createElement('ul');
+                            diskList.className = 'list-group mt-1 vm-disk-list';
+                            diskList.style.display = 'none';
+
+                            disksArr.forEach(d => {
+                                const liDisk = document.createElement('li');
+                                liDisk.className = 'list-group-item py-1 vm-disk-item';
+
+                                const volid = d.volId ?? d.VolId ?? '';
+                                const format = d.format ?? d.Format ?? '';
+                                const contentType = d.contentType ?? d.ContentType ?? '';
+                                const sizeBytes = d.sizeBytes ?? d.SizeBytes ?? 0;
+
+                                const srcVmId = d.vmId ?? d.VmId ?? vm.vmId ?? vm.VmId ?? '';
+                                const srcVmName = d.vmName ?? d.VmName ?? vm.vmName ?? vm.VmName ?? '';
+                                const nodeName = d.nodeName ?? d.NodeName ?? vm.nodeName ?? vm.NodeName ?? '';
+
+                                const sizeGiB = sizeBytes > 0
+                                    ? (sizeBytes / (1024 * 1024 * 1024)).toFixed(1) + ' GiB'
+                                    : '';
+
+                                liDisk.textContent = volid;
+                                const meta = [contentType, format, sizeGiB].filter(Boolean).join(", ");
+                                if (meta) {
+                                    liDisk.textContent += ` (${meta})`;
+                                }
+
+                                // Attach metadata for context-menu / mount logic
+                                liDisk.dataset.volid = volid;
+                                liDisk.dataset.sourceVmId = srcVmId;
+                                liDisk.dataset.sourceVmName = srcVmName;
+                                liDisk.dataset.nodeName = nodeName;
+                                // pass through size/format so server can build size= / format= correctly
+                                liDisk.dataset.sizeBytes = String(sizeBytes);
+                                liDisk.dataset.format = format || '';
+
+                                diskList.appendChild(liDisk);
+                            });
+
+                            liVm.appendChild(header);
+                            liVm.appendChild(diskList);
+                            ul.appendChild(liVm);
+                        });
+
+                        vmTree.innerHTML = '';
+                        vmTree.appendChild(ul);
+                    }
+
+                    li.setAttribute('data-vms-loaded', 'true');
+                } catch {
+                    vmTree.innerHTML = '<div class="text-danger">Failed to load VM/disk information.</div>';
+                }
+            });
+
+            // Click on VM header to toggle its disk list (works for all VMs)
+            tree.addEventListener('click', function (evt) {
+                const header = evt.target.closest('.vm-header');
+                if (!header) return;
+
+                const parent = header.parentElement;
+                if (!parent) return;
+
+                const diskList = parent.querySelector('.vm-disk-list');
+                if (!diskList) return;
+
+                diskList.style.display =
+                    (diskList.style.display === 'none' || diskList.style.display === '')
+                        ? 'block'
+                        : 'none';
+            });
+        })();
+
+        // Right-click context menu + attach-disk modal logic
+        (function () {
+            const tree = document.getElementById('volumeTree');
+            const menu = document.getElementById('diskContextMenu');
+            const modalEl = document.getElementById('attachDiskModal');
+
+            if (!tree || !menu || !modalEl) return;
+
+            const clusterId = parseInt(tree.getAttribute('data-cluster-id') || '0', 10) || 0;
+            let currentDisk = null;
+
+            const attachVolumeNameEl = document.getElementById('attachVolumeName');
+            const attachSnapshotNameEl = document.getElementById('attachSnapshotName');
+            const attachControllerIdEl = document.getElementById('attachControllerId');
+            const attachIsPrimaryEl = document.getElementById('attachIsPrimary');
+            const attachSourceVolidEl = document.getElementById('attachSourceVolid');
+            const attachSourceVmIdEl = document.getElementById('attachSourceVmId');
+            const attachSourceNodeNameEl = document.getElementById('attachSourceNodeName');
+            const attachSourceSummaryEl = document.getElementById('attachSourceSummary');
+            const attachTargetVmEl = document.getElementById('attachTargetVm');
+            const attachExistingDisksEl = document.getElementById('attachExistingDisks');
+            const attachErrorEl = document.getElementById('attachError');
+            const attachInfoEl = document.getElementById('attachInfo');
+            const attachMountBtn = document.getElementById('attachMountBtn');
+
+            const attachBusTypeEl = document.getElementById('attachBusType');
+            const attachDiskIndexEl = document.getElementById('attachDiskIndex');
+            const attachDiskKeyEl = document.getElementById('attachDiskKey');
+            const attachDiskValueEl = document.getElementById('attachDiskValue');
+
+            // hidden fields for size/format
+            const attachSourceSizeBytesEl = document.getElementById('attachSourceSizeBytes');
+            const attachSourceFormatEl = document.getElementById('attachSourceFormat');
+
+            const bsModal = new bootstrap.Modal(modalEl);
+
+            function hideMenu() {
+                menu.style.display = 'none';
+                currentDisk = null;
+            }
+
+            // Right-click on vm-disk-item → context menu
+            tree.addEventListener('contextmenu', function (e) {
+                const diskEl = e.target.closest('.vm-disk-item');
+                if (!diskEl) return;
+
+                e.preventDefault();
+                currentDisk = diskEl;
+
+                const x = e.pageX;
+                const y = e.pageY;
+                menu.style.left = x + 'px';
+                menu.style.top = y + 'px';
+                menu.style.display = 'block';
+            });
+
+            // Click on context menu item
+            menu.addEventListener('click', function (e) {
+                const item = e.target.closest('[data-action]');
+                if (!item || !currentDisk) {
+                    hideMenu();
+                    return;
+                }
+
+                const action = item.getAttribute('data-action');
+                if (action === 'mount-on-vm') {
+                    openAttachModalForCurrentDisk();
+                }
+
+                hideMenu();
+            });
+
+            document.addEventListener('click', function (e) {
+                if (!menu.contains(e.target)) hideMenu();
+            });
+
+            document.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape') hideMenu();
+            });
+
+            async function loadVmListForCluster(selectedVmId) {
+                attachTargetVmEl.innerHTML = '<option value="">Loading VMs…</option>';
+
+                try {
+                    const url = `/Wafl/GetClusterVms?clusterId=${encodeURIComponent(clusterId)}`;
+                    const res = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+                    const data = await res.json().catch(() => ({}));
+                    const vms = Array.isArray(data.vms) ? data.vms : [];
+
+                    if (vms.length === 0) {
+                        attachTargetVmEl.innerHTML = '<option value="">No VMs found in inventory.</option>';
+                        return;
+                    }
+
+                    attachTargetVmEl.innerHTML = '';
+                    vms.forEach(vm => {
+                        const opt = document.createElement('option');
+                        opt.value = vm.vmId;
+                        opt.textContent = `${vm.vmId} — ${vm.name} (${vm.nodeName})`;
+                        if (String(vm.vmId) === String(selectedVmId)) opt.selected = true;
+                        attachTargetVmEl.appendChild(opt);
+                    });
+                } catch {
+                    attachTargetVmEl.innerHTML = '<option value="">Failed to load VMs.</option>';
+                }
+            }
+
+            async function loadPreview() {
+                attachErrorEl.classList.add('d-none');
+                attachInfoEl.classList.add('d-none');
+                attachMountBtn.disabled = true;
+                attachExistingDisksEl.textContent = '(loading...)';
+
+                const targetVmId = attachTargetVmEl.value;
+                if (!targetVmId) {
+                    attachExistingDisksEl.textContent = '(select a VM…)';
+                    attachDiskKeyEl.value = '';
+                    attachDiskValueEl.value = '';
+                    return;
+                }
+
+                const body = new URLSearchParams();
+                body.set('clusterId', String(clusterId));
+                body.set('targetVmId', targetVmId);
+                body.set('volumeName', attachVolumeNameEl.value || '');
+                body.set('snapshotName', attachSnapshotNameEl.value || '');
+                body.set('controllerId', attachControllerIdEl.value || '0');
+                body.set('sourceVolid', attachSourceVolidEl.value || '');
+                body.set('sourceVmId', attachSourceVmIdEl.value || '');
+                body.set('busType', attachBusTypeEl.value || '');
+                body.set('preferredIndex', attachDiskIndexEl.value || '');
+                // send size/format to PrepareAttachDisk
+                body.set('sourceSizeBytes', attachSourceSizeBytesEl.value || '');
+                body.set('sourceFormat', attachSourceFormatEl.value || '');
+
+                try {
+                    const res = await fetch('/Wafl/PrepareAttachDisk', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                            'X-Requested-With': 'XMLHttpRequest'
+                        },
+                        body: body.toString()
+                    });
+
+                    const data = await res.json().catch(() => ({}));
+                    if (!data.ok) {
+                        attachErrorEl.textContent = data.error || 'Failed to prepare disk attach.';
+                        attachErrorEl.classList.remove('d-none');
+                        attachExistingDisksEl.textContent = '(error)';
+                        attachDiskKeyEl.value = '';
+                        attachDiskValueEl.value = '';
+                        return;
+                    }
+
+                    const existingLines = Array.isArray(data.existingDisks)
+                        ? data.existingDisks.map(d => `${d.key}: ${d.value}`)
+                        : [];
+                    attachExistingDisksEl.textContent = existingLines.length
+                        ? existingLines.join('\n')
+                        : '(no existing disks found in config)';
+
+                    if (data.suggested && data.suggested.key && data.suggested.value) {
+                        attachDiskKeyEl.value = data.suggested.key;
+                        attachDiskValueEl.value = data.suggested.value;
+                        attachInfoEl.textContent = 'You can adjust Bus type/Index before mounting.';
+                        attachInfoEl.classList.remove('d-none');
+                        attachMountBtn.disabled = false;
+                    } else {
+                        attachDiskKeyEl.value = '';
+                        attachDiskValueEl.value = '';
+                        attachMountBtn.disabled = true;
+                    }
+
+                } catch {
+                    attachErrorEl.textContent = 'Error while loading disk configuration.';
+                    attachErrorEl.classList.remove('d-none');
+                    attachExistingDisksEl.textContent = '(error)';
+                    attachDiskKeyEl.value = '';
+                    attachDiskValueEl.value = '';
+                }
+            }
+
+            function openAttachModalForCurrentDisk() {
+                if (!currentDisk) return;
+
+                const li = currentDisk;
+                const snapLi = li.closest('.snapshot-item');
+                if (!snapLi) return;
+
+                const volumeName = snapLi.getAttribute('data-volume') || '';
+                const snapshotName = snapLi.getAttribute('data-snapshot') || '';
+                const controllerId = snapLi.getAttribute('data-controller-id') || '0';
+                const isPrimary = (snapLi.getAttribute('data-is-primary') || 'true') === 'true';
+
+                const sourceVolid = li.dataset.volid || '';
+                const sourceVmId = li.dataset.sourceVmId || '';
+                const sourceVmName = li.dataset.sourceVmName || '';
+                const sourceNode = li.dataset.nodeName || '';
+                const sizeBytes = li.dataset.sizeBytes || '';
+                const format = li.dataset.format || '';
+
+                attachVolumeNameEl.value = volumeName;
+                attachSnapshotNameEl.value = snapshotName;
+                attachControllerIdEl.value = controllerId;
+                attachIsPrimaryEl.value = isPrimary ? 'true' : 'false';
+                attachSourceVolidEl.value = sourceVolid;
+                attachSourceVmIdEl.value = sourceVmId;
+                attachSourceNodeNameEl.value = sourceNode;
+                attachSourceSizeBytesEl.value = sizeBytes;
+                attachSourceFormatEl.value = format;
+
+                attachSourceSummaryEl.textContent =
+                    `Snapshot: ${snapshotName} — Volume: ${volumeName}\n` +
+                    `VM ${sourceVmId} — ${sourceVmName}\n` +
+                    `Disk: ${sourceVolid}` +
+                    (sizeBytes
+                        ? `\nSize: ${(Number(sizeBytes) / (1024 * 1024 * 1024)).toFixed(1)} GiB`
+                        : '');
+
+                attachErrorEl.classList.add('d-none');
+                attachInfoEl.classList.add('d-none');
+                attachExistingDisksEl.textContent = '(select a VM…)';
+                attachDiskKeyEl.value = '';
+                attachDiskValueEl.value = '';
+                attachBusTypeEl.value = 'scsi';
+                attachDiskIndexEl.value = '';
+                attachMountBtn.disabled = true;
+
+                // Load VM list and preselect source VM
+                loadVmListForCluster(sourceVmId).then(loadPreview);
+                bsModal.show();
+            }
+
+            attachTargetVmEl.addEventListener('change', () => {
+                loadPreview();
+            });
+
+            attachBusTypeEl.addEventListener('change', () => {
+                loadPreview();
+            });
+
+            attachDiskIndexEl.addEventListener('change', () => {
+                loadPreview();
+            });
+
+            attachMountBtn.addEventListener('click', async function () {
+                const targetVmId = attachTargetVmEl.value;
+                if (!targetVmId) return;
+
+                attachErrorEl.classList.add('d-none');
+                attachInfoEl.classList.add('d-none');
+                attachMountBtn.disabled = true;
+
+                const diskKey = (attachDiskKeyEl.value || '').trim();
+                const diskValue = (attachDiskValueEl.value || '').trim();
+
+                if (!diskKey || !diskValue) {
+                    attachErrorEl.textContent = 'Disk key and value are required.';
+                    attachErrorEl.classList.remove('d-none');
+                    attachMountBtn.disabled = false;
+                    return;
+                }
+
+                const body = new URLSearchParams();
+                body.set('clusterId', String(clusterId));
+                body.set('targetVmId', targetVmId);
+                body.set('volumeName', attachVolumeNameEl.value || '');
+                body.set('snapshotName', attachSnapshotNameEl.value || '');
+                body.set('controllerId', attachControllerIdEl.value || '0');
+                body.set('sourceVolid', attachSourceVolidEl.value || '');
+                body.set('sourceVmId', attachSourceVmIdEl.value || '');
+                body.set('diskKey', diskKey);
+                body.set('diskValue', diskValue);
+                body.set('busType', attachBusTypeEl.value || '');
+                body.set('preferredIndex', attachDiskIndexEl.value || '');
+
+                try {
+                    const res = await fetch('/Wafl/MountDiskFromSnapshot', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                            'X-Requested-With': 'XMLHttpRequest'
+                        },
+                        body: body.toString()
+                    });
+
+                    const data = await res.json().catch(() => ({}));
+                    if (!data.ok) {
+                        attachErrorEl.textContent = data.error || 'Mount failed.';
+                        attachErrorEl.classList.remove('d-none');
+                        attachMountBtn.disabled = false;
+                        return;
+                    }
+
+                    attachInfoEl.textContent = data.message || 'Disk mounted successfully.';
+                    attachInfoEl.classList.remove('d-none');
+                    setTimeout(() => {
+                        bsModal.hide();
+                    }, 1200);
+
+                } catch {
+                    attachErrorEl.textContent = 'Error while calling mount endpoint.';
+                    attachErrorEl.classList.remove('d-none');
+                    attachMountBtn.disabled = false;
+                }
+            });
+        })();
     </script>
 }

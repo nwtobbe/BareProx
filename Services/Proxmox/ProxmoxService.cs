@@ -1035,6 +1035,458 @@ namespace BareProx.Services.Proxmox
                 return false;
             }
         }
-      
+
+        public sealed class ProxmoxStorageContentItem
+        {
+            public string volid { get; set; } = default!;    // "proxmox_ds1:vm-100-disk-0"
+            public string content { get; set; } = default!;  // "images", "rootdir", ...
+            public string? vmid { get; set; }               // "100"
+            public string? format { get; set; }             // "raw", "qcow2"
+            public long? size { get; set; }                 // bytes
+                                                            // other fields exist, but we don't need them for now
+        }
+
+        public async Task<IReadOnlyList<ProxmoxStorageContentItem>> GetStorageDisksAsync(
+            ProxmoxCluster cluster,
+            string nodeName,
+            string storageId,
+            CancellationToken ct = default)
+        {
+            // 1) Resolve node → hostAddress (same pattern as GetVmsOnNodeAsync)
+            var host = _proxmoxHelpers.GetHostByNodeName(cluster, nodeName);
+            if (host == null || string.IsNullOrWhiteSpace(host.HostAddress))
+                throw new InvalidOperationException($"No Proxmox host found for node '{nodeName}'.");
+
+            var hostAddress = host.HostAddress;
+
+            // 2) Call Proxmox API
+            var url =
+                $"https://{hostAddress}:8006/api2/json/nodes/{Uri.EscapeDataString(nodeName)}/storage/{Uri.EscapeDataString(storageId)}/content";
+
+            var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+            if (!resp.IsSuccessStatusCode)
+                return Array.Empty<ProxmoxStorageContentItem>();
+
+            var json = await resp.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(json);
+
+            if (!doc.RootElement.TryGetProperty("data", out var dataEl) ||
+                dataEl.ValueKind != JsonValueKind.Array)
+            {
+                return Array.Empty<ProxmoxStorageContentItem>();
+            }
+
+            var list = new List<ProxmoxStorageContentItem>();
+
+            foreach (var item in dataEl.EnumerateArray())
+            {
+                var content = item.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String
+                    ? c.GetString() ?? string.Empty
+                    : string.Empty;
+
+                // we only care about disk-like things
+                if (!string.Equals(content, "images", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(content, "rootdir", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var volid = item.TryGetProperty("volid", out var v) && v.ValueKind == JsonValueKind.String
+                    ? v.GetString() ?? string.Empty
+                    : string.Empty;
+
+                if (string.IsNullOrWhiteSpace(volid))
+                    continue;
+
+                string? vmid = null;
+                if (item.TryGetProperty("vmid", out var vmidEl) &&
+                    vmidEl.ValueKind == JsonValueKind.String)
+                {
+                    vmid = vmidEl.GetString();
+                }
+                else if (item.TryGetProperty("vmid", out vmidEl) &&
+                         vmidEl.ValueKind == JsonValueKind.Number)
+                {
+                    vmid = vmidEl.GetInt32().ToString();
+                }
+
+                string? format = null;
+                if (item.TryGetProperty("format", out var fmtEl) &&
+                    fmtEl.ValueKind == JsonValueKind.String)
+                {
+                    format = fmtEl.GetString();
+                }
+
+                long? size = null;
+                if (item.TryGetProperty("size", out var sizeEl) &&
+                    sizeEl.ValueKind == JsonValueKind.Number)
+                {
+                    if (sizeEl.TryGetInt64(out var sVal))
+                        size = sVal;
+                }
+
+                list.Add(new ProxmoxStorageContentItem
+                {
+                    volid = volid,
+                    content = content,
+                    vmid = vmid,
+                    format = format,
+                    size = size
+                });
+            }
+
+            return list;
+        }
+        public async Task<bool> AttachDiskToVmAsync(
+                ProxmoxCluster cluster,
+                string nodeName,
+                int vmId,
+                string diskKey,
+                string diskValue,
+                CancellationToken ct = default)
+        {
+            if (cluster is null) throw new ArgumentNullException(nameof(cluster));
+            if (string.IsNullOrWhiteSpace(nodeName)) throw new ArgumentException("Node name required.", nameof(nodeName));
+            if (string.IsNullOrWhiteSpace(diskKey)) throw new ArgumentException("Disk key required.", nameof(diskKey));
+            if (string.IsNullOrWhiteSpace(diskValue)) throw new ArgumentException("Disk value required.", nameof(diskValue));
+
+            // Resolve node → host
+            var host = _proxmoxHelpers.GetHostByNodeName(cluster, nodeName);
+            if (host == null || string.IsNullOrWhiteSpace(host.HostAddress))
+                throw new InvalidOperationException($"No Proxmox host found for node '{nodeName}'.");
+
+            var hostAddress = host.HostAddress;
+
+            // Proxmox API: set VM config key
+            // POST /nodes/{node}/qemu/{vmid}/config
+            var url =
+                $"https://{hostAddress}:8006/api2/json/nodes/{Uri.EscapeDataString(nodeName)}/qemu/{vmId}/config";
+
+            var payload = new Dictionary<string, string>
+            {
+                [diskKey] = diskValue
+            };
+
+            var body = new FormUrlEncodedContent(payload);
+
+            var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Post, url, body, ct);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                var text = await resp.Content.ReadAsStringAsync(ct);
+                _logger.LogError(
+                    "AttachDiskToVmAsync failed for VM {VmId} on node {Node}. Status {Status} Body: {Body}",
+                    vmId, nodeName, resp.StatusCode, text);
+                return false;
+            }
+
+            _logger.LogInformation(
+                "AttachDiskToVmAsync: attached {DiskKey}={DiskValue} to VM {VmId} on node {Node}",
+                diskKey, diskValue, vmId, nodeName);
+
+            return true;
+        }
+
+        public async Task<(bool Ok, string? NewRelativePath)> EnsureAttachDiskSymlinkAsync(
+    ProxmoxCluster cluster,
+    string nodeName,
+    string storageName,
+    string sourceRelativePath,   // e.g. "images/101/vm-101-disk-1.qcow2"
+    int targetVmId,              // e.g. 114
+    CancellationToken ct = default)
+        {
+            if (cluster is null) throw new ArgumentNullException(nameof(cluster));
+            if (string.IsNullOrWhiteSpace(nodeName)) throw new ArgumentException(nameof(nodeName));
+            if (string.IsNullOrWhiteSpace(storageName)) throw new ArgumentException(nameof(storageName));
+            if (string.IsNullOrWhiteSpace(sourceRelativePath)) throw new ArgumentException(nameof(sourceRelativePath));
+
+            // Split "images/101/vm-101-disk-1.qcow2"
+            var lastSlash = sourceRelativePath.LastIndexOf('/');
+            var srcDir = lastSlash >= 0 ? sourceRelativePath[..lastSlash] : string.Empty;
+            var srcFile = lastSlash >= 0 ? sourceRelativePath[(lastSlash + 1)..] : sourceRelativePath;
+
+            // Expect dir "images/<oldId>"
+            var dirMatch = Regex.Match(srcDir, @"^images/(?<oldId>\d+)$", RegexOptions.IgnoreCase);
+            if (!dirMatch.Success)
+            {
+                _logger.LogWarning("EnsureAttachDiskSymlinkAsync: source path '{Path}' does not match 'images/<id>/...'", sourceRelativePath);
+                return (false, null);
+            }
+
+            var oldId = dirMatch.Groups["oldId"].Value;
+
+            // Expect file "vm-<oldId>-<rest>"
+            var fileMatch = Regex.Match(srcFile, @"^vm-(?<oldId>\d+)-(?<rest>.+)$", RegexOptions.IgnoreCase);
+            if (!fileMatch.Success)
+            {
+                _logger.LogWarning("EnsureAttachDiskSymlinkAsync: source file '{File}' does not match 'vm-<id>-...'", srcFile);
+                return (false, null);
+            }
+
+            var oldIdInFile = fileMatch.Groups["oldId"].Value;
+            var rest = fileMatch.Groups["rest"].Value;
+
+            if (!string.Equals(oldId, oldIdInFile, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning("EnsureAttachDiskSymlinkAsync: dir id '{DirId}' != file id '{FileId}' in '{Path}'", oldId, oldIdInFile, sourceRelativePath);
+                return (false, null);
+            }
+
+            var newId = targetVmId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+            // Desired new relative path: images/<newId>/vm-<newId>-<rest>
+            var newDir = $"images/{newId}";
+            var newFile = $"vm-{newId}-{rest}";
+            var newRelativePath = $"{newDir}/{newFile}";
+
+            // Resolve node → host
+            var host = _proxmoxHelpers.GetHostByNodeName(cluster, nodeName);
+            if (host == null || string.IsNullOrWhiteSpace(host.HostAddress))
+                throw new InvalidOperationException($"No Proxmox host found for node '{nodeName}'.");
+
+            var hostAddress = host.HostAddress;
+            var sshUser = cluster.Username.Split('@')[0];
+            var sshPass = _encryptionService.Decrypt(cluster.PasswordHash);
+
+            // Bash-escape
+            var qStorage = _proxmoxHelpers.EscapeBash(storageName);
+            var qSrcRel = _proxmoxHelpers.EscapeBash(sourceRelativePath);
+            var qDstRel = _proxmoxHelpers.EscapeBash(newRelativePath);
+
+            var sb = new StringBuilder();
+            sb.AppendLine("set -euo pipefail");
+            sb.AppendLine("export LC_ALL=C");
+            sb.AppendLine($"storage={qStorage}");
+            sb.AppendLine($"srcRel={qSrcRel}");
+            sb.AppendLine($"dstRel={qDstRel}");
+            sb.AppendLine();
+
+            // Resolve base path (same pattern as RenameVmDirectoryAndFilesAsync)
+            sb.AppendLine(@"base="""";");
+            sb.AppendLine(@"if [ -d ""/mnt/pve/$storage"" ]; then");
+            sb.AppendLine(@"  base=""/mnt/pve/$storage""");
+            sb.AppendLine(@"else");
+            sb.AppendLine(@"  conf_path=""$(pvesm config ""$storage"" 2>/dev/null | awk -F': ' '/^path: /{print $2}')"" || true");
+            sb.AppendLine(@"  if [ -n ""$conf_path"" ]; then");
+            sb.AppendLine(@"    base=""$conf_path""");
+            sb.AppendLine(@"  fi");
+            sb.AppendLine(@"fi");
+            sb.AppendLine(@"if [ -z ""$base"" ]; then");
+            sb.AppendLine(@"  echo ""ERR: could not resolve storage base path for '$storage'"" >&2");
+            sb.AppendLine(@"  exit 2");
+            sb.AppendLine(@"fi");
+            sb.AppendLine();
+
+            sb.AppendLine(@"src=""$base/$srcRel""");
+            sb.AppendLine(@"dst=""$base/$dstRel""");
+            sb.AppendLine(@"dstDir=""$(dirname ""$dst"")""");
+            sb.AppendLine();
+
+            sb.AppendLine(@"if [ ! -f ""$src"" ]; then");
+            sb.AppendLine(@"  echo ""ERR: source file not found: $src"" >&2");
+            sb.AppendLine(@"  exit 3");
+            sb.AppendLine(@"fi");
+            sb.AppendLine();
+
+            // If dest dir exists, rename to .old (exact spec you gave)
+            sb.AppendLine(@"if [ -d ""$dstDir"" ]; then");
+            sb.AppendLine(@"  mv ""$dstDir"" ""$dstDir.old""");
+            sb.AppendLine(@"fi");
+            sb.AppendLine(@"mkdir -p ""$dstDir""");
+            sb.AppendLine();
+
+            sb.AppendLine(@"if [ -e ""$dst"" ] && [ ! -L ""$dst"" ]; then");
+            sb.AppendLine(@"  echo ""ERR: destination exists and is not a symlink: $dst"" >&2");
+            sb.AppendLine(@"  exit 4");
+            sb.AppendLine(@"fi");
+            sb.AppendLine(@"rm -f ""$dst""");
+            sb.AppendLine(@"ln -s ""$src"" ""$dst""");
+            sb.AppendLine(@"echo ""OK: symlink $dst -> $src""");
+
+            var script = Regex.Replace(sb.ToString(), @"\r\n?", "\n");
+
+            try
+            {
+                using var ssh = new SshClient(hostAddress, sshUser, sshPass);
+                ssh.Connect();
+
+                var eof = "EOF_" + Guid.NewGuid().ToString("N");
+                var cmdText = $"cat <<'{eof}' | tr -d '\\r' | bash\n{script}\n{eof}\n";
+
+                using var cmd = ssh.CreateCommand(cmdText);
+                cmd.CommandTimeout = TimeSpan.FromMinutes(5);
+
+                var output = cmd.Execute();
+                var exit = cmd.ExitStatus;
+                var err = cmd.Error;
+
+                ssh.Disconnect();
+
+                if (exit != 0)
+                {
+                    _logger.LogError(
+                        "EnsureAttachDiskSymlinkAsync failed on {Host} (exit {Exit}).\nSTDERR:\n{Err}\nSTDOUT:\n{Out}",
+                        hostAddress, exit, (err ?? "").Trim(), (output ?? "").Trim());
+                    return (false, null);
+                }
+
+                _logger.LogInformation(
+                    "EnsureAttachDiskSymlinkAsync OK on {Host}.\nSTDOUT:\n{Out}",
+                    hostAddress, (output ?? "").Trim());
+
+                return (true, newRelativePath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "SSH failure in EnsureAttachDiskSymlinkAsync on node {Node}", nodeName);
+                return (false, null);
+            }
+        }
+        public async Task<(bool Ok, string? Error)> PrepareAttachSymlinkOnCloneAsync(
+            string nodeName,
+            string storageName,
+            string sourceVmId,
+            string destVmId,
+            string sourceFileName,
+            string destFileName,
+            CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(nodeName)) throw new ArgumentException(nameof(nodeName));
+            if (string.IsNullOrWhiteSpace(storageName)) throw new ArgumentException(nameof(storageName));
+            if (string.IsNullOrWhiteSpace(sourceVmId)) throw new ArgumentException(nameof(sourceVmId));
+            if (string.IsNullOrWhiteSpace(destVmId)) throw new ArgumentException(nameof(destVmId));
+            if (string.IsNullOrWhiteSpace(sourceFileName)) throw new ArgumentException(nameof(sourceFileName));
+            if (string.IsNullOrWhiteSpace(destFileName)) throw new ArgumentException(nameof(destFileName));
+
+            try
+            {
+                var resolved = await ResolveClusterAndHostAsync(nodeName, ct);
+                if (resolved == null)
+                {
+                    var msg = $"Node '{nodeName}' not found in any cluster.";
+                    _logger.LogError(msg);
+                    return (false, msg);
+                }
+
+                var cluster = resolved.Value.Cluster;
+                var host = resolved.Value.Host;
+
+                var sshUser = cluster.Username.Split('@')[0];
+                var sshPass = _encryptionService.Decrypt(cluster.PasswordHash);
+
+                var qStorage = _proxmoxHelpers.EscapeBash(storageName);
+                var qSrcId = _proxmoxHelpers.EscapeBash(sourceVmId);
+                var qDstId = _proxmoxHelpers.EscapeBash(destVmId);
+                var qSrcFile = _proxmoxHelpers.EscapeBash(sourceFileName);
+                var qDstFile = _proxmoxHelpers.EscapeBash(destFileName);
+
+                var sb = new StringBuilder();
+                sb.AppendLine("set -euo pipefail");
+                sb.AppendLine("export LC_ALL=C");
+                sb.AppendLine($"storage={qStorage}");
+                sb.AppendLine($"srcid={qSrcId}");
+                sb.AppendLine($"dstid={qDstId}");
+                sb.AppendLine($"srcfile={qSrcFile}");
+                sb.AppendLine($"dstfile={qDstFile}");
+                sb.AppendLine();
+
+                // Resolve base path (prefer /mnt/pve/<storage>, else pvesm config path)
+                sb.AppendLine(@"base="""";");
+                sb.AppendLine(@"if [ -d ""/mnt/pve/$storage/images"" ]; then");
+                sb.AppendLine(@"  base=""/mnt/pve/$storage""");
+                sb.AppendLine(@"else");
+                sb.AppendLine(@"  conf_path=""$(pvesm config ""$storage"" 2>/dev/null | awk -F': ' '/^path: /{print $2}')"" || true");
+                sb.AppendLine(@"  if [ -n ""$conf_path"" ] && [ -d ""$conf_path/images"" ]; then");
+                sb.AppendLine(@"    base=""$conf_path""");
+                sb.AppendLine(@"  fi");
+                sb.AppendLine(@"fi");
+                sb.AppendLine(@"if [ -z ""$base"" ]; then");
+                sb.AppendLine(@"  echo ""ERR: could not resolve storage base path for '$storage'"" >&2");
+                sb.AppendLine(@"  exit 2");
+                sb.AppendLine(@"fi");
+                sb.AppendLine();
+
+                sb.AppendLine(@"srcdir=""$base/images/$srcid""");
+                sb.AppendLine(@"dstdir=""$base/images/$dstid""");
+                sb.AppendLine();
+
+                sb.AppendLine(@"if [ ! -d ""$srcdir"" ]; then");
+                sb.AppendLine(@"  echo ""ERR: source VM directory not found: $srcdir"" >&2");
+                sb.AppendLine(@"  exit 3");
+                sb.AppendLine(@"fi");
+                sb.AppendLine();
+
+                // If dest dir exists and is a *different* VM, rename it away.
+                // For same-VM attach (srcid == dstid) we keep the directory and just add a new file.
+                sb.AppendLine(@"if [ ""$srcid"" != ""$dstid"" ]; then");
+                sb.AppendLine(@"  if [ -d ""$dstdir"" ]; then");
+                sb.AppendLine(@"    ts=""$(date +%s)""");
+                sb.AppendLine(@"    olddir=""${dstdir}.old.${ts}""");
+                sb.AppendLine(@"    mv ""$dstdir"" ""$olddir""");
+                sb.AppendLine(@"  fi");
+                sb.AppendLine(@"fi");
+                sb.AppendLine();
+
+                sb.AppendLine(@"mkdir -p ""$dstdir""");
+                sb.AppendLine();
+
+                sb.AppendLine(@"src=""$srcdir/$srcfile""");
+                sb.AppendLine(@"dst=""$dstdir/$dstfile""");
+                sb.AppendLine();
+
+                sb.AppendLine(@"if [ ! -f ""$src"" ]; then");
+                sb.AppendLine(@"  echo ""ERR: source file not found: $src"" >&2");
+                sb.AppendLine(@"  exit 4");
+                sb.AppendLine(@"fi");
+                sb.AppendLine();
+
+                sb.AppendLine(@"if [ -e ""$dst"" ]; then");
+                sb.AppendLine(@"  echo ""ERR: destination already exists: $dst"" >&2");
+                sb.AppendLine(@"  exit 5");
+                sb.AppendLine(@"fi");
+                sb.AppendLine();
+
+                sb.AppendLine(@"ln -s ""$src"" ""$dst""");
+                sb.AppendLine(@"echo ""OK: linked $dst -> $src""");
+
+                var script = Regex.Replace(sb.ToString(), @"\r\n?", "\n");
+
+                using var ssh = new SshClient(host.HostAddress, sshUser, sshPass);
+                ssh.Connect();
+
+                var eof = "EOF_" + Guid.NewGuid().ToString("N");
+                var cmdText = $"cat <<'{eof}' | tr -d '\\r' | bash\n{script}\n{eof}\n";
+
+                using var cmd = ssh.CreateCommand(cmdText);
+                cmd.CommandTimeout = TimeSpan.FromMinutes(5);
+                var output = cmd.Execute();
+                var exit = cmd.ExitStatus;
+                var err = cmd.Error;
+
+                ssh.Disconnect();
+
+                if (exit != 0)
+                {
+                    var msg = $"SSH script exit {exit}. STDERR: {(err ?? "").Trim()}";
+                    _logger.LogError(
+                        "PrepareAttachSymlinkOnCloneAsync failed on {Host} (exit {Exit}).\nSTDERR:\n{Err}\nSTDOUT:\n{Out}",
+                        host.HostAddress, exit, (err ?? "").Trim(), (output ?? "").Trim());
+                    return (false, msg);
+                }
+
+                _logger.LogInformation(
+                    "PrepareAttachSymlinkOnCloneAsync OK on {Host}.\nSTDOUT:\n{Out}",
+                    host.HostAddress, (output ?? "").Trim());
+
+                return (true, null);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "SSH failure while preparing attach symlink on node {Node}", nodeName);
+                return (false, ex.Message);
+            }
+        }
+
+
     }
 }

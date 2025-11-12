@@ -379,6 +379,39 @@
                 }
             }
 
+            // NEW: helper to update global + per-SVM counters
+            function updateSelectionSummary() {
+                if (!container) return;
+
+                // Global (optional) counters: #volSelectedCount / #volTotalCount
+                const selectedSpan = container.querySelector('#volSelectedCount');
+                const totalSpan = container.querySelector('#volTotalCount');
+                const allBoxes = container.querySelectorAll('.volume-checkbox');
+                const checkedBoxes = container.querySelectorAll('.volume-checkbox:checked');
+
+                if (totalSpan) {
+                    totalSpan.textContent = allBoxes.length.toString();
+                }
+                if (selectedSpan) {
+                    selectedSpan.textContent = checkedBoxes.length.toString();
+                }
+
+                // Per-SVM counters: .svm-selected-count / .svm-total-count
+                container.querySelectorAll('.svm-item').forEach(item => {
+                    const svmAll = item.querySelectorAll('.volume-checkbox');
+                    const svmChecked = item.querySelectorAll('.volume-checkbox:checked');
+                    const selSpan = item.querySelector('.svm-selected-count');
+                    const totSpan = item.querySelector('.svm-total-count');
+
+                    if (totSpan) {
+                        totSpan.textContent = svmAll.length.toString();
+                    }
+                    if (selSpan) {
+                        selSpan.textContent = svmChecked.length.toString();
+                    }
+                });
+            }
+
             // 2) Mark saved selections
             try {
                 const selRes = await fetch(`@Url.Action("GetSelectedNetappVolumes", "Settings")?controllerId=${controllerId}`, {
@@ -443,6 +476,9 @@
                 }
             } catch { }
 
+            // After initial marking + locking, sync the counters
+            updateSelectionSummary();
+
             // 4) Search + expand/collapse
             const search = document.getElementById('volSearch');
             const btnExpand = document.getElementById('expandAll');
@@ -468,6 +504,15 @@
             search?.addEventListener('input', applyFilter);
             btnExpand?.addEventListener('click', () => toggleAll(true));
             btnCollapse?.addEventListener('click', () => toggleAll(false));
+
+            // NEW: keep counters in sync when user clicks checkboxes
+            container.addEventListener('change', function (e) {
+                if (e.target &&
+                    e.target.classList &&
+                    e.target.classList.contains('volume-checkbox')) {
+                    updateSelectionSummary();
+                }
+            });
 
             // 5) Save
             document.getElementById('saveVolumes')?.addEventListener('click', async () => {
@@ -652,5 +697,6 @@
         })();
     </script>
 }
+
 
 

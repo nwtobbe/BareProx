@@ -15,15 +15,18 @@ else
         {
             var svm = Model.Svms[i];
             var collapseId = $"collapse-svm-{i}";
-            var hasSelected = svm.Volumes?.Any(v => v.IsSelected) == true;   // auto-open if something is selected
+            var hasSelected = svm.Volumes?.Any(v => v.IsSelected) == true;
             var selectedCount = svm.Volumes?.Count(v => v.IsSelected) ?? 0;
             var totalCount = svm.Volumes?.Count ?? 0;
 
-            <li class="list-group-item">
+            <li class="list-group-item svm-item" data-svm-index="@i">
                 <div class="d-flex justify-content-between align-items-center">
                     <strong>@svm.Name</strong>
                     <div class="d-flex align-items-center gap-2">
-                        <span class="badge bg-secondary" title="Selected / Total">@selectedCount / @totalCount</span>
+                        <span class="badge bg-secondary svm-counter" title="Selected / Total">
+                            <span class="svm-selected-count">@selectedCount</span> /
+                            <span class="svm-total-count">@totalCount</span>
+                        </span>
                         <button class="btn btn-sm btn-outline-secondary"
                                 type="button"
                                 data-bs-toggle="collapse"

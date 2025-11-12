@@ -47,4 +47,19 @@ namespace BareProx.Models
         public string LockedPeriod { get; set; } // already ISO8601, decode as needed
     }
 
+    public sealed class SnapshotDiskDto
+    {
+        public string VolId { get; set; } = string.Empty;
+        public string? ContentType { get; set; }
+        public string? Format { get; set; }
+        public long? SizeBytes { get; set; }
+    }
+
+    public sealed class SnapshotVmDiskDto
+    {
+        public int VmId { get; set; }
+        public string VmName { get; set; } = string.Empty;
+        public List<SnapshotDiskDto> Disks { get; set; } = new();
+    }
+
 }

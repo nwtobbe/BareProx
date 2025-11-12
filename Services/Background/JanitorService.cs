@@ -153,6 +153,7 @@ namespace BareProx.Services.Background
         /// DB-only cleanup for expired snapshots that CollectionService has already removed from NetApp.
         /// Uses QUERY DB NetappSnapshots flags to decide if safe to delete app rows, and prunes those
         /// NetappSnapshots rows from the QUERY DB once removed.
+        /// Also removes per-backup storage-content snapshots from the main DB.
         /// </summary>
         private async Task CleanupExpiredDbOnly(CancellationToken ct)
         {
@@ -225,9 +226,18 @@ namespace BareProx.Services.Background
                 await using var tx = await main.Database.BeginTransactionAsync(ct);
 
                 if (vmResultIds.Count > 0)
-                    await main.JobVmLogs.Where(l => vmResultIds.Contains(l.JobVmResultId)).ExecuteDeleteAsync(ct);
+                    await main.JobVmLogs
+                        .Where(l => vmResultIds.Contains(l.JobVmResultId))
+                        .ExecuteDeleteAsync(ct);
 
-                await main.JobVmResults.Where(r => jobIdsToPurge.Contains(r.JobId)).ExecuteDeleteAsync(ct);
+                await main.JobVmResults
+                    .Where(r => jobIdsToPurge.Contains(r.JobId))
+                    .ExecuteDeleteAsync(ct);
+
+                // 🔧 NEW: remove storage content index rows for those jobs
+                await main.ProxmoxStorageDiskSnapshots
+                    .Where(x => jobIdsToPurge.Contains(x.JobId))
+                    .ExecuteDeleteAsync(ct);
 
                 // Remove only the expired snapshot’s BackupRecords (MAIN DB)
                 foreach (var c in candidates)
@@ -244,7 +254,9 @@ namespace BareProx.Services.Background
 
                 var orphanJobs = jobIdsToPurge.Except(stillUsedJobIds).ToList();
                 if (orphanJobs.Count > 0)
-                    await main.Jobs.Where(j => orphanJobs.Contains(j.Id)).ExecuteDeleteAsync(ct);
+                    await main.Jobs
+                        .Where(j => orphanJobs.Contains(j.Id))
+                        .ExecuteDeleteAsync(ct);
 
                 await tx.CommitAsync(ct);
             }, ct);
@@ -288,6 +300,8 @@ namespace BareProx.Services.Background
             if (toDeleteIds.Count == 0)
             {
                 _logger.LogDebug("PruneJobs: nothing to delete (cutoff {Cutoff}).", cutoff);
+
+
                 return;
             }
 
@@ -302,6 +316,12 @@ namespace BareProx.Services.Background
                     .ExecuteDeleteAsync(ct);
 
                 await db.JobVmResults.Where(r => toDeleteIds.Contains(r.JobId)).ExecuteDeleteAsync(ct);
+
+                // NEW: prune storage content snapshot entries for those jobs
+                await db.ProxmoxStorageDiskSnapshots
+                    .Where(x => toDeleteIds.Contains(x.JobId))
+                    .ExecuteDeleteAsync(ct);
+
                 await db.BackupRecords.Where(r => toDeleteIds.Contains(r.JobId)).ExecuteDeleteAsync(ct);
                 await db.Jobs.Where(j => toDeleteIds.Contains(j.Id)).ExecuteDeleteAsync(ct);
 
@@ -328,38 +348,5 @@ namespace BareProx.Services.Background
                 }
             }
         }
-
-        /// <summary>
-        /// Waits for the snapshot tracker (QUERY DB) to be seeded at least once, or
-        /// for a metadata flag to be set by CollectionService. Returns true if ready,
-        /// false if timed out. Never throws on timeout.
-        /// </summary>
-        private async Task<bool> WaitForTrackerWarmupAsync(CancellationToken ct)
-        {
-            var deadline = DateTime.UtcNow + WarmupMaxWait;
-
-            while (DateTime.UtcNow < deadline)
-            {
-                await using var qdb = await _qdbf.CreateAsync(ct);
-
-                // Option A: tracker has rows
-                bool trackerHasRows = await qdb.NetappSnapshots.AnyAsync(ct);
-
-                // Option B: metadata flag set by CollectionService once it finished the first pass
-                // (CollectionService can set this with: InventoryMetadata { Key="SnapshotTrackerReady", Value="true" })
-                var meta = await qdb.InventoryMetadata.FindAsync(new object[] { "SnapshotTrackerReady" }, ct);
-                bool flaggedReady = string.Equals(meta?.Value, "true", StringComparison.OrdinalIgnoreCase);
-
-                if (trackerHasRows || flaggedReady)
-                    return true;
-
-                _logger.LogDebug("Janitor warm-up: tracker not ready; will re-check in {Poll}s.", WarmupPoll.TotalSeconds);
-                await Task.Delay(WarmupPoll, ct);
-            }
-
-            _logger.LogWarning("Janitor warm-up: timed out after {Seconds}s; proceeding cautiously.", WarmupMaxWait.TotalSeconds);
-            return false;
-        }
-
     }
 }

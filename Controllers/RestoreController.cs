@@ -34,7 +34,7 @@ namespace BareProx.Controllers
     {
         // Switched to factories for scoped usage
         private readonly IDbContextFactory<ApplicationDbContext> _dbf;
-        private readonly IDbContextFactory<QueryDbContext> _qdbf; // NEW: Query DB for NetappSnapshots
+        private readonly IDbContextFactory<QueryDbContext> _qdbf; // Query DB for NetappSnapshots
 
         private readonly IBackupService _backupService;
         private readonly ProxmoxService _proxmoxService;
@@ -166,10 +166,10 @@ namespace BareProx.Controllers
             if (cluster == null)
                 return StatusCode(500, "Cluster not configured");
 
-            // latest snapshot for this job (from Query DB)
+            // Snapshot row for this job *and this snapshot name* (from Query DB)
             var snap = await qdb.NetappSnapshots
                 .AsNoTracking()
-                .Where(s => s.JobId == record.JobId)
+                .Where(s => s.JobId == record.JobId && s.SnapshotName == record.SnapshotName)
                 .OrderByDescending(s => s.CreatedAt)
                 .FirstOrDefaultAsync(ct);
 
@@ -179,58 +179,68 @@ namespace BareProx.Controllers
                 .Where(v => v.Disabled != true)
                 .ToListAsync(ct);
 
-            // Helper: resolve volume + controller for target preference
-            (string volume, int resolvedControllerId) ResolveSource()
+            // Helper: resolve volume + controller for target preference (snapshot-centric)
+            (string volume, int resolvedControllerId, bool usedSecondary) ResolveSource()
             {
                 var wantSecondary = string.Equals(target, "Secondary", StringComparison.OrdinalIgnoreCase);
 
-                if (wantSecondary)
+                if (snap != null)
                 {
-                    // Prefer Query DB snapshot info
-                    if (snap?.ExistsOnSecondary == true &&
-                        snap.SecondaryControllerId.HasValue &&
-                        !string.IsNullOrWhiteSpace(snap.SecondaryVolume))
+                    // Prefer the requested side if available
+                    if (wantSecondary)
                     {
-                        return (snap.SecondaryVolume!, snap.SecondaryControllerId!.Value);
+                        if (snap.ExistsOnSecondary == true &&
+                            snap.SecondaryControllerId.HasValue &&
+                            !string.IsNullOrWhiteSpace(snap.SecondaryVolume))
+                        {
+                            return (snap.SecondaryVolume!, snap.SecondaryControllerId.Value, true);
+                        }
+
+                        // Asked for secondary but only primary exists → fall back to primary
+                        if (snap.ExistsOnPrimary == true &&
+                            snap.PrimaryControllerId > 0 &&
+                            !string.IsNullOrWhiteSpace(snap.PrimaryVolume))
+                        {
+                            return (snap.PrimaryVolume, snap.PrimaryControllerId, false);
+                        }
                     }
-
-                    // Fallback: SnapMirror relation for this primary volume (main DB)
-                    var rel = db.SnapMirrorRelations
-                        .AsNoTracking()
-                        .FirstOrDefault(r => r.SourceVolume == record.StorageName);
-
-                    if (rel != null)
+                    else
                     {
-                        var enabled = selectedVolumes.Any(v =>
-                            v.NetappControllerId == rel.DestinationControllerId &&
-                            v.VolumeName == rel.DestinationVolume);
-                        if (enabled)
-                            return (rel.DestinationVolume, rel.DestinationControllerId);
+                        // PRIMARY target
+                        if (snap.ExistsOnPrimary == true &&
+                            snap.PrimaryControllerId > 0 &&
+                            !string.IsNullOrWhiteSpace(snap.PrimaryVolume))
+                        {
+                            return (snap.PrimaryVolume, snap.PrimaryControllerId, false);
+                        }
+
+                        // Asked for primary but only secondary exists → fall back to secondary
+                        if (snap.ExistsOnSecondary == true &&
+                            snap.SecondaryControllerId.HasValue &&
+                            !string.IsNullOrWhiteSpace(snap.SecondaryVolume))
+                        {
+                            return (snap.SecondaryVolume!, snap.SecondaryControllerId.Value, true);
+                        }
                     }
                 }
-                else
+
+                // No usable NetappSnapshots row (or incomplete) — fall back to backup + SelectedVolumes.
+
+                if (!string.IsNullOrWhiteSpace(record.StorageName))
                 {
-                    // PRIMARY target
-                    if (snap?.ExistsOnPrimary == true &&
-                        snap.PrimaryControllerId > 0 &&
-                        !string.IsNullOrWhiteSpace(record.StorageName))
-                    {
-                        return (record.StorageName, snap.PrimaryControllerId);
-                    }
-
-                    // Fallback: SelectedNetappVolumes row for this volume (main DB)
-                    var sv = selectedVolumes.FirstOrDefault(v =>
-                        v.VolumeName == record.StorageName);
-
+                    var sv = selectedVolumes.FirstOrDefault(v => v.VolumeName == record.StorageName);
                     if (sv != null)
-                        return (record.StorageName, sv.NetappControllerId);
+                    {
+                        // We know which controller has this volume enabled; side is "best effort"
+                        return (record.StorageName, sv.NetappControllerId, wantSecondary);
+                    }
                 }
 
-                // Final fallback: original volume + incoming controllerId (if >0) else 0
-                return (record.StorageName, controllerId > 0 ? controllerId : 0);
+                // Final fallback: original volume + incoming controllerId (if > 0)
+                return (record.StorageName, controllerId > 0 ? controllerId : 0, wantSecondary);
             }
 
-            var (actualVolume, resolvedControllerId) = ResolveSource();
+            var (actualVolume, resolvedControllerId, usedSecondary) = ResolveSource();
 
             // If still lacking a controller, try any enabled row for the chosen volume
             if (resolvedControllerId == 0)
@@ -247,7 +257,8 @@ namespace BareProx.Controllers
                 BackupId = record.Id,
                 ClusterId = clusterId,
                 ControllerId = resolvedControllerId > 0 ? resolvedControllerId : controllerId, // prefer resolved
-                Target = target,
+                // Reflect actual source side (where we will clone from)
+                Target = usedSecondary ? "Secondary" : "Primary",
                 VmId = record.VMID.ToString(),
                 VmName = record.VmName,
                 SnapshotName = record.SnapshotName,
@@ -269,16 +280,22 @@ namespace BareProx.Controllers
                 })
                 .ToList();
 
-            // Soft warnings for target availability
-            if (string.Equals(target, "Secondary", StringComparison.OrdinalIgnoreCase))
+            // Soft warnings for target availability based on the actual source side we resolved
+            if (usedSecondary)
             {
                 if (!(snap?.ExistsOnSecondary ?? false))
-                    TempData["Warning"] = "No secondary snapshot found; using best-effort mapping via SnapMirror/SelectedVolumes.";
+                {
+                    TempData["Warning"] =
+                        "Restoring from secondary without a confirmed secondary snapshot; using best-effort volume mapping.";
+                }
             }
             else
             {
                 if (!(snap?.ExistsOnPrimary ?? false))
-                    TempData["Warning"] = "No primary snapshot flag found; using SelectedVolumes/controller mapping.";
+                {
+                    TempData["Warning"] =
+                        "Restoring from primary without a confirmed primary snapshot; using SelectedVolumes/controller mapping.";
+                }
             }
 
             return View(vm);

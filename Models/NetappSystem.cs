@@ -166,6 +166,7 @@ namespace BareProx.Models
         public string Vserver { get; set; }
         public bool IsSelected { get; set; }
         public List<string> Snapshots { get; set; } = new();
+        public HashSet<string> IndexedSnapshotNames { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
     public class NetappVolumeExportDto
