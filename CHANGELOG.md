@@ -7,7 +7,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
 
-## [1.0.2511.1413] - 2025-11-14
+## [1.0.2511.1415] - 2025-11-14
 
 ## Added
 - Mount vm disks from snapshots to another vm under Netapp / Snapshots. It is available from backups created from this version and forward.
