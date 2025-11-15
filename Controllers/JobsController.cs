@@ -38,10 +38,15 @@ namespace BareProx.Controllers
             _tz = tz;
         }
 
-        public async Task<IActionResult> Index(CancellationToken ct)
+        public async Task<IActionResult> Index(int pageSize = 50, CancellationToken ct = default)
         {
+            if (pageSize <= 0) pageSize = 50;
+            if (pageSize > 1000) pageSize = 1000;
+
             var jobs = await _context.Jobs
+                .AsNoTracking()
                 .OrderByDescending(j => j.StartedAt)
+                .Take(pageSize)
                 .ToListAsync(ct);
 
             var vm = jobs.Select(j => new JobViewModel
@@ -57,8 +62,12 @@ namespace BareProx.Controllers
                     : (DateTime?)null
             }).ToList();
 
+            ViewBag.PageSize = pageSize;
+
             return View(vm);
         }
+
+
 
         [HttpPost]
         [ValidateAntiForgeryToken]
@@ -75,12 +84,16 @@ namespace BareProx.Controllers
 
         [HttpGet]
         public async Task<IActionResult> Table(
-             string status = "",
-             string search = "",
-             string sortColumn = "StartedAt",
-             bool asc = false,
-             CancellationToken ct = default)
+       string status = "",
+       string search = "",
+       string sortColumn = "StartedAt",
+       bool asc = false,
+       int pageSize = 50,
+       CancellationToken ct = default)
         {
+            if (pageSize <= 0) pageSize = 50;
+            if (pageSize > 1000) pageSize = 1000;
+
             var query = _context.Jobs.AsNoTracking();
 
             if (!string.IsNullOrWhiteSpace(status))
@@ -102,6 +115,8 @@ namespace BareProx.Controllers
                 _ when asc => query.OrderBy(j => j.StartedAt),
                 _ => query.OrderByDescending(j => j.StartedAt)
             };
+
+            query = query.Take(pageSize);
 
             var rawJobs = await query
                 .Select(j => new
@@ -129,8 +144,11 @@ namespace BareProx.Controllers
                     : (DateTime?)null
             }).ToList();
 
+            ViewBag.PageSize = pageSize;
+
             return PartialView("_JobsTable", vmList);
         }
+
 
         // Full page details (optional fallback / deep-link)
         [HttpGet]
@@ -217,7 +235,11 @@ namespace BareProx.Controllers
                 VmResults = vmResults
             };
         }
+
+
+
+
     }
 
-  
+
 }

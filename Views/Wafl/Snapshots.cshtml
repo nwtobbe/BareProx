@@ -420,7 +420,7 @@
                     const vms = Array.isArray(data.vms) ? data.vms : [];
 
                     if (vms.length === 0) {
-                        vmTree.innerHTML = '<div class="text-muted">No indexed VM disks for this snapshot yet.</div>';
+                        vmTree.innerHTML = '<div class="text-muted">No index available.</div>';
                     } else {
                         // underline snapshot if it has VM/disks info
                         snapLabel.classList.add('snapshot-has-vms');

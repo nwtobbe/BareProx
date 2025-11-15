@@ -96,8 +96,8 @@ namespace BareProx.Services.Background
         {
             _logger.LogInformation("Queued Background Service is starting.");
 
-            // Allow up to 4 concurrent background jobs
-            var concurrencyLimiter = new SemaphoreSlim(4, 4);
+            // Allow up to 2 concurrent background jobs
+            var concurrencyLimiter = new SemaphoreSlim(2, 2);
             var runningTasks = new List<Task>();
 
             while (!stoppingToken.IsCancellationRequested)

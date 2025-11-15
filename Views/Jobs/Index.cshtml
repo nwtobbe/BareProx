@@ -1,6 +1,9 @@
 ﻿@model List<BareProx.Models.JobViewModel>
 @{
     ViewData["Title"] = "Job Status";
+
+    // Initial page size coming from controller (Index + Table both set ViewBag.PageSize)
+    var initialPageSize = ViewBag.PageSize as int? ?? 50;
 }
 
 <h2>Running & Recent Jobs</h2>
@@ -19,7 +22,7 @@
         <input id="searchBox"
                type="text"
                class="form-control form-control-sm"
-               placeholder="Search type or VM…" />
+               placeholder="Search…" />
     </div>
 </div>
 
@@ -49,6 +52,9 @@
           let debounceT = null;
           let requestSeq = 0;   // ignore stale AJAX responses
 
+          // Track current page size (shared between full page + AJAX)
+          let currentPageSize = @initialPageSize;
+
           function debounce(fn, wait) {
             clearTimeout(debounceT);
             debounceT = setTimeout(fn, wait);
@@ -60,7 +66,8 @@
               status: $('#statusFilter').val(),
               search: $('#searchBox').val().trim(),
               sortColumn: currentSort.col,
-              asc: currentSort.asc
+              asc: currentSort.asc,
+              pageSize: currentPageSize
             });
 
             try {
@@ -82,6 +89,13 @@
             const col = $(this).data('column');
             currentSort.asc = (currentSort.col === col) ? !currentSort.asc : true;
             currentSort.col = col;
+            loadTable();
+          });
+
+          // Handle page size change (delegated, because the table is replaced via AJAX)
+          $('#jobsContainer').on('change', '#pageSize', function () {
+            const val = parseInt(this.value, 10);
+            currentPageSize = isNaN(val) ? 50 : val;
             loadTable();
           });
 

@@ -7,6 +7,18 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
 
+## [1.0.2511.1415] - 2025-11-xx
+
+## Added
+- 
+
+### Changed
+- Job concurrency decreased to 2 from 4 to lower the load on the sqlite db. If someone notices db issues please report and we lower it to 1.
+- Page Jobs. Limit the number of rows to display at a time.
+
+
+
+
 ## [1.0.2511.1415] - 2025-11-14
 
 ## Added
