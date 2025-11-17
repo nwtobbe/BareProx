@@ -176,6 +176,10 @@ namespace BareProx.Services.Proxmox.Restore
             }
 
             // Build .conf
+
+            if (!string.IsNullOrWhiteSpace(model.NewVmName))
+                payload["name"] = model.NewVmName.Trim();
+
             var sb = new StringBuilder();
             foreach (var kv in payload) sb.AppendLine($"{kv.Key}: {kv.Value}");
 

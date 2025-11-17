@@ -16,6 +16,8 @@ BareProx is an ASP.NET Core MVC application, as evidenced by its Controllers, Vi
 ## Prerequisites
 
 - Debian or Ubuntu host (tested on Debian 13)
+- NetApp ONTAP with NFS datastores
+- Proxmox VE cluster (tested on Proxmox VE 9) 
 
 ---
 
@@ -192,9 +194,11 @@ And don’t forget to select datastores to use.
 
 ## Things Not Working / Known Issues
 
-- **TPM devices:** Proxmox does not allow snapshots of VMs with TPM devices. Proxmox may allow this soon.  
+- ~~**TPM devices:** Proxmox does not allow snapshots of VMs with TPM devices. Proxmox may allow this soon.~~  
 - **Cloud-Init drives:** Delete and recreate them after restore. They are temporary devices.
-- **Exclude from backup** You can exclude vm:s from backup but.. there is no code currently that does the actual exclusion.
+- ~~**Exclude from backup** You can exclude vm:s from backup but.. there is no code currently that does the actual exclusion.~~
+- **VMware migration:** Only basic VM migration is supported. No advanced features like snapshots, linked clones, etc.
+- **Spanning disks** are not supported, keep all disks for a VM on the same datastore.
 
 ---
 

@@ -461,6 +461,17 @@
                 }
             }
 
+            // Show/hide "Locked for" when locking is toggled
+            lockingCheckbox?.addEventListener("change", () => {
+                if (!lockingRetentionContainer) return;
+                const shouldShow = lockingCheckbox.checked;
+                lockingRetentionContainer.classList.toggle("d-none", !shouldShow);
+                if (shouldShow) {
+                    recalcLockingOptions();
+                    clampLockInput();
+                }
+            });
+
             function updateReplicateVisibility(isReplicable) {
                 if (!labelSelect || !replicateBox || !replicateToggle) return;
                 const isManual = (labelSelect.value === "Manual");
@@ -528,35 +539,8 @@
                     if (lockCountInput) lockCountInput.value = 1;
                     if (lockUnitSelect) lockUnitSelect.value = "Hours";
 
-                    // One-time recalc for limits
-                    (function recalcOnce(){
-                        if (!retentionCountInput || !retentionUnitSelect || !lockCountInput || !lockUnitSelect) return;
-                        const totalHours = retentionInHours(retentionCountInput.value, retentionUnitSelect.value);
-                        if (totalHours <= 1) return;
-                        let selectedUnit = lockUnitSelect.value;
-                        let validUnit = false;
-                        Array.from(lockUnitSelect.options).forEach(opt => {
-                            const unit = opt.value;
-                            const maxCnt = maxLockCount(totalHours, unit);
-                            opt.disabled = maxCnt < 1;
-                            if (!opt.disabled && unit === selectedUnit) {
-                                validUnit = true;
-                                lockCountInput.max = maxCnt;
-                                if (+lockCountInput.value > maxCnt) lockCountInput.value = maxCnt || 1;
-                                if (+lockCountInput.value < 1 || isNaN(+lockCountInput.value)) lockCountInput.value = 1;
-                            }
-                        });
-                        if (!validUnit) {
-                            const firstEnabled = Array.from(lockUnitSelect.options).find(o => !o.disabled);
-                            if (firstEnabled) {
-                                lockUnitSelect.value = firstEnabled.value;
-                                const maxCnt = maxLockCount(totalHours, firstEnabled.value);
-                                lockCountInput.max = maxCnt;
-                                const cur = parseInt(lockCountInput.value, 10);
-                                lockCountInput.value = isNaN(cur) ? 1 : Math.max(1, Math.min(cur, maxCnt));
-                            }
-                        }
-                    })();
+                    // One-time recalc for limits & availability
+                    recalcLockingOptions();
 
                     // App-aware options
                     const appAwareOptions = document.getElementById("appAwareOptions");
@@ -602,19 +586,31 @@
             retentionCountInput?.addEventListener("keydown", blockInvalidNumberKeys);
             lockCountInput?.addEventListener("keydown", blockInvalidNumberKeys);
 
-            // ------- Ensure hidden fallback doesn't override a checked checkbox -------
+            // ------- Ensure hidden fallbacks don't override checked checkboxes -------
             const form = document.getElementById('backupNowForm');
             form?.addEventListener('submit', function () {
+                // ReplicateToSecondary
                 const replicateToggle = document.getElementById('ReplicateToSecondaryToggle');
-                const hiddenFallback = form.querySelector('input[type="hidden"][name="ReplicateToSecondary"]');
-                const replicateBox = document.getElementById('replicateCheckbox');
+                const hiddenReplicateFallback = form.querySelector('input[type="hidden"][name="ReplicateToSecondary"]');
+                const replicateBoxEl = document.getElementById('replicateCheckbox');
 
-                const isShown = replicateBox && !replicateBox.classList.contains('d-none');
-                const isChecked = replicateToggle && replicateToggle.checked;
+                const repShown = replicateBoxEl && !replicateBoxEl.classList.contains('d-none');
+                const repChecked = replicateToggle && replicateToggle.checked;
 
-                // If user chose to replicate, disable the hidden "false" so only "true" is posted
-                if (isShown && isChecked && hiddenFallback) {
-                    hiddenFallback.disabled = true;
+                if (repShown && repChecked && hiddenReplicateFallback) {
+                    hiddenReplicateFallback.disabled = true;
+                }
+
+                // EnableLocking
+                const lockingToggle = document.getElementById('EnableLocking');
+                const hiddenLockFallback = form.querySelector('input[type="hidden"][name="EnableLocking"]');
+                const lockingBoxEl = document.getElementById('lockingCheckbox');
+
+                const lockShown = lockingBoxEl && !lockingBoxEl.classList.contains('d-none');
+                const lockChecked = lockingToggle && lockingToggle.checked;
+
+                if (lockShown && lockChecked && hiddenLockFallback) {
+                    hiddenLockFallback.disabled = true;
                 }
             });
         });

@@ -358,6 +358,11 @@ namespace BareProx.Services.Migration
             sb.AppendLine($"name: {item.Name}");
             sb.AppendLine("machine: q35");
             sb.AppendLine($"bios: {(item.Uefi ? "ovmf" : "seabios")}");
+
+            // NEW: write ostype if specified (must be a valid Proxmox code like l26, win11, win10, etc.)
+            if (!string.IsNullOrWhiteSpace(item.OsType))
+                sb.AppendLine($"ostype: {item.OsType}");
+
             sb.AppendLine("agent: 1");
             sb.AppendLine("vga: std");
             sb.AppendLine("ide2: none,media=cdrom");
@@ -436,6 +441,7 @@ namespace BareProx.Services.Migration
 
             return sb.ToString();
         }
+
 
         private static int? GetIntOpt(object obj, params string[] propertyNames)
         {

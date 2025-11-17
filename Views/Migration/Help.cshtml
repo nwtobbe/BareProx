@@ -117,7 +117,7 @@
             <li><strong>Memory / CPU Sockets / CPU Cores:</strong> Adjust as needed (avoid over-provisioning; consider host CPU layout and a ~3:1 vCPU planning guideline).</li>
 
             <li>
-                <strong>Prepare for VirtIO:</strong> Will target VirtIO storage drivers and set disks to <em>SATA</em> for initial boot.
+                <strong>Prepare for VirtIO:</strong> Will target VirtIO SCSI drivers and set disks to <em>SATA</em> for initial boot.
                 <ul>
                     <li>Adds a dummy 1&nbsp;GiB disk so Windows can install VirtIO drivers from the ISO.</li>
                 </ul>
@@ -206,7 +206,7 @@
             <li><strong>Shutdown VM.</strong></li>
             <li><strong>Cleanup:</strong> Remove temporary VirtIO ISO / dummy disk.</li>
             <li>
-                <strong>If you used “Prepare for VirtIO”:</strong> Detach disks in Proxmox and attach again as <em>VirtIO Block</em> (edit “unused disk X”).
+                <strong>If you used “Prepare for VirtIO”:</strong> Detach disks in Proxmox and attach again as <em>SCSI</em> (edit “unused disk X”).
                 <ul>
                     <li>Select correct index, enable <code>discard</code> and <code>iothreads</code>.</li>
                 </ul>

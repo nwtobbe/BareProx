@@ -46,6 +46,8 @@ namespace BareProx.Services.Proxmox.Migration
         Task AddDummyDiskAsync(string node, int vmid, string storage, int slot, int sizeGiB, CancellationToken ct = default);
         Task AddEfiDiskAsync(string node, int vmid, string storage, CancellationToken ct = default);
         Task SetCdromAsync(string node, int vmid, string volidOrName, CancellationToken ct = default);
+        Task SetOsTypeAsync(string node, int vmid, string osType, CancellationToken ct = default);
+
 
         // Capabilities / inventory
         Task<IReadOnlyList<PveNetworkIf>> GetNodeNetworksAsync(string node, CancellationToken ct = default);

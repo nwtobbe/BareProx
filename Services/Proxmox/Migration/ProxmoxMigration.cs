@@ -159,7 +159,7 @@ namespace BareProx.Services.Proxmox.Migration
         public async Task AddDummyDiskAsync(string node, int vmid, string storage, int slot, int sizeGiB, CancellationToken ct = default)
         {
             var (cluster, host, sshUser, sshPass) = await GetSshTargetAsync(node, ct);
-            var cmdText = $"qm set {vmid} --virtio{slot} {EscapeBash($"{storage}:{sizeGiB}")}";
+            var cmdText = $"qm set {vmid} --scsi{slot} {EscapeBash($"{storage}:{sizeGiB}")}";
             using var ssh = new SshClient(host.HostAddress, sshUser, sshPass);
             ssh.Connect();
             using var cmd = ssh.CreateCommand(cmdText);
@@ -199,6 +199,32 @@ namespace BareProx.Services.Proxmox.Migration
             var form = new FormUrlEncodedContent(new Dictionary<string, string> { ["cdrom"] = volid });
             await _ops.SendWithRefreshAsync(cluster, HttpMethod.Post, url, form, ct);
         }
+
+        // SetOsTypeAsync sets the ostype field in the VM config via API.
+        public async Task SetOsTypeAsync(string node, int vmid, string osType, CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(osType))
+            {
+                _log.LogDebug("SetOsTypeAsync: no osType specified for vmid {Vmid} on node {Node}; skipping.", vmid, node);
+                return;
+            }
+
+            var resolved = await ResolveClusterAndHostAsync(node, ct)
+                ?? throw new InvalidOperationException($"Node '{node}' not found in any configured cluster.");
+
+            var (cluster, host) = resolved;
+
+            // IMPORTANT: key must be exactly "ostype" for Proxmox to accept it
+            var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/qemu/{vmid}/config";
+            var form = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["ostype"] = osType.Trim()
+            });
+
+            _log.LogInformation("SetOsTypeAsync: setting ostype={OsType} on {Node}/{Vmid}", osType, node, vmid);
+            await _ops.SendWithRefreshAsync(cluster, HttpMethod.Post, url, form, ct);
+        }
+
 
         // ───────────────────── Capabilities / inventory (API; node-scoped) ─────────────────────
         // GET /api2/json/nodes/{node}/network
