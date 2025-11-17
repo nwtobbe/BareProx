@@ -14,6 +14,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - Added code to handle people not able to keep the naming correct for Proxmox volumes / NetApp volumes and Junction Paths.
+- Filter on iso:s on backup
 
 
 
