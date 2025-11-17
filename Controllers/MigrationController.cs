@@ -110,32 +110,89 @@ namespace BareProx.Controllers
         // =====================================================================
         // Settings (cluster/host/datastore selection)
         // =====================================================================
-
         [HttpGet("Settings")]
         public async Task<IActionResult> Settings(int? clusterId = null, CancellationToken ct = default)
         {
-            var vm = new MigrationSettingsViewModel { SelectedClusterId = clusterId ?? 0 };
+            // 1) Decide which cluster to show
+            var clusterIdToUse = clusterId ?? 0;
+
+            // If not explicitly chosen, try to reuse the last saved selection's cluster
+            if (clusterIdToUse == 0)
+            {
+                var lastSelClusterId = await _db.MigrationSelections
+                    .AsNoTracking()
+                    .OrderByDescending(x => x.UpdatedAt)
+                    .Select(x => x.ClusterId)
+                    .FirstOrDefaultAsync(ct);
+
+                if (lastSelClusterId > 0)
+                    clusterIdToUse = lastSelClusterId;
+            }
+
+            var vm = new MigrationSettingsViewModel
+            {
+                SelectedClusterId = clusterIdToUse
+            };
+
+            // 2) Hydrate dropdowns (this may set SelectedClusterId if still 0)
             await HydrateOptionsAsync(vm, ct);
 
-            var saved = await _db.MigrationSelections.AsNoTracking()
-                          .FirstOrDefaultAsync(x => x.ClusterId == vm.SelectedClusterId, ct);
+            // If there are no clusters at all, we can't load or save anything
+            if (vm.SelectedClusterId == 0)
+            {
+                vm.HasSavedConfigForCluster = false;
+                return View(vm);
+            }
+
+            // 3) Load any saved config for the *actual* selected cluster
+            var saved = await _db.MigrationSelections
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x => x.ClusterId == vm.SelectedClusterId, ct);
 
             if (saved != null)
             {
+                vm.HasSavedConfigForCluster = true;
                 vm.SelectedHostId = saved.ProxmoxHostId;
                 vm.SelectedStorageIdentifier = saved.StorageIdentifier;
+
+                // Optional safety: if the saved host/storage no longer exists in options,
+                // you can decide to mark as not configured or just show the raw values.
+
+                // If the host is not in the list anymore, keep the ID but you might show
+                // a warning in the view if you want.
+                if (!vm.HostOptions.Any(o => o.Value == vm.SelectedHostId.ToString()))
+                {
+                    // Host removed or cluster changed; you could:
+                    // vm.HasSavedConfigForCluster = false;
+                }
+
+                if (!vm.StorageOptions.Any(o => o.Value == vm.SelectedStorageIdentifier))
+                {
+                    // Storage no longer in intersection; again, you might:
+                    // vm.HasSavedConfigForCluster = false;
+                }
             }
             else
             {
+                // 4) No saved config yet for this cluster → reasonable defaults
+                vm.HasSavedConfigForCluster = false;
+
                 if (vm.HostOptions.Any() && vm.SelectedHostId == 0)
-                    vm.SelectedHostId = int.Parse(vm.HostOptions.First().Value);
+                {
+                    if (int.TryParse(vm.HostOptions.First().Value, out var hostId))
+                        vm.SelectedHostId = hostId;
+                }
 
                 if (vm.StorageOptions.Any() && string.IsNullOrWhiteSpace(vm.SelectedStorageIdentifier))
+                {
                     vm.SelectedStorageIdentifier = vm.StorageOptions.First().Value;
+                }
             }
 
             return View(vm);
         }
+
+
 
         [HttpPost("Settings")]
         [ValidateAntiForgeryToken]

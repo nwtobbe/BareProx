@@ -154,7 +154,7 @@ namespace BareProx.Services.Background
                             enableLocking: sched.EnableLocking,
                             lockRetentionCount: sched.EnableLocking ? sched.LockRetentionCount : null,
                             lockRetentionUnit: sched.EnableLocking ? sched.LockRetentionUnit : null,
-                            excludedVmIds: excludedVmIds,             // <--- NEW: explicit excludes for this run
+                            excludedVmIds: excludedVmIds,             // <---explicit excludes for this run
                             ct: token
                         );
                     });

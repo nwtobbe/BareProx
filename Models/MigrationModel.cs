@@ -38,6 +38,7 @@ namespace BareProx.Models
         public List<SelectListItem> ClusterOptions { get; set; } = new();
         public List<SelectListItem> HostOptions { get; set; } = new();
         public List<SelectListItem> StorageOptions { get; set; } = new();
+        public bool HasSavedConfigForCluster { get; set; }
     }
 
     public class MigratePageViewModel

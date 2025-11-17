@@ -7,13 +7,22 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
 
+## [1.0.2511.1719] - 2025-11-17
+
+### Changed
+- Settings / Migration / Settings. Added status if configured or not.
+
+### Fixed
+- Added code to handle people not able to keep the naming correct for Proxmox volumes / NetApp volumes and Junction Paths.
+
+
+
 ## [1.0.2511.1718] - 2025-11-17
 
 ### Changed
 - Job concurrency decreased to 2 from 4 to lower the load on the sqlite db. If someone notices db issues please report and we lower it to 1.
 - Page Jobs. Limit the number of rows to display at a time.
 - Migration. Changed from VirtIO Block Device to the correct SCSI Device when using prepare for VirtIO!
-
 
 ### Fixed
 - Restore Now not handling Locking

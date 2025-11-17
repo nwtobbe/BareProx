@@ -32,22 +32,16 @@ namespace BareProx.Services
     {
         private readonly ApplicationDbContext _context;
         private readonly ILogger<NetappSnapmirrorService> _logger;
-        private readonly IAppTimeZoneService _tz;
         private readonly INetappAuthService _authService;
-        private readonly INetappVolumeService _volumeService;
 
         public NetappSnapmirrorService(
             ApplicationDbContext context,
             ILogger<NetappSnapmirrorService> logger,
-            IAppTimeZoneService tz,
-            INetappAuthService authService,
-            INetappVolumeService volumeService)
+            INetappAuthService authService)
         {
             _context = context;
             _logger = logger;
-            _tz = tz;
             _authService = authService;
-            _volumeService = volumeService;
         }
 
         private static string EnsureSlash(string baseUrl) =>

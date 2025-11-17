@@ -547,7 +547,6 @@ namespace BareProx.Controllers
             if (int.TryParse(match.Groups["seconds"].Value, out var s) && s > 0) parts.Add($"{s}s");
             return string.Join(" ", parts);
         }
-
         [HttpGet]
         public async Task<IActionResult> GetSnapshotVmDisks(
             int clusterId,
@@ -594,15 +593,6 @@ namespace BareProx.Controllers
             if (jobIds.Count == 0)
                 return Json(new { vms = Array.Empty<object>() });
 
-            // Candidate storage IDs for disk rows:
-            // always include the PRIMARY volume; include the SECONDARY too just in case
-            // you ever run backups directly on it.
-            var candidateVolumes = snapMeta
-                .SelectMany(s => new[] { s.PrimaryVolume, s.SecondaryVolume })
-                .Where(v => !string.IsNullOrWhiteSpace(v))
-                .Distinct()
-                .ToList();
-
             // 2) Restrict to the chosen Proxmox cluster via ProxmoxHosts
             var clusterJobIds = await (
                 from b in main.BackupRecords.AsNoTracking()
@@ -619,13 +609,12 @@ namespace BareProx.Controllers
                 return Json(new { vms = Array.Empty<object>() });
 
             // 3) Load disk-index rows from MAIN DB
-            //    (for this cluster AND storage in the primary/secondary pair)
+            //    for this cluster + these jobs (StorageId no longer filtered by NetApp volume name)
             var diskRows = await main.ProxmoxStorageDiskSnapshots
                 .AsNoTracking()
                 .Where(d =>
                     clusterJobIds.Contains(d.JobId) &&
-                    d.ClusterId == clusterId &&
-                    candidateVolumes.Contains(d.StorageId))
+                    d.ClusterId == clusterId)
                 .ToListAsync(ct);
 
             if (diskRows.Count == 0)
@@ -687,6 +676,7 @@ namespace BareProx.Controllers
 
             return Json(new { vms });
         }
+
 
 
         [HttpPost]

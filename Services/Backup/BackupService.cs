@@ -123,6 +123,13 @@ namespace BareProx.Services.Backup
             CancellationToken ct = default
         )
         {
+            // ---- Identity split: Proxmox vs NetApp ----
+            var proxmoxStorageId = storageName;          // Proxmox storage ID (e.g. "Proxmox_DSDEVII")
+            string? netappVolumeName = null;            // NetApp volume name (e.g. "proxmox_ds_dev2")
+            int effectiveNetappControllerId = netappControllerId;
+            string? effectiveVolumeUuid = volumeUuid;
+            string? svmName = null;
+
             ProxmoxCluster? cluster = null;
             List<ProxmoxVM>? vms = null;
             var proxmoxSnapshotNames = new Dictionary<int, string>();
@@ -132,8 +139,6 @@ namespace BareProx.Services.Backup
             var vmHadWarnings = new HashSet<int>();
             var skippedCount = 0;
             string? createdSnapshotName = null;
-
-            string? svmName = null;
 
             var excludedSet = new HashSet<int>();
             if (excludedVmIds != null)
@@ -148,8 +153,8 @@ namespace BareProx.Services.Backup
             {
                 jobId = await _jobs.CreateJobAsync(
                     type: "Backup",
-                    relatedVm: storageName,
-                    payloadJson: $"{{\"storageName\":\"{storageName}\",\"label\":\"{label}\",\"excludedCount\":{excludedSet.Count}}}",
+                    relatedVm: proxmoxStorageId,
+                    payloadJson: $"{{\"storageName\":\"{proxmoxStorageId}\",\"label\":\"{label}\",\"excludedCount\":{excludedSet.Count}}}",
                     ct);
 
                 // ---- Resolve SelectedNetappVolumeId / Disabled enforcement ----
@@ -165,35 +170,38 @@ namespace BareProx.Services.Backup
 
                         var check = ValidateSelectedVolumeRow(sel, null);
                         if (check.error is not null)
-                            return await FailAndNotifyAsync(jobId, storageName, label, check.error, scheduleId, ct);
+                            return await FailAndNotifyAsync(jobId, proxmoxStorageId, label, check.error, scheduleId, ct);
 
                         if (check.row is null)
-                            return await FailAndNotifyAsync(jobId, storageName, label, "SelectedNetappVolumeId not found.", scheduleId, ct);
+                            return await FailAndNotifyAsync(jobId, proxmoxStorageId, label, "SelectedNetappVolumeId not found.", scheduleId, ct);
+
+                        var row = check.row;
 
                         // UUID consistency guard
-                        if (!string.IsNullOrWhiteSpace(volumeUuid) &&
-                            !string.IsNullOrWhiteSpace(check.row.Uuid) &&
-                            !string.Equals(volumeUuid, check.row.Uuid, StringComparison.OrdinalIgnoreCase))
+                        if (!string.IsNullOrWhiteSpace(effectiveVolumeUuid) &&
+                            !string.IsNullOrWhiteSpace(row.Uuid) &&
+                            !string.Equals(effectiveVolumeUuid, row.Uuid, StringComparison.OrdinalIgnoreCase))
                         {
                             return await FailAndNotifyAsync(
-                                jobId, storageName, label,
-                                $"Volume UUID mismatch for '{check.row.VolumeName}' on controller {check.row.NetappControllerId}: " +
-                                $"param='{volumeUuid}', db='{check.row.Uuid}'.",
+                                jobId, proxmoxStorageId, label,
+                                $"Volume UUID mismatch for '{row.VolumeName}' on controller {row.NetappControllerId}: " +
+                                $"param='{effectiveVolumeUuid}', db='{row.Uuid}'.",
                                 scheduleId, ct);
                         }
 
-                        // Override effective inputs
-                        storageName = check.row.VolumeName;
-                        netappControllerId = check.row.NetappControllerId;
+                        // NetApp identity from SelectedNetappVolumes
+                        netappVolumeName = row.VolumeName;
+                        effectiveNetappControllerId = row.NetappControllerId;
 
-                        if (string.IsNullOrWhiteSpace(volumeUuid) && !string.IsNullOrWhiteSpace(check.row.Uuid))
-                            volumeUuid = check.row.Uuid;
+                        if (string.IsNullOrWhiteSpace(effectiveVolumeUuid) && !string.IsNullOrWhiteSpace(row.Uuid))
+                            effectiveVolumeUuid = row.Uuid;
 
-                        if (string.IsNullOrWhiteSpace(svmName) && !string.IsNullOrWhiteSpace(check.row.Vserver))
-                            svmName = check.row.Vserver;
+                        if (string.IsNullOrWhiteSpace(svmName) && !string.IsNullOrWhiteSpace(row.Vserver))
+                            svmName = row.Vserver;
                     }
                     else
                     {
+                        // Legacy/manual path: try (controller, volumeName) using incoming storageName
                         sel = await db0.SelectedNetappVolumes
                             .AsNoTracking()
                             .FirstOrDefaultAsync(v =>
@@ -202,41 +210,71 @@ namespace BareProx.Services.Backup
 
                         var check = ValidateSelectedVolumeRow(sel, storageName);
                         if (check.error is not null)
-                            return await FailAndNotifyAsync(jobId, storageName, label, check.error, scheduleId, ct);
+                            return await FailAndNotifyAsync(jobId, proxmoxStorageId, label, check.error, scheduleId, ct);
 
-                        if (!string.IsNullOrWhiteSpace(volumeUuid) &&
-                            !string.IsNullOrWhiteSpace(check.row?.Uuid) &&
-                            !string.Equals(volumeUuid, check.row!.Uuid, StringComparison.OrdinalIgnoreCase))
+                        var row = check.row;
+                        if (row != null)
                         {
-                            return await FailAndNotifyAsync(
-                                jobId, storageName, label,
-                                $"Volume UUID mismatch for '{storageName}' on controller {netappControllerId}: " +
-                                $"param='{volumeUuid}', db='{check.row!.Uuid}'.",
-                                scheduleId, ct);
+                            if (!string.IsNullOrWhiteSpace(effectiveVolumeUuid) &&
+                                !string.IsNullOrWhiteSpace(row.Uuid) &&
+                                !string.Equals(effectiveVolumeUuid, row.Uuid, StringComparison.OrdinalIgnoreCase))
+                            {
+                                return await FailAndNotifyAsync(
+                                    jobId, proxmoxStorageId, label,
+                                    $"Volume UUID mismatch for '{storageName}' on controller {netappControllerId}: " +
+                                    $"param='{effectiveVolumeUuid}', db='{row.Uuid}'.",
+                                    scheduleId, ct);
+                            }
+
+                            netappVolumeName = row.VolumeName;
+                            effectiveNetappControllerId = row.NetappControllerId;
+
+                            if (string.IsNullOrWhiteSpace(effectiveVolumeUuid) && !string.IsNullOrWhiteSpace(row.Uuid))
+                                effectiveVolumeUuid = row.Uuid;
+
+                            if (string.IsNullOrWhiteSpace(svmName) && !string.IsNullOrWhiteSpace(row.Vserver))
+                                svmName = row.Vserver;
                         }
-
-                        if (string.IsNullOrWhiteSpace(volumeUuid) && !string.IsNullOrWhiteSpace(check.row?.Uuid))
-                            volumeUuid = check.row!.Uuid;
-
-                        if (string.IsNullOrWhiteSpace(svmName) && !string.IsNullOrWhiteSpace(check.row?.Vserver))
-                            svmName = check.row!.Vserver;
                     }
                 }
-                // ---- END resolve/validate ----
 
-                // ---- Fallback: pull UUID from inventory (QUERY DB) if still missing ----
-                if (string.IsNullOrWhiteSpace(volumeUuid))
+                // ---- Fallback: use Query DB to resolve UUID + NetApp volume name ----
+                if (string.IsNullOrWhiteSpace(effectiveVolumeUuid) || string.IsNullOrWhiteSpace(netappVolumeName))
                 {
                     await using var qdb0 = await _qdbf.CreateAsync(ct);
+
+                    // 1) Proxmox storage → NetApp volume UUID via InventoryStorages
                     var invUuid = await qdb0.InventoryStorages
                         .AsNoTracking()
-                        .Where(s => s.ClusterId == clusterId && s.StorageId == storageName)
+                        .Where(s => s.ClusterId == clusterId && s.StorageId == proxmoxStorageId)
                         .Select(s => s.NetappVolumeUuid)
                         .FirstOrDefaultAsync(ct);
 
                     if (!string.IsNullOrWhiteSpace(invUuid))
-                        volumeUuid = invUuid;
+                        effectiveVolumeUuid ??= invUuid;
+
+                    // 2) UUID → NetApp volume name / controller / SVM via InventoryNetappVolumes
+                    if (!string.IsNullOrWhiteSpace(effectiveVolumeUuid) &&
+                        (string.IsNullOrWhiteSpace(netappVolumeName) || effectiveNetappControllerId == 0))
+                    {
+                        var nav = await qdb0.InventoryNetappVolumes
+                            .AsNoTracking()
+                            .FirstOrDefaultAsync(v => v.VolumeUuid == effectiveVolumeUuid, ct);
+
+                        if (nav != null)
+                        {
+                            netappVolumeName ??= nav.VolumeName;
+                            if (effectiveNetappControllerId == 0)
+                                effectiveNetappControllerId = nav.NetappControllerId;
+                            if (string.IsNullOrWhiteSpace(svmName))
+                                svmName = nav.SvmName;
+                        }
+                    }
                 }
+
+                // Last-resort: assume NetApp volume name == Proxmox storage ID
+                if (string.IsNullOrWhiteSpace(netappVolumeName))
+                    netappVolumeName = proxmoxStorageId;
 
                 using (var db = await _dbf.CreateDbContextAsync(ct))
                 {
@@ -246,67 +284,68 @@ namespace BareProx.Services.Backup
                         .FirstOrDefaultAsync(c => c.Id == clusterId, ct);
                 }
                 if (cluster == null)
-                    return await FailAndNotifyAsync(jobId, storageName, label, $"Cluster with ID {clusterId} not found.", scheduleId, ct);
+                    return await FailAndNotifyAsync(jobId, proxmoxStorageId, label, $"Cluster with ID {clusterId} not found.", scheduleId, ct);
 
-                // Eligible VMs on this storage
+                // Eligible VMs on this storage (Proxmox side)
                 bool snapChainActive = false;
                 try
                 {
-                    snapChainActive = await _snapChains.IsSnapshotChainActiveFromDefAsync(cluster, storageName, ct);
-                    _logger.LogInformation("Snapshot-as-volume-chain on '{Storage}': {Active}", storageName, snapChainActive);
+                    snapChainActive = await _snapChains.IsSnapshotChainActiveFromDefAsync(cluster, proxmoxStorageId, ct);
+                    _logger.LogInformation("Snapshot-as-volume-chain on '{Storage}': {Active}", proxmoxStorageId, snapChainActive);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Could not determine snapshot-as-volume-chain state for storage '{Storage}'. Defaulting to false.", storageName);
+                    _logger.LogWarning(ex, "Could not determine snapshot-as-volume-chain state for storage '{Storage}'. Defaulting to false.", proxmoxStorageId);
                 }
 
                 var storageWithVms = await _invCache.GetEligibleBackupStorageWithVMsAsync(
                     cluster,
-                    netappControllerId,
-                    new[] { storageName },
+                    effectiveNetappControllerId,
+                    new[] { proxmoxStorageId },
                     ct);
 
-                if (!storageWithVms.TryGetValue(storageName, out vms) || vms is null || vms.Count == 0)
+                if (!storageWithVms.TryGetValue(proxmoxStorageId, out vms) || vms is null || vms.Count == 0)
                 {
-                    _logger.LogWarning("No VMs returned for storage '{Storage}' (controllerId={Controller}).", storageName, netappControllerId);
+                    _logger.LogWarning("No VMs returned for Proxmox storage '{Storage}' (controllerId={Controller}).",
+                        proxmoxStorageId, effectiveNetappControllerId);
 
                     try
                     {
                         var raw = await _invCache.GetVmsByStorageListAsync(
                             cluster,
-                            new[] { storageName },
+                            new[] { proxmoxStorageId },
                             ct,
                             maxAge: TimeSpan.Zero,
                             forceRefresh: true);
 
-                        if (raw.TryGetValue(storageName, out var direct) && direct is { Count: > 0 })
+                        if (raw.TryGetValue(proxmoxStorageId, out var direct) && direct is { Count: > 0 })
                         {
-                            _logger.LogInformation("Direct Proxmox listing found {Count} VM(s) on '{Storage}', but eligible set still empty.", direct.Count, storageName);
+                            _logger.LogInformation("Direct Proxmox listing found {Count} VM(s) on '{Storage}', but eligible set still empty.", direct.Count, proxmoxStorageId);
                         }
                         else
                         {
-                            _logger.LogWarning("Direct Proxmox listing also found no VMs on '{Storage}'.", storageName);
+                            _logger.LogWarning("Direct Proxmox listing also found no VMs on '{Storage}'.", proxmoxStorageId);
                         }
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(ex, "Sanity check (raw Proxmox listing) failed for storage '{Storage}'.", storageName);
+                        _logger.LogWarning(ex, "Sanity check (raw Proxmox listing) failed for storage '{Storage}'.", proxmoxStorageId);
                     }
 
-                    return await FailAndNotifyAsync(jobId, storageName, label,
-                        $"No VMs found in storage '{storageName}'. " +
+                    return await FailAndNotifyAsync(jobId, proxmoxStorageId, label,
+                        $"No VMs found in storage '{proxmoxStorageId}'. " +
                         $"(Tip: ensure the Proxmox storage name is correct and mounted on at least one online host.)",
                         scheduleId, ct);
                 }
 
                 if (cluster.Hosts == null || !cluster.Hosts.Any())
-                    return await FailAndNotifyAsync(jobId, storageName, label, "Cluster not properly configured.", scheduleId, ct);
+                    return await FailAndNotifyAsync(jobId, proxmoxStorageId, label, "Cluster not properly configured.", scheduleId, ct);
 
                 // Create per-VM rows
                 var vmRows = new Dictionary<int, int>(capacity: vms.Count);
                 foreach (var vm in vms)
                 {
-                    var rowId = await _jobs.BeginVmAsync(jobId, vm.Id, vm.Name, vm.HostName, storageName, ct);
+                    var rowId = await _jobs.BeginVmAsync(jobId, vm.Id, vm.Name, vm.HostName, proxmoxStorageId, ct);
                     vmRows[vm.Id] = rowId;
                 }
 
@@ -468,21 +507,21 @@ namespace BareProx.Services.Backup
                 }
 
                 // 5a) NetApp snapshot (storage-wide)
-                LogUuidFallbackIfNeeded(volumeUuid, netappControllerId, storageName);
+                LogUuidFallbackIfNeeded(effectiveVolumeUuid, effectiveNetappControllerId, netappVolumeName!);
 
                 var snapshotResult = await _netAppSnapshotService.CreateSnapshotAsync(
-                    netappControllerId,
-                    storageName,
+                    effectiveNetappControllerId,
+                    netappVolumeName!,
                     label,
                     snapLocking: enableLocking,
                     lockRetentionCount: enableLocking ? lockRetentionCount : null,
                     lockRetentionUnit: enableLocking ? lockRetentionUnit : null,
-                    volumeUuid: volumeUuid,
+                    volumeUuid: effectiveVolumeUuid,
                     svmName: svmName,
                     ct: ct);
 
                 if (!snapshotResult.Success)
-                    return await FailAndNotifyAsync(jobId, storageName, label, snapshotResult.ErrorMessage, scheduleId, ct);
+                    return await FailAndNotifyAsync(jobId, proxmoxStorageId, label, snapshotResult.ErrorMessage, scheduleId, ct);
 
                 await _jobs.UpdateJobStatusAsync(jobId, "NetApp snapshot created", null, ct);
                 createdSnapshotName = snapshotResult.SnapshotName;
@@ -514,14 +553,16 @@ namespace BareProx.Services.Backup
                             VMID = vm.Id,
                             VmName = vm.Name,
                             HostName = vm.HostName,
-                            StorageName = storageName,
-                            VolumeUuid = volumeUuid,
+
+                            // NetApp side identity
+                            StorageName = netappVolumeName!,
+                            VolumeUuid = effectiveVolumeUuid,
                             SelectedNetappVolumeId = selectedNetappVolumeId,
                             Label = label,
                             RetentionCount = retentionCount,
                             RetentionUnit = retentionUnit,
                             TimeStamp = DateTime.UtcNow,
-                            ControllerId = netappControllerId,
+                            ControllerId = effectiveNetappControllerId,
                             SnapshotName = snapshotResult.SnapshotName,
                             ConfigurationJson = cfg,
 
@@ -560,17 +601,17 @@ namespace BareProx.Services.Backup
                     }
                 }
 
-                // --- CHANGED: Track NetApp snapshot in QUERY DB ---
+                // --- Track NetApp snapshot in QUERY DB ---
                 {
                     await using var qdb = await _qdbf.CreateAsync(ct);
 
                     qdb.NetappSnapshots.Add(new NetappSnapshot
                     {
                         JobId = jobId,
-                        PrimaryVolume = storageName,
+                        PrimaryVolume = netappVolumeName!,
                         SnapshotName = snapshotResult.SnapshotName,
                         CreatedAt = _tz.ConvertUtcToApp(DateTime.UtcNow),
-                        PrimaryControllerId = netappControllerId,
+                        PrimaryControllerId = effectiveNetappControllerId,
                         SnapmirrorLabel = label,
                         ExistsOnPrimary = true,
                         ExistsOnSecondary = false,
@@ -578,7 +619,6 @@ namespace BareProx.Services.Backup
                         IsReplicated = false
                     });
 
-                    // optional SQLITE_BUSY retry:
                     for (int i = 0; i < 3; i++)
                     {
                         try { await qdb.SaveChangesAsync(ct); break; }
@@ -601,17 +641,16 @@ namespace BareProx.Services.Backup
                     }
                 }
 
-                // 5c) --- Index storage disks for this backup job (snapshot of volume content) ---
+                // 5c) Index storage disks for this backup job (Proxmox side)
                 try
                 {
-                    // pick a node that actually sees this storage; we already have VMs with HostName
                     var anyVm = vms.FirstOrDefault();
                     var nodeName = anyVm?.HostName ?? cluster.Hosts.First().Hostname;
 
                     var disks = await _proxmoxService.GetStorageDisksAsync(
                         cluster,
                         nodeName,
-                        storageName,
+                        proxmoxStorageId,
                         ct);
 
                     if (disks.Count > 0)
@@ -627,7 +666,7 @@ namespace BareProx.Services.Backup
                                     JobId = jobId,
                                     ClusterId = cluster.Id,
                                     NodeName = nodeName,
-                                    StorageId = storageName,
+                                    StorageId = proxmoxStorageId,
                                     VMID = int.TryParse(d.vmid, out var vmidVal) ? vmidVal : (int?)null,
                                     VolId = d.volid,
                                     ContentType = d.content,
@@ -645,7 +684,7 @@ namespace BareProx.Services.Backup
                 {
                     _logger.LogWarning(ex,
                         "Failed to index Proxmox storage disks for job {JobId} on storage {Storage}.",
-                        jobId, storageName);
+                        jobId, proxmoxStorageId);
                 }
 
                 // 6) Replicate to secondary (optional)
@@ -656,13 +695,13 @@ namespace BareProx.Services.Backup
                         var relation = await db.SnapMirrorRelations
                             .AsNoTracking()
                             .FirstOrDefaultAsync(r =>
-                                r.SourceVolume == storageName &&
-                                r.SourceControllerId == netappControllerId, ct);
+                                r.SourceVolume == netappVolumeName &&
+                                r.SourceControllerId == effectiveNetappControllerId, ct);
 
                         if (relation == null)
                         {
-                            _logger.LogWarning("SnapMirror: no relation found for source volume '{Storage}' (controller {ControllerId}). Replication skipped.",
-                                storageName, netappControllerId);
+                            _logger.LogWarning("SnapMirror: no relation found for source volume '{Volume}' (controller {ControllerId}). Replication skipped.",
+                                netappVolumeName, effectiveNetappControllerId);
                             await _jobs.UpdateJobStatusAsync(jobId, "Replication skipped (no SnapMirror relation)", null, ct);
                             foreach (var vm in vms)
                                 await _jobs.LogVmAsync(vmRows[vm.Id], "Replication skipped (no SnapMirror relation)", "Info", ct);
@@ -721,14 +760,14 @@ namespace BareProx.Services.Backup
                                 {
                                     var nowApp = _tz.ConvertUtcToApp(DateTime.UtcNow);
 
-                                    // --- CHANGED: update snapshot row in QUERY DB ---
+                                    // Update snapshot row in QUERY DB
                                     await using (var qdb = await _qdbf.CreateAsync(ct))
                                     {
                                         var snapRow = await qdb.NetappSnapshots
                                             .FirstOrDefaultAsync(s =>
                                                 s.SnapshotName == secondarySnap
-                                                && s.PrimaryVolume == storageName
-                                                && s.PrimaryControllerId == netappControllerId, ct);
+                                                && s.PrimaryVolume == netappVolumeName
+                                                && s.PrimaryControllerId == effectiveNetappControllerId, ct);
 
                                         if (snapRow != null)
                                         {
@@ -776,7 +815,7 @@ namespace BareProx.Services.Backup
                 {
                     var jobRow = await db.Jobs.FindAsync(new object?[] { jobId }, ct);
                     if (string.Equals(jobRow?.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
-                        return await FailAndNotifyAsync(jobId, storageName, label, "Job was cancelled.", scheduleId, ct);
+                        return await FailAndNotifyAsync(jobId, proxmoxStorageId, label, "Job was cancelled.", scheduleId, ct);
                 }
 
                 // 8) Complete job
@@ -787,7 +826,11 @@ namespace BareProx.Services.Backup
 
                 var warnedCount = vmHadWarnings.Count;
                 var final = hadWarnings ? "Warning" : "Success";
-                await TryNotifyAsync(jobId, storageName, label, final,
+                await TryNotifyAsync(
+                    jobId,
+                    netappVolumeName ?? proxmoxStorageId,
+                    label,
+                    final,
                     errorOrNote: null,
                     snapshotName: createdSnapshotName,
                     totalVms: vms?.Count ?? 0,
@@ -803,7 +846,16 @@ namespace BareProx.Services.Backup
                 if (jobId > 0)
                 {
                     await _jobs.FailJobAsync(jobId, "Job was cancelled.", CancellationToken.None);
-                    await TryNotifyAsync(jobId, storageName, label, "Error", "Job was cancelled.", null, 0, 0, 0, scheduleId, CancellationToken.None);
+                    await TryNotifyAsync(
+                        jobId,
+                        netappVolumeName ?? proxmoxStorageId,
+                        label,
+                        "Error",
+                        "Job was cancelled.",
+                        null,
+                        0, 0, 0,
+                        scheduleId,
+                        CancellationToken.None);
                     return false;
                 }
                 throw;
@@ -813,11 +865,20 @@ namespace BareProx.Services.Backup
                 if (jobId > 0)
                 {
                     await _jobs.FailJobAsync(jobId, ex.Message, ct);
-                    await TryNotifyAsync(jobId, storageName, label, "Error", ex.Message, createdSnapshotName, 0, 0, 0, scheduleId, ct);
+                    await TryNotifyAsync(
+                        jobId,
+                        netappVolumeName ?? proxmoxStorageId,
+                        label,
+                        "Error",
+                        ex.Message,
+                        createdSnapshotName,
+                        0, 0, 0,
+                        scheduleId,
+                        ct);
                     return false;
                 }
 
-                _logger.LogError(ex, "StartBackupAsync failed before Job creation. storage={Storage}", storageName);
+                _logger.LogError(ex, "StartBackupAsync failed before Job creation. storage={Storage}", proxmoxStorageId);
                 return false;
             }
             finally
@@ -841,6 +902,7 @@ namespace BareProx.Services.Backup
                 }
             }
         }
+
 
 
         private async Task UnpauseIfNeeded(ProxmoxCluster cluster, IEnumerable<ProxmoxVM> vms, bool isAppAware, bool ioFreeze, bool vmsWerePaused, CancellationToken ct = default)

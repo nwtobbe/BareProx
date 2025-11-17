@@ -1,10 +1,36 @@
 ﻿@model BareProx.Models.MigrationSettingsViewModel
 @{
     ViewData["Title"] = "Migration – Settings";
+
     var hasStorages = Model?.StorageOptions != null && Model.StorageOptions.Any();
+    var hasClusterSelection = (Model?.SelectedClusterId ?? 0) > 0;
+
+    // This comes from the DB via the controller
+    var hasSavedConfig = Model?.HasSavedConfigForCluster ?? false;
 }
 
-<h2 class="mb-3">Migration Settings</h2>
+<h2 class="mb-1">Migration Settings</h2>
+
+@if (hasClusterSelection)
+{
+    <div class="mb-3 small text-muted">
+        Status:
+        @if (hasSavedConfig)
+        {
+            <span class="text-success">configured and ready</span>
+        }
+        else
+        {
+            <span class="text-warning">not configured yet</span>
+        }
+    </div>
+}
+else
+{
+    <div class="mb-3 small text-muted">
+        Select a Proxmox cluster and click <strong>Load Cluster</strong> to view migration settings.
+    </div>
+}
 
 @if (TempData["ErrorMessage"] is string err)
 {

@@ -170,21 +170,35 @@ namespace BareProx.Controllers
 
             var (combinedStorage, volumeMeta, replicableVolumes) = await LoadInventoryForCreateEditAsync(ct);
 
-            var enabledVolumeNames = (await _context.SelectedNetappVolumes
-                    .AsNoTracking()
-                    .Where(v => v.Disabled != true)
-                    .Select(v => v.VolumeName)
-                    .ToListAsync(ct))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
+            // Build storage options based on the *resolved* VolumeMeta, not name matching
             var storageOptions = combinedStorage
-                .Where(kvp => enabledVolumeNames.Contains(kvp.Key) && kvp.Value.Any())
+                .Where(kvp =>
+                    kvp.Value.Any() &&
+                    volumeMeta.TryGetValue(kvp.Key, out var m) &&
+                    m.SelectedNetappVolumeId.HasValue)
                 .OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase)
                 .Select(kvp => new SelectListItem { Text = kvp.Key, Value = kvp.Key })
                 .ToList();
 
+            // Ensure the schedule's current storage is present even if mapping changed
+            if (!string.IsNullOrWhiteSpace(schedule.StorageName) &&
+                !storageOptions.Any(o => o.Value.Equals(schedule.StorageName, StringComparison.OrdinalIgnoreCase)) &&
+                combinedStorage.ContainsKey(schedule.StorageName))
+            {
+                storageOptions.Insert(0, new SelectListItem
+                {
+                    Text = schedule.StorageName,
+                    Value = schedule.StorageName
+                });
+            }
+
+            // Limit VMs-by-storage to the storages we allow in the dropdown
+            var allowedStorageKeys = new HashSet<string>(
+                storageOptions.Select(o => o.Value),
+                StringComparer.OrdinalIgnoreCase);
+
             var vmsByStorage = combinedStorage
-                .Where(kvp => enabledVolumeNames.Contains(kvp.Key) && kvp.Value.Any())
+                .Where(kvp => allowedStorageKeys.Contains(kvp.Key) && kvp.Value.Any())
                 .ToDictionary(
                     kvp => kvp.Key,
                     kvp => kvp.Value
@@ -255,7 +269,7 @@ namespace BareProx.Controllers
                 // Prefer live VolumeMeta, fall back to values persisted on the schedule
                 ClusterId = vmMeta?.ClusterId ?? schedule.ClusterId,
                 ControllerId = vmMeta?.ControllerId ?? schedule.ControllerId,
-                VolumeUuid = vmMeta?.VolumeUuid, // NEW: carry UUID into the edit model
+                VolumeUuid = vmMeta?.VolumeUuid, // carry UUID into the edit model
 
                 SingleSchedule = new ScheduleEntry
                 {
@@ -291,6 +305,7 @@ namespace BareProx.Controllers
             ViewData["ScheduleId"] = id;
             return View("EditSchedule", model);
         }
+
 
 
         [HttpPost]
@@ -833,12 +848,10 @@ namespace BareProx.Controllers
             model.AllVms = new List<SelectListItem>();
         }
 
-
-        // Inventory loader (Query DB)
         // Inventory loader (Query DB)
         private async Task<(Dictionary<string, List<ProxmoxVM>> combined,
-                    Dictionary<string, VolumeMeta> volumeMeta,
-                    HashSet<string> replicable)> LoadInventoryForCreateEditAsync(CancellationToken ct)
+               Dictionary<string, VolumeMeta> volumeMeta,
+               HashSet<string> replicable)> LoadInventoryForCreateEditAsync(CancellationToken ct)
         {
             // ---------- Helpers (same logic as in ProxmoxController) ----------
             static string Nx(string? s) => (s ?? string.Empty).Trim();
@@ -882,26 +895,17 @@ namespace BareProx.Controllers
                 }
             }
 
-            // Only allow selecting storages whose *name* is present among enabled SelectedNetappVolumes
-            var enabledStorageNames = selectedVolumes
-                .Select(v => v.VolumeName)
-                .Where(n => !string.IsNullOrWhiteSpace(n))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
             await using var qdb = await _qdbf.CreateAsync(ct);
 
             // ---------- Proxmox storages (from inventory) ----------
+            // NOTE: we no longer filter by storage-name vs NetApp volume-name.
+            // We take all image-capable storages and let the (Server, Export) + UUID mapping
+            // decide which ones have a SelectedNetappVolume backing them.
             var invStorages = await qdb.InventoryStorages
                 .AsNoTracking()
                 .Where(s => s.IsImageCapable)
                 .Select(s => new { s.ClusterId, s.StorageId, s.NetappVolumeUuid, s.Server, s.Export })
                 .ToListAsync(ct);
-
-            // Filter to only enabled storages (legacy behavior)
-            invStorages = invStorages
-                .Where(s => enabledStorageNames.Contains(s.StorageId))
-                .ToList();
 
             var storageNames = invStorages
                 .Select(s => s.StorageId)
@@ -1076,6 +1080,7 @@ namespace BareProx.Controllers
 
             return (combined, volumeMeta, replicable);
         }
+
 
 
     }
