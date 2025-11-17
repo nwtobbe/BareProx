@@ -91,27 +91,27 @@ namespace BareProx.Services.Proxmox
         }
 
 
-    //    public async Task<Dictionary<string, List<ProxmoxVM>>> GetEligibleBackupStorageWithVMsAsyncToCache(
-    //ProxmoxCluster cluster,
-    //int netappControllerId,
-    //List<string>? onlyIncludeStorageNames = null,
-    //CancellationToken ct = default)
-    //    {
-    //        var storageVmMap = onlyIncludeStorageNames != null
-    //            ? await _invCache.GetVmsByStorageListAsync(cluster, onlyIncludeStorageNames, ct)
-    //            : await GetFilteredStorageWithVMsAsync(cluster.Id, netappControllerId, ct);
+        //    public async Task<Dictionary<string, List<ProxmoxVM>>> GetEligibleBackupStorageWithVMsAsyncToCache(
+        //ProxmoxCluster cluster,
+        //int netappControllerId,
+        //List<string>? onlyIncludeStorageNames = null,
+        //CancellationToken ct = default)
+        //    {
+        //        var storageVmMap = onlyIncludeStorageNames != null
+        //            ? await _invCache.GetVmsByStorageListAsync(cluster, onlyIncludeStorageNames, ct)
+        //            : await GetFilteredStorageWithVMsAsync(cluster.Id, netappControllerId, ct);
 
-    //        return storageVmMap
-    //            .Where(kvp =>
-    //                !kvp.Key.Contains("backup", StringComparison.OrdinalIgnoreCase) &&
-    //                !kvp.Key.Contains("restore_", StringComparison.OrdinalIgnoreCase))
-    //            .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
-    //    }
+        //        return storageVmMap
+        //            .Where(kvp =>
+        //                !kvp.Key.Contains("backup", StringComparison.OrdinalIgnoreCase) &&
+        //                !kvp.Key.Contains("restore_", StringComparison.OrdinalIgnoreCase))
+        //            .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+        //    }
 
         public async Task<Dictionary<string, List<ProxmoxVM>>> GetFilteredStorageWithVMsAsync(
-     int clusterId,
-     int netappControllerId,
-     CancellationToken ct = default)
+       int clusterId,
+       int netappControllerId,
+       CancellationToken ct = default)
         {
             // 1) Load cluster + hosts
             await using var db = await _dbf.CreateAsync(ct);
@@ -123,7 +123,8 @@ namespace BareProx.Services.Proxmox
 
             // 2) Discover which NFS storages Proxmox actually has mounted
             var proxmoxStorageNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var hosts = _proxmoxHelpers.GetQueryableHostsAsync(cluster, CancellationToken.None).GetAwaiter().GetResult();
+            var hosts = _proxmoxHelpers.GetQueryableHostsAsync(cluster, CancellationToken.None)
+                                       .GetAwaiter().GetResult();
 
             foreach (var host in hosts)
             {
@@ -171,9 +172,10 @@ namespace BareProx.Services.Proxmox
             // 6) For each host, list its VMs and scan their configs
             var diskRegex = new Regex(@"^(scsi|virtio|ide|sata|efidisk|tpmstate)\d+$", RegexOptions.IgnoreCase);
 
-            var Onlinehosts = _proxmoxHelpers.GetQueryableHostsAsync(cluster, CancellationToken.None).GetAwaiter().GetResult();
+            var onlineHosts = _proxmoxHelpers.GetQueryableHostsAsync(cluster, CancellationToken.None)
+                                             .GetAwaiter().GetResult();
 
-            foreach (var host in Onlinehosts)
+            foreach (var host in onlineHosts)
             {
                 // a) list VMs
                 var vmListUrl = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/qemu";
@@ -188,7 +190,9 @@ namespace BareProx.Services.Proxmox
                         continue;
 
                     var vmId = vmidEl.GetInt32();
-                    var vmName = vmElem.TryGetProperty("name", out var nm) ? (nm.GetString() ?? $"VM {vmId}") : $"VM {vmId}";
+                    var vmName = vmElem.TryGetProperty("name", out var nm)
+                        ? (nm.GetString() ?? $"VM {vmId}")
+                        : $"VM {vmId}";
 
                     // fetch full config
                     var cfgJson = await GetVmConfigAsync(cluster, host.Hostname, vmId, ct);
@@ -207,11 +211,31 @@ namespace BareProx.Services.Proxmox
                     // b) scan every disk line
                     foreach (var prop in cfgData.EnumerateObject())
                     {
-                        if (!diskRegex.IsMatch(prop.Name)) continue;
+                        if (!diskRegex.IsMatch(prop.Name))
+                            continue;
 
-                        var val = prop.Value.GetString() ?? string.Empty;
+                        var raw = prop.Value.GetString();
+                        if (string.IsNullOrWhiteSpace(raw))
+                            continue;
+
+                        var val = raw.Trim();
+
+                        // --- NEW: skip ISO/CDROM-only entries so ISO storages (proxmox_ds1, etc.)
+                        //           are not treated as data/storage for backup selection ---
+                        if (val.StartsWith("none,", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        if (val.IndexOf(".iso", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            val.IndexOf(":iso/", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            val.IndexOf("media=cdrom", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            // e.g. "proxmox_ds1:iso/virtio-win-0.1.285.iso,media=cdrom,size=..."
+                            continue;
+                        }
+
                         var parts = val.Split(':', 2);
-                        if (parts.Length < 2) continue;
+                        if (parts.Length < 2)
+                            continue;
 
                         var storageName = parts[0];
                         if (result.TryGetValue(storageName, out var list) && !list.Any(x => x.Id == vmId))
@@ -222,6 +246,7 @@ namespace BareProx.Services.Proxmox
 
             return result;
         }
+
 
 
         public async Task<string> GetRawProxmoxVmConfigAsync(
@@ -394,13 +419,15 @@ namespace BareProx.Services.Proxmox
         }
 
         public async Task<List<ProxmoxVM>> GetVmsOnNodeAsync(
-            ProxmoxCluster cluster,
-            string nodeName,
-            string storageNameFilter,
-            CancellationToken ct = default)
+      ProxmoxCluster cluster,
+      string nodeName,
+      string storageNameFilter,
+      CancellationToken ct = default)
         {
             // 1) Find the hostAddress for that node
             var host = _proxmoxHelpers.GetHostByNodeName(cluster, nodeName);
+            if (host == null || string.IsNullOrWhiteSpace(host.HostAddress))
+                throw new InvalidOperationException($"No Proxmox host found for node '{nodeName}'.");
 
             var hostAddress = host.HostAddress;
             var result = new List<ProxmoxVM>();
@@ -433,15 +460,31 @@ namespace BareProx.Services.Proxmox
                     if (!diskRegex.IsMatch(prop.Name))
                         continue;
 
-                    var val = prop.Value.GetString();
-                    if (string.IsNullOrWhiteSpace(val))
+                    var raw = prop.Value.GetString();
+                    if (string.IsNullOrWhiteSpace(raw))
                         continue;
 
-                    var cleanVal = val.Trim();
-                    var parts = cleanVal.Split(':', 2);
+                    var cleanVal = raw.Trim();
 
-                    if (parts.Length > 1 &&
-                        parts[0].Equals(storageNameFilter, StringComparison.OrdinalIgnoreCase))
+                    // --- ISO / CDROM filters (same logic as GetFilteredStorageWithVMsAsync) ---
+                    // skip unassigned CD-ROMs and ISO-only entries
+                    if (cleanVal.StartsWith("none,", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    if (cleanVal.IndexOf(".iso", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        cleanVal.IndexOf(":iso/", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        cleanVal.IndexOf("media=cdrom", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        // e.g. "proxmox_ds1:iso/virtio-win-0.1.285.iso,media=cdrom,size=..."
+                        continue;
+                    }
+                    // ------------------------------------------------------------------------
+
+                    var parts = cleanVal.Split(':', 2);
+                    if (parts.Length <= 1)
+                        continue;
+
+                    if (parts[0].Equals(storageNameFilter, StringComparison.OrdinalIgnoreCase))
                     {
                         result.Add(new ProxmoxVM
                         {
@@ -457,6 +500,7 @@ namespace BareProx.Services.Proxmox
 
             return result;
         }
+
 
         public async Task<bool> MountNfsStorageViaApiAsync(
             ProxmoxCluster cluster,
