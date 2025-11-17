@@ -9,15 +9,14 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.0.2511.1415] - 2025-11-xx
 
-## Added
-- Support for TPM-devices. Proxmox 9.0.15 required and TPM-devices must be converted to qcow2 format.
-
 ### Changed
 - Job concurrency decreased to 2 from 4 to lower the load on the sqlite db. If someone notices db issues please report and we lower it to 1.
 - Page Jobs. Limit the number of rows to display at a time.
-- Migration. Changed from VirtIO Block Device to SCSI Device when using prepare for VirtIO!
-- Updated Restore now not handling Locking
+- Migration. Changed from VirtIO Block Device to the correct SCSI Device when using prepare for VirtIO!
 
+
+### Fixed
+- Restore Now not handling Locking
 
 
 

@@ -150,7 +150,7 @@ Configuration files will and logs appear under \`/var/bareprox/config\`, and the
 
 ## Configuration
 
-Browse to **https://<HOST>** and log in with the default user **Overseer** and password **P@ssw0rd!**  
+Browse to **https://&lt;HOST&gt;** and log in with the default user **Overseer** and password **P@ssw0rd!**  
 Use the web UI to:
 
 - Configure DB and restart the application.  
@@ -161,7 +161,7 @@ Use the web UI to:
 ### System
 
 - Set TimeZone  
-- Regenerate certificate if needed
+- Regenerate certificate if needed or Import a real certificate
 - Enable experimental features (if any)
 
 ### NetApp Controllers
@@ -194,11 +194,11 @@ And don’t forget to select datastores to use.
 
 ## Things Not Working / Known Issues
 
-- ~~**TPM devices:** Proxmox does not allow snapshots of VMs with TPM devices. Proxmox may allow this soon.~~  
+- **TPM devices:** Proxmox does not allow snapshots of VMs with TPM devices. Under testing.
 - **Cloud-Init drives:** Delete and recreate them after restore. They are temporary devices.
 - ~~**Exclude from backup** You can exclude vm:s from backup but.. there is no code currently that does the actual exclusion.~~
 - **VMware migration:** Only basic VM migration is supported. No advanced features like snapshots, linked clones, etc.
-- **Spanning disks** are not supported, keep all disks for a VM on the same datastore.
+- **Spanning disks** are not supported, keep all disks for a VM on the same datastore!
 
 ---
 

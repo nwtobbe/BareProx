@@ -50,7 +50,7 @@ namespace BareProx.Models
         public int? SelectedNetappVolumeId { get; set; }
         public int NetappControllerId { get; set; }
         public bool IsReplicable { get; set; }
-        public bool SnapshotLockingEnabled { get; set; }  // New property for snapshot locking
+        public bool SnapshotLockingEnabled { get; set; }
         public string? VolumeUuid { get; set; }
     }
 

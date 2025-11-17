@@ -385,56 +385,229 @@ namespace BareProx.Services.Migration
         private static string MapGuestOsLabel(string guestRaw)
         {
             if (string.IsNullOrWhiteSpace(guestRaw)) return "Other";
+
             var s = guestRaw.Trim();
             var x = s.ToLowerInvariant();
 
-            // ---------- Windows Server ----------
-            var isServer = x.Contains("server") || x.Contains("srv");
-            if (isServer || x.Contains("windows9server") || x.Contains("windows9srv"))
+            // Normalize to catch "windows2019srvNext_64Guest", "windows2019srvnext-64", etc.
+            static string Normalize(string input)
+            {
+                var sb = new StringBuilder(input.Length);
+                foreach (var ch in input)
+                {
+                    if (!char.IsWhiteSpace(ch) && ch != '_' && ch != '-' && ch != '.')
+                        sb.Append(char.ToLowerInvariant(ch));
+                }
+                return sb.ToString();
+            }
+
+            var norm = Normalize(s);
+
+            // ---------- Exact / normalized VMware guestOS IDs ----------
+
+            // NOTE: keys are normalized (no spaces/_/-/. and all lower-case)
+            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                // --- Windows Server (modern) ---
+                ["windows2022srvnext64guest"] = "Windows Server 2025", // windows2022srvNext_64Guest
+                ["windows2019srvnext64guest"] = "Windows Server 2022", // windows2019srvNext_64Guest
+                ["windows2019srv64guest"] = "Windows Server 2019", // windows2019srv_64Guest
+
+                // --- Windows Server (older) ---
+                ["windows9server64guest"] = "Windows Server 2016",     // windows9Server64Guest
+                ["windows9serverguest"] = "Windows Server 2016",
+                ["windows9srv64guest"] = "Windows Server 2016",     // windows9Server, windows9Server-64
+                ["windows8server64guest"] = "Windows Server 2012 / 2012 R2",
+                ["windows8serverguest"] = "Windows Server 2012 / 2012 R2",
+                ["longhorn64guest"] = "Windows Server 2008 / 2008 R2",
+                ["longhornguest"] = "Windows Server 2008 / 2008 R2",
+                ["winnetstandard64guest"] = "Windows Server 2003",
+                ["winnetenterprise64guest"] = "Windows Server 2003",
+                ["winnetstandardguest"] = "Windows Server 2003",
+                ["winnetenterpriseguest"] = "Windows Server 2003",
+
+                // --- Windows Desktop (modern) ---
+                ["windows12_64guest"] = "Windows 12",
+                ["windows11_64guest"] = "Windows 11",
+                ["windows10_64guest"] = "Windows 10",
+                ["windows9_64guest"] = "Windows 10",  // VMware's old ID for Win10
+
+                // --- Windows Desktop (older) ---
+                ["windows8_1_64guest"] = "Windows 8.1",
+                ["windows81_64guest"] = "Windows 8.1",
+                ["windows8_64guest"] = "Windows 8",
+                ["windows7_64guest"] = "Windows 7",
+                ["windows7guest"] = "Windows 7",
+                ["winvista64guest"] = "Windows Vista",
+                ["winvistaguest"] = "Windows Vista",
+                ["winxppro64guest"] = "Windows XP",
+                ["winxpproguest"] = "Windows XP",
+                ["win2000proguest"] = "Windows 2000",
+                ["win2000servguest"] = "Windows 2000",
+
+                // --- Linux common IDs (all map to their distro name, not l26) ---
+                ["ubuntu64guest"] = "Ubuntu",
+                ["ubuntuguest"] = "Ubuntu",
+                ["debian64guest"] = "Debian",
+                ["debianguest"] = "Debian",
+                ["rhel7_64guest"] = "Red Hat Enterprise Linux",
+                ["rhel6_64guest"] = "Red Hat Enterprise Linux",
+                ["rhel5_64guest"] = "Red Hat Enterprise Linux",
+                ["centos64guest"] = "CentOS",
+                ["centos7_64guest"] = "CentOS",
+                ["centos8_64guest"] = "CentOS",
+                ["rockylinux64guest"] = "Rocky Linux",
+                ["almalinux64guest"] = "AlmaLinux",
+                ["sles64guest"] = "SUSE Linux Enterprise / openSUSE",
+                ["suse64guest"] = "SUSE Linux Enterprise / openSUSE",
+                ["oraclelinux64guest"] = "Oracle Linux",
+                ["fedora64guest"] = "Fedora",
+                ["coreos64guest"] = "CoreOS",
+                ["photon64guest"] = "VMware Photon OS",
+                ["otherlinux64guest"] = "Linux",
+
+                // --- BSD / Unix ---
+                ["freebsd64guest"] = "FreeBSD",
+                ["freebsdguest"] = "FreeBSD",
+                ["openbsd64guest"] = "OpenBSD",
+                ["openbsdguest"] = "OpenBSD",
+                ["netbsd64guest"] = "NetBSD",
+                ["netbsdguest"] = "NetBSD",
+                ["solaris11_64guest"] = "Solaris 11",
+                ["solaris10_64guest"] = "Solaris 10",
+                ["solaris9guest"] = "Solaris",
+                ["solaris8guest"] = "Solaris",
+
+                // --- macOS ---
+                ["darwin20_64guest"] = "macOS",
+                ["darwin18_64guest"] = "macOS",
+                ["darwin16_64guest"] = "macOS",
+
+                // --- ESXi as guest ---
+                ["vmkernel5guest"] = "VMware ESXi",
+                ["vmkernel6guest"] = "VMware ESXi",
+                ["vmkernel7guest"] = "VMware ESXi"
+            };
+
+            if (map.TryGetValue(norm, out var labelFromMap))
+                return labelFromMap;
+
+            // ---------- Fallback: pattern-based, but more careful ----------
+
+            // Windows Server (VMware-style patterns first)
+            if (norm.Contains("windows2022srvnext"))
+                return "Windows Server 2025";
+
+            if (norm.Contains("windows2019srvnext"))
+                return "Windows Server 2022";
+
+            if (norm.Contains("windows2019srv"))
+                return "Windows Server 2019";
+
+            if (norm.Contains("windows9server") || norm.Contains("windows9srv"))
+                return "Windows Server 2016";
+
+            if (norm.Contains("windows8server") || norm.Contains("windows2012"))
+                return "Windows Server 2012 / 2012 R2";
+
+            if (norm.Contains("longhorn"))
+                return "Windows Server 2008 / 2008 R2";
+
+            if (norm.Contains("winnet"))
+                return "Windows Server 2003";
+
+            // Generic text like "Microsoft Windows Server 2022 (64-bit)"
+            if (x.Contains("server") && x.Contains("windows"))
             {
                 if (x.Contains("2025")) return "Windows Server 2025";
                 if (x.Contains("2022")) return "Windows Server 2022";
                 if (x.Contains("2019")) return "Windows Server 2019";
-                if (x.Contains("2016") || x.Contains("windows9server") || x.Contains("windows9srv"))
-                    return "Windows Server 2016";
-                if (x.Contains("2012") || x.Contains("windows8server")) return "Windows Server 2012 / 2012 R2";
-                if (x.Contains("2008") || x.Contains("longhorn")) return "Windows Server 2008 / 2008 R2";
-                if (x.Contains("2003") || x.Contains("winnet")) return "Windows Server 2003";
+                if (x.Contains("2016")) return "Windows Server 2016";
+                if (x.Contains("2012")) return "Windows Server 2012 / 2012 R2";
+                if (x.Contains("2008")) return "Windows Server 2008 / 2008 R2";
+                if (x.Contains("2003")) return "Windows Server 2003";
+
                 return $"Windows Server ({s})";
             }
 
-            // ---------- Windows Desktop ----------
-            if (x.Contains("windows11") || x.Contains("win11") || x.Contains("windows11_64")) return "Windows 11";
-            if (x.Contains("windows9_64") || x.Contains("windows10") || x.Contains("win10")) return "Windows 10";
-            if (x.Contains("win81") || x.Contains("8.1")) return "Windows 8.1";
-            if (x.Contains("win8") || x.Contains("windows8")) return "Windows 8";
-            if (x.Contains("win7") || x.Contains("windows7")) return "Windows 7";
-            if (x.Contains("vista")) return "Windows Vista";
-            if (x.Contains("xp")) return "Windows XP";
+            // ---------- Windows Desktop (fallback) ----------
 
-            // ---------- Linux ----------
+            if (x.Contains("windows12") || x.Contains("win12"))
+                return "Windows 12";
+
+            if (x.Contains("windows11") || x.Contains("win11"))
+                return "Windows 11";
+
+            if (x.Contains("windows 10") || x.Contains("windows10") || x.Contains("win10") || x.Contains("windows9_64"))
+                return "Windows 10";
+
+            if (x.Contains("8.1") || x.Contains("windows 8.1") || x.Contains("win81"))
+                return "Windows 8.1";
+
+            if (x.Contains("windows 8") || x.Contains("windows8") || x.Contains("win8"))
+                return "Windows 8";
+
+            if (x.Contains("windows 7") || x.Contains("windows7") || x.Contains("win7"))
+                return "Windows 7";
+
+            if (x.Contains("vista"))
+                return "Windows Vista";
+
+            if (x.Contains("winxp") || x.Contains("windows xp") || x.Contains(" xp "))
+                return "Windows XP";
+
+            if (x.Contains("win2000") || x.Contains("windows 2000"))
+                return "Windows 2000";
+
+            // ---------- Linux (fallback by family) ----------
+
             if (x.Contains("ubuntu")) return "Ubuntu";
             if (x.Contains("debian")) return "Debian";
-            if (x.Contains("rhel") || x.Contains("redhat")) return "Red Hat Enterprise Linux";
+            if (x.Contains("rockylinux") ||
+                x.Contains("rocky linux") ||
+                x.Contains("rocky")) return "Rocky Linux";
+            if (x.Contains("almalinux") ||
+                x.Contains("alma linux") ||
+                x.Contains("alma")) return "AlmaLinux";
             if (x.Contains("centos")) return "CentOS";
-            if (x.Contains("rocky")) return "Rocky Linux";
-            if (x.Contains("alma")) return "AlmaLinux";
-            if (x.Contains("sles") || x.Contains("suse")) return "SUSE Linux Enterprise / openSUSE";
-            if (x.Contains("oracle")) return "Oracle Linux";
+            if (x.Contains("rhel") ||
+                x.Contains("red hat") ||
+                x.Contains("redhat")) return "Red Hat Enterprise Linux";
+            if (x.Contains("oraclelinux") ||
+                x.Contains("oracle linux")) return "Oracle Linux";
+            if (x.Contains("sles") ||
+                x.Contains("suse")) return "SUSE Linux Enterprise / openSUSE";
             if (x.Contains("fedora")) return "Fedora";
+            if (x.Contains("photon")) return "VMware Photon OS";
+            if (x.Contains("coreos")) return "CoreOS";
             if (x.Contains("arch")) return "Arch Linux";
-            if (x.Contains("otherlinux") || x.Contains("linux")) return "Linux";
+            if (x.Contains("otherlinux") ||
+                x.Contains("linux")) return "Linux";
 
             // ---------- BSD / Unix ----------
+
             if (x.Contains("freebsd")) return "FreeBSD";
             if (x.Contains("openbsd")) return "OpenBSD";
             if (x.Contains("netbsd")) return "NetBSD";
+            if (x.Contains("solaris11")) return "Solaris 11";
+            if (x.Contains("solaris10")) return "Solaris 10";
             if (x.Contains("solaris")) return "Solaris";
 
             // ---------- macOS ----------
-            if (x.Contains("darwin") || x.Contains("macos")) return "macOS";
+
+            if (x.Contains("darwin") || x.Contains("macos") || x.Contains("mac os"))
+                return "macOS";
+
+            // ---------- VMware ESXi as guest ----------
+
+            if (x.Contains("vmkernel") || x.Contains("esxi"))
+                return "VMware ESXi";
+
+            // ---------- Fallback ----------
 
             return $"Other ({s})";
         }
+
+
     }
 }
