@@ -7,7 +7,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
 
-## [1.0.2511.1719] - 2025-11-17
+## [1.0.2511.1720] - 2025-11-17
 
 ### Changed
 - Settings / Migration / Settings. Added status if configured or not.
