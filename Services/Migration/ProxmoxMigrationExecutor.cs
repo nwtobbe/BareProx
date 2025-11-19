@@ -129,10 +129,16 @@ namespace BareProx.Services.Migration
 
                     await _pve.EnsureDirectoryAsync(node, baseDir, ct);
 
-                    var destDesc = $"{baseDir}/{FileNamePosix(d.Source!)}";
-                    var absFlat = AbsoluteFlatPath(d.Source!);
+                    // Keep VMware path for the flat VMDK, but generate a clean name on Proxmox side
+                    var originalDescriptorPath = d.Source!;
+                    var absFlat = AbsoluteFlatPath(originalDescriptorPath);
 
-                    var original = await _pve.ReadTextFileAsync(node, d.Source!, ct);
+                    var diskIndex = d.Index ?? i; // use the logical index if set, else the loop index
+                    var safeFileName = MakeSafeDiskFileName(vmid, diskIndex);
+
+                    var destDesc = $"{baseDir}/{safeFileName}";
+
+                    var original = await _pve.ReadTextFileAsync(node, originalDescriptorPath, ct);
                     var rewritten = RewriteVmdkDescriptor(original, absFlat);
                     await _pve.WriteTextFileAsync(node, destDesc, rewritten, ct);
 
@@ -140,7 +146,11 @@ namespace BareProx.Services.Migration
                     var ok = verify.Contains("createType=\"monolithicFlat\"", StringComparison.OrdinalIgnoreCase)
                              && ReRwFlatLine.IsMatch(verify);
                     if (!ok) throw new InvalidOperationException("Descriptor copy/rewrite verification failed.");
+
+                    // From now on, treat Source as the Proxmox-side descriptor name (no path)
+                    d.Source = safeFileName;
                 });
+
             }
 
             // ---- 3) Write base QEMU config (on target node)
@@ -458,6 +468,13 @@ namespace BareProx.Services.Migration
                 catch { }
             }
             return null;
+        }
+
+        private static string MakeSafeDiskFileName(int vmid, int index)
+        {
+            // Keep it simple & safe: no spaces, short, predictable.
+            // Example: vm-118-disk-0.vmdk
+            return $"vm-{vmid}-disk-{index}.vmdk";
         }
 
         // ---------------- Internal DTOs ----------------

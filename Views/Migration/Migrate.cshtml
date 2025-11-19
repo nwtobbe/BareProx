@@ -6,12 +6,22 @@
 <h2 class="mb-3">The Great Exit Strategy (Migration)</h2>
 <p class="lead text-muted mb-2">
     Migrate from VMware to open source
-    </p>
+</p>
 <div class="d-flex flex-wrap gap-2 mb-3">
     <button id="btn-scan" class="btn btn-outline-primary">Scan datastore</button>
     <a asp-action="Settings" class="btn btn-outline-secondary">Settings</a>
     <button id="btn-run-queue" class="btn btn-success">Run Queue</button>
     <a asp-action="Help" class="btn btn-outline-info">Help</a>
+</div>
+
+<!-- Loading banner -->
+<div id="migrate-loading"
+     class="alert alert-info d-flex align-items-center py-2 px-3 mb-3 d-none">
+    <div class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></div>
+    <div>
+        <strong>Working…</strong>
+        <span class="migrate-loading-text">Talking to Proxmox, please wait.</span>
+    </div>
 </div>
 
 <div class="card mb-3">
@@ -160,8 +170,21 @@
                                     <input class="form-control" name="VmId" type="number" value="118" />
                                 </div>
                                 <div class="col-md-9">
-                                    <label class="form-label">Name</label>
-                                    <input class="form-control" name="Name" />
+                                    <label class="form-label" for="vmNameInput">Name</label>
+                                    <input class="form-control"
+                                           id="vmNameInput"
+                                           name="Name"
+                                           required
+                                           maxlength="63"
+                                           pattern="^[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?$"
+                                           placeholder="my-vm-name" />
+                                    <div class="invalid-feedback">
+                                        Name must be 1–63 characters, letters/digits and “-” only,
+                                        and cannot start or end with “-”.
+                                    </div>
+                                    <div class="form-text">
+                                        Must be a valid Proxmox VM name.
+                                    </div>
                                 </div>
 
                                 <div class="col-md-6">
@@ -288,7 +311,8 @@
             caps: '@Url.Action("Capabilities", "Migration")',
             queue:'@Url.Action("Queue", "Migration")',
             run:  '@Url.Action("RunQueue", "Migration")',
-            logs: '@Url.Action("QueueLogs", "Migration")'
+            logs: '@Url.Action("QueueLogs", "Migration")',
+            nextVmId: '@Url.Action("NextVmId", "Migration")' // NEW: suggests next free VMID (not in queue)
           };
 
           // ---- Tiny helpers ----
@@ -301,11 +325,54 @@
           function pick(){ for (let i=0;i<arguments.length;i++){ const v=arguments[i]; if (v!==undefined && v!==null) return v; } return undefined; }
           function escapeHtml(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
+        const vmNameRegex = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
+
+        // ---- Proxmox VM name validation (dns-name) ----
+        function validateVmName() {
+          if (!wizardForm) return true; // nothing to validate
+
+          const nameInput = wizardForm.elements['Name'];
+          if (!nameInput) return true;
+
+          // clear any previous error state
+          nameInput.classList.remove('is-invalid');
+
+          // Trim spaces at ends (Proxmox UI also won’t accept them)
+          const value = nameInput.value.trim();
+          nameInput.value = value;
+
+          // Empty? Block – it's required.
+          if (!value) {
+            nameInput.classList.add('is-invalid');
+            nameInput.focus();
+            return false;
+          }
+
+          // Hard check with our own regex
+          if (!vmNameRegex.test(value)) {
+            nameInput.classList.add('is-invalid');
+            nameInput.focus();
+            return false;
+          }
+
+          // Optional: also ask the browser, in case other fields are constrained
+          if (wizardForm.checkValidity && !wizardForm.checkValidity()) {
+            // this will also trigger built-in Bootstrap validation UI
+            if (wizardForm.reportValidity) wizardForm.reportValidity();
+            return false;
+          }
+
+          // valid
+          nameInput.classList.remove('is-invalid');
+          return true;
+        }
+
+
           // ---- State ----
           let CAPS = { cpus:[], nics:[], scsi:[], osTypes:[], bridges:[], vlans:[], virtioIsos:[] };
           let currentList = [];
           let currentVm   = null;
-          let capsReady   = false;   // <--- NEW
+          let capsReady   = false;
           let capsError   = null;    // optional, for debugging
 
           // Logs state
@@ -331,11 +398,39 @@
 
           const queueDetailsBody= $('#queueDetailsBody');
 
+          const vmNameInputEl = document.getElementById('vmNameInput');
+
+        // live feedback: clear red when user types something that looks ok
+        on(vmNameInputEl, 'input', () => {
+          if (!vmNameInputEl) return;
+          const v = vmNameInputEl.value.trim();
+          if (v && vmNameRegex.test(v)) {
+            vmNameInputEl.classList.remove('is-invalid');
+          }
+        });
+
           // Logs modal elements
           const logsModalEl     = document.getElementById('queueLogsModal');
           const btnRefreshLogs  = document.getElementById('btn-refresh-logs');
           const logsBodyEl      = document.getElementById('queueLogsBody');
           const logsItemIdEl    = document.getElementById('logsItemId');
+
+          // ---- Loading banner ----
+          const loadingBanner = document.getElementById('migrate-loading');
+          const loadingTextEl = loadingBanner?.querySelector('.migrate-loading-text');
+
+          function showLoading(message) {
+            if (!loadingBanner) return;
+            if (loadingTextEl && message) {
+              loadingTextEl.textContent = message;
+            }
+            loadingBanner.classList.remove('d-none');
+          }
+
+          function hideLoading() {
+            if (!loadingBanner) return;
+            loadingBanner.classList.add('d-none');
+          }
 
           // quick getters for new inputs
           const socketsInput = () => wizardForm?.elements['Sockets'];
@@ -387,80 +482,77 @@
 
           // ---- OS / UEFI helpers ----
           function pickOsValueFromGuestString(guestOs) {
-          const raw = String(guestOs || '');
-          const s = raw.toLowerCase();
-          // normalize to make 'windows2019srv_64Guest', 'windows2019srv-64', etc. comparable
-          const norm = s.replace(/[\s_\-]/g, '');
+            const raw = String(guestOs || '');
+            const s = raw.toLowerCase();
+            // normalize to make 'windows2019srv_64Guest', windows2019srv-64, etc. comparable
+            const norm = s.replace(/[\s_\-]/g, '');
 
-          // ---------- Windows 11 / "new" server family (2019-next, 2022, 2025, 11/12) ----------
+            // ---------- Windows 11 / "new" server family (2019-next, 2022, 2025, 11/12) ----------
 
-          // Desktop IDs like windows11_64Guest, windows11-64, plain "Windows 11"
-          if (norm.includes('windows11') || s.includes('windows 11'))
-            return 'win11';
+            // Desktop IDs like windows11_64Guest, windows11-64, plain "Windows 11"
+            if (norm.includes('windows11') || s.includes('windows 11'))
+              return 'win11';
 
-          // VMware already has windows12_64Guest, Proxmox currently maps that to win11
-          if (norm.includes('windows12') || s.includes('windows 12'))
-            return 'win11';
+            // VMware already has windows12_64Guest, Proxmox currently maps that to win11
+            if (norm.includes('windows12') || s.includes('windows 12'))
+              return 'win11';
 
-          // Server 2022 / 2025 style IDs
-          // windows2019srvNext_64Guest and windows2022srvNext_64Guest are treated as win11
-          if (
-            norm.includes('windows2019srvnext') ||
-            norm.includes('windows2022srvnext') ||
-            s.includes('server 2025') ||
-            s.includes('server 2022')
-          ) {
-            return 'win11';
+            // Server 2022 / 2025 style IDs
+            // windows2019srvNext_64Guest and windows2022srvNext_64Guest are treated as win11
+            if (
+              norm.includes('windows2019srvnext') ||
+              norm.includes('windows2022srvnext') ||
+              s.includes('server 2025') ||
+              s.includes('server 2022')
+            ) {
+              return 'win11';
+            }
+
+            // ---------- Windows 10 + Server 2016/2019 ----------
+
+            // ESXi guestOS IDs: windows9_64Guest, windows9Server64Guest, windows9srv-64, windows2019srv_64Guest, ...
+            if (
+              norm.startsWith('windows9_64guest') || // Win10 desktop
+              norm.startsWith('windows9guest')    ||
+              norm.startsWith('windows9server')   || // Windows Server 2016: windows9Server-64 / windows9Server64Guest
+              norm.startsWith('windows9srv')      || // alternative 2016 IDs like windows9srv-64
+              norm.startsWith('windows2019srv')      // Windows Server 2019
+            ) {
+              return 'win10';
+            }
+
+            // Generic strings like "Microsoft Windows 10 (64-bit)" / "Windows Server 2019"
+            if (
+              s.includes('windows 10') ||
+              s.includes('win10') ||
+              s.includes('server 2019') ||
+              s.includes('server 2016')
+            ) {
+              return 'win10';
+            }
+
+            // ---------- Older Windows (7 / 2008 generation) ----------
+
+            if (
+              s.includes('windows 7') ||
+              s.includes('win7') ||
+              s.includes('2008') ||      // many ESXi server 2008 IDs contain 2008
+              norm.includes('winnet') || // 2003/2008 family
+              norm.includes('longhorn')  // early 2008 name
+            ) {
+              return 'win7';
+            }
+
+            // ---------- Linux family ----------
+
+            if (/(linux|ubuntu|debian|centos|rhel|suse|rocky|alma|oraclelinux|fedora)/.test(s)) {
+              return 'l26';
+            }
+
+            // ---------- Fallback ----------
+
+            return 'other';
           }
-
-          // ---------- Windows 10 + Server 2016/2019 ----------
-
-        // ESXi guestOS IDs: windows9_64Guest, windows9Server64Guest, windows9srv-64, windows2019srv_64Guest, ...
-        if (
-          norm.startsWith('windows9_64guest') || // Win10 desktop
-          norm.startsWith('windows9guest')    ||
-          norm.startsWith('windows9server')   || // Windows Server 2016: windows9Server-64 / windows9Server64Guest
-          norm.startsWith('windows9srv')      || // alternative 2016 IDs like windows9srv-64
-          norm.startsWith('windows2019srv')      // Windows Server 2019
-        ) {
-          return 'win10';
-        }
-
-        // Generic strings like "Microsoft Windows 10 (64-bit)" / "Windows Server 2019"
-        if (
-          s.includes('windows 10') ||
-          s.includes('win10') ||
-          s.includes('server 2019') ||
-          s.includes('server 2016')
-        ) {
-          return 'win10';
-        }
-
-          // ---------- Older Windows (7 / 2008 generation) ----------
-
-          if (
-            s.includes('windows 7') ||
-            s.includes('win7') ||
-            s.includes('2008') ||      // many ESXi server 2008 IDs contain 2008
-            norm.includes('winnet') || // 2003/2008 family
-            norm.includes('longhorn')  // early 2008 name
-          ) {
-            return 'win7';
-          }
-
-          // You could add more mapping here if you care about wxp / w2k3 / w2k8 specifically.
-
-          // ---------- Linux family ----------
-
-          if (/(linux|ubuntu|debian|centos|rhel|suse|rocky|alma|oraclelinux|fedora)/.test(s)) {
-            return 'l26';
-          }
-
-          // ---------- Fallback ----------
-
-          return 'other';
-        }
-
 
           const deriveUuid = vm =>
             (vm && (vm.uuid || vm.Uuid || vm.vmUuid || vm.hwUuid || vm.hardwareUuid || vm.biosUuid || vm.vmxUuid || vm.uuidBios)) || '';
@@ -577,13 +669,20 @@
             const o = document.createElement('option'); o.value = v; o.text = labelIfNew || v; selectEl.add(o); selectEl.value = v;
           }
 
-          function fillWizardFromVM(vm) {
+          // UPDATED: allow passing a suggested VMID from server (NextVmId)
+          function fillWizardFromVM(vm, suggestedVmId) {
             if (!wizardForm) return;
             currentVm = vm;
 
             const vmxPath  = first(vm,'vmxPath','VmxPath','path','Path') || '';
             const name     = first(vm,'name','Name') || '';
-            const vmId     = Number(first(vm,'vmId','VmId')) || 118;
+            const vmIdFromVm = Number(first(vm,'vmId','VmId')) || 118;
+
+            let vmId = vmIdFromVm;
+            if (suggestedVmId != null && !Number.isNaN(Number(suggestedVmId))) {
+              vmId = Number(suggestedVmId);
+            }
+
             const vmxOs    = first(vm,'vmxGuestId','VmxGuestId','vmxOsType','VmxOsType','guestOs','GuestOs','os','Os');
             const scsiCtrl = first(vm,'scsiController','ScsiController','SCSIController');
 
@@ -676,8 +775,8 @@
           on(wizardForm?.elements['Sockets'], 'input', updateVcpuDisplay);
           on(wizardForm?.elements['Cores'],   'input', updateVcpuDisplay);
 
-          // Click VM → wizard (guard on capsReady)
-          on(tableBody, 'click', function(e){
+          // UPDATED: Click VM → wizard (async), fetch NextVmId and prefer it for VMID
+          on(tableBody, 'click', async function(e){
             const link = e.target.closest?.('.vm-link');
             if (!link || !wizardModalEl) return;
 
@@ -690,7 +789,19 @@
             const vmx = tr?.getAttribute('data-vmx') || '';
             const vm = (currentList || []).find(x => String(first(x,'vmxPath','VmxPath','path','Path')||'') === String(vmx));
             if (!vm) return;
-            fillWizardFromVM(vm);
+
+            let suggestedId = null;
+            try {
+              const res = await fetch(URLS.nextVmId, { cache: 'no-store' });
+              if (res.ok) {
+                const j = await res.json();
+                suggestedId = j.vmId ?? j.VmId ?? null;
+              }
+            } catch {
+              // fail-soft: just fallback to VM's own/default ID
+            }
+
+            fillWizardFromVM(vm, suggestedId);
             new bootstrap.Modal(wizardModalEl).show();
           });
 
@@ -700,6 +811,7 @@
             btnScan.disabled = true;
             const original = btnScan.textContent;
             btnScan.textContent = 'Scanning…';
+            showLoading('Scanning datastore for VMX files…');
             try {
               const res = await fetch(URLS.scan);
               if (!res.ok) throw new Error('Scan HTTP ' + res.status);
@@ -709,7 +821,9 @@
             } catch (e) {
               console.error(e); alert('Scan failed. Check logs.');
             } finally {
-              btnScan.disabled = false; btnScan.textContent = original;
+              btnScan.disabled = false;
+              btnScan.textContent = original;
+              hideLoading();
             }
           }
           on(btnScan, 'click', realScan);
@@ -1008,8 +1122,13 @@
           logsModalEl?.addEventListener('shown.bs.modal', () => startLogsPolling());
           logsModalEl?.addEventListener('hidden.bs.modal', () => { stopLogsPolling(); currentLogsItemId = null; });
 
-          // Add → POST queue
-          on(document.getElementById('btn-add'), 'click', async function(){
+          // Add → validate name, then POST queue
+          on(document.getElementById('btn-add'), 'click', async function () {
+            // hard block invalid Proxmox VM names
+            if (!validateVmName()) {
+              return;
+            }
+
             try {
               const payload = buildPayloadFromWizard();
               await queueAdd(payload);
@@ -1019,8 +1138,9 @@
                 const modal = bootstrap.Modal.getInstance(wizardModalEl);
                 if (modal) modal.hide();
               }
-            } catch(err){
-              console.error(err); alert(err.message || 'Failed to queue import.');
+            } catch (err) {
+              console.error(err);
+              alert(err.message || 'Failed to queue import.');
             }
           });
 
@@ -1050,115 +1170,119 @@
           // ---- Init ----
           (async function init() {
             let data = null;
+            showLoading('Loading capabilities from Proxmox cluster…');
 
             try {
-              const t0 = performance.now();
-              const res = await fetch(URLS.caps, { cache: 'no-store' });
+              try {
+                const t0 = performance.now();
+                const res = await fetch(URLS.caps, { cache: 'no-store' });
 
-              if (!res.ok) {
-                capsError = 'HTTP ' + res.status;
-                console.error('Capabilities HTTP error', res.status);
-              } else {
-                const text = await res.text();
-                console.log('Capabilities raw response:', text);
+                if (!res.ok) {
+                  capsError = 'HTTP ' + res.status;
+                  console.error('Capabilities HTTP error', res.status);
+                } else {
+                  const text = await res.text();
+                  // console.log('Capabilities raw response:', text);
 
-                try {
-                  data = JSON.parse(text);
-                  console.log('Capabilities parsed JSON:', data);
-                } catch (jsonErr) {
-                  capsError = 'JSON parse error';
-                  console.error('Capabilities JSON parse failed:', jsonErr);
+                  try {
+                    data = JSON.parse(text);
+                    console.log('Capabilities parsed JSON:', data);
+                  } catch (jsonErr) {
+                    capsError = 'JSON parse error';
+                    console.error('Capabilities JSON parse failed:', jsonErr);
+                  }
                 }
+                const t1 = performance.now();
+                console.log('Capabilities fetch+parse took ~', Math.round(t1 - t0), 'ms');
+              } catch (e) {
+                capsError = String(e);
+                console.error('Capabilities fetch failed:', e);
               }
-              const t1 = performance.now();
-              console.log('Capabilities fetch+parse took ~', Math.round(t1 - t0), 'ms');
-            } catch (e) {
-              capsError = String(e);
-              console.error('Capabilities fetch failed:', e);
+
+              // Map JSON → CAPS (support both camelCase and PascalCase just in case)
+              if (data) {
+                CAPS.cpus       = data.cpus            || data.Cpus            || [];
+                CAPS.nics       = data.nics            || data.Nics            || [];
+                CAPS.scsi       = data.scsiControllers || data.ScsiControllers || [];
+                CAPS.osTypes    = data.osTypes         || data.OsTypes         || [];
+                CAPS.bridges    = data.bridges         || data.Bridges         || [];
+                CAPS.vlans      = data.vlans           || data.Vlans           || [];
+                CAPS.virtioIsos = data.virtioIsos      || data.VirtioIsos      || [];
+              }
+
+              // ---- FALLBACK DEFAULTS so the wizard is never completely empty ----
+              if (!CAPS.cpus || CAPS.cpus.length === 0) {
+                console.warn('Capabilities: CPUs empty, using fallback list.');
+                CAPS.cpus = [
+                  { value: 'x86-64-v2-AES', label: 'x86-64-v2-AES' },
+                  { value: 'kvm64',         label: 'kvm64' }
+                ];
+              }
+
+              if (!CAPS.scsi || CAPS.scsi.length === 0) {
+                console.warn('Capabilities: SCSI controllers empty, using fallback list.');
+                CAPS.scsi = [
+                  { value: 'virtio-scsi-single', label: 'VirtIO SCSI single' },
+                  { value: 'virtio-scsi-pci',    label: 'VirtIO SCSI PCI' }
+                ];
+              }
+
+              if (!CAPS.nics || CAPS.nics.length === 0) {
+                console.warn('Capabilities: NIC models empty, using fallback list.');
+                CAPS.nics = [
+                  { value: 'virtio', label: 'VirtIO' },
+                  { value: 'e1000',  label: 'Intel E1000' }
+                ];
+              }
+
+              if (!CAPS.bridges || CAPS.bridges.length === 0) {
+                console.warn('Capabilities: bridges empty, using fallback list.');
+                CAPS.bridges = [
+                  { name: 'vmbr0' }
+                ];
+              }
+
+              // ---- Render selects ----
+              if (cpuTypeSelect) {
+                const d1 = (CAPS.cpus || []).find(c => readVal(c) === 'x86-64-v2-AES');
+                const d2 = (CAPS.cpus || []).find(c => /aes/i.test(readLabel(c) || ''));
+                const d3 = (CAPS.cpus || [])[0];
+                const DEFAULT_CPU = readVal(d1) || readVal(d2) || readVal(d3) || '';
+
+                cpuTypeSelect.innerHTML = (CAPS.cpus || []).map(p => {
+                  const v = readVal(p);
+                  const l = readLabel(p);
+                  const sel = (String(v) === String(DEFAULT_CPU)) ? 'selected' : '';
+                  return `<option value="${escapeHtml(v)}" ${sel}>${escapeHtml(l)}</option>`;
+                }).join('');
+              }
+
+              if (scsiController) {
+                scsiController.innerHTML = (CAPS.scsi || []).map(p => {
+                  const v = readVal(p), l = readLabel(p);
+                  return `<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`;
+                }).join('');
+              }
+
+              if (osTypeSelect) {
+                osTypeSelect.innerHTML = (CAPS.osTypes || []).map(p => {
+                  const v = readVal(p), l = readLabel(p);
+                  return `<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`;
+                }).join('');
+              }
+
+              populateIsoSelect();
+              refreshIsoEnabled();
+
+              // Mark capabilities as ready so wizard can be opened
+              capsReady = true;
+
+              if (tableBody) tableBody.innerHTML = '';
+              const items = await loadQueueSafe();
+              maybeStartPolling(items);
+            } finally {
+              hideLoading();
             }
-
-            // Map JSON → CAPS (support both camelCase and PascalCase just in case)
-            if (data) {
-              CAPS.cpus       = data.cpus            || data.Cpus            || [];
-              CAPS.nics       = data.nics            || data.Nics            || [];
-              CAPS.scsi       = data.scsiControllers || data.ScsiControllers || [];
-              CAPS.osTypes    = data.osTypes         || data.OsTypes         || [];
-              CAPS.bridges    = data.bridges         || data.Bridges         || [];
-              CAPS.vlans      = data.vlans           || data.Vlans           || [];
-              CAPS.virtioIsos = data.virtioIsos      || data.VirtioIsos      || [];
-            }
-
-            // ---- FALLBACK DEFAULTS so the wizard is never completely empty ----
-            if (!CAPS.cpus || CAPS.cpus.length === 0) {
-              console.warn('Capabilities: CPUs empty, using fallback list.');
-              CAPS.cpus = [
-                { value: 'x86-64-v2-AES', label: 'x86-64-v2-AES' },
-                { value: 'kvm64',         label: 'kvm64' }
-              ];
-            }
-
-            if (!CAPS.scsi || CAPS.scsi.length === 0) {
-              console.warn('Capabilities: SCSI controllers empty, using fallback list.');
-              CAPS.scsi = [
-                { value: 'virtio-scsi-single', label: 'VirtIO SCSI single' },
-                { value: 'virtio-scsi-pci',    label: 'VirtIO SCSI PCI' }
-              ];
-            }
-
-            if (!CAPS.nics || CAPS.nics.length === 0) {
-              console.warn('Capabilities: NIC models empty, using fallback list.');
-              CAPS.nics = [
-                { value: 'virtio', label: 'VirtIO' },
-                { value: 'e1000',  label: 'Intel E1000' }
-              ];
-            }
-
-            if (!CAPS.bridges || CAPS.bridges.length === 0) {
-              console.warn('Capabilities: bridges empty, using fallback list.');
-              CAPS.bridges = [
-                { name: 'vmbr0' }
-              ];
-            }
-
-            // ---- Render selects ----
-            if (cpuTypeSelect) {
-              const d1 = (CAPS.cpus || []).find(c => readVal(c) === 'x86-64-v2-AES');
-              const d2 = (CAPS.cpus || []).find(c => /aes/i.test(readLabel(c) || ''));
-              const d3 = (CAPS.cpus || [])[0];
-              const DEFAULT_CPU = readVal(d1) || readVal(d2) || readVal(d3) || '';
-
-              cpuTypeSelect.innerHTML = (CAPS.cpus || []).map(p => {
-                const v = readVal(p);
-                const l = readLabel(p);
-                const sel = (String(v) === String(DEFAULT_CPU)) ? 'selected' : '';
-                return `<option value="${escapeHtml(v)}" ${sel}>${escapeHtml(l)}</option>`;
-              }).join('');
-            }
-
-            if (scsiController) {
-              scsiController.innerHTML = (CAPS.scsi || []).map(p => {
-                const v = readVal(p), l = readLabel(p);
-                return `<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`;
-              }).join('');
-            }
-
-            if (osTypeSelect) {
-              osTypeSelect.innerHTML = (CAPS.osTypes || []).map(p => {
-                const v = readVal(p), l = readLabel(p);
-                return `<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`;
-              }).join('');
-            }
-
-            populateIsoSelect();
-            refreshIsoEnabled();
-
-            // Mark capabilities as ready so wizard can be opened
-            capsReady = true;
-            console.log('Capabilities ready:', CAPS);
-
-            if (tableBody) tableBody.innerHTML = '';
-            const items = await loadQueueSafe();
-            maybeStartPolling(items);
           })();
 
 

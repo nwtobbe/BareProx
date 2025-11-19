@@ -22,6 +22,7 @@
 using BareProx.Data;
 using BareProx.Models;
 using BareProx.Services.Migration;         // IProxmoxFileScanner
+using BareProx.Services.Proxmox;
 using BareProx.Services.Proxmox.Migration; // IProxmoxMigration
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -39,6 +40,7 @@ namespace BareProx.Controllers
     {
         private readonly ILogger<MigrationController> _logger;
         private readonly ApplicationDbContext _db;
+        private readonly ProxmoxService _proxmoxService;
         private readonly IProxmoxFileScanner _scanner;
         private readonly IMigrationQueueRunner _runner;
         private readonly IProxmoxMigration _migration; // replaces ProxmoxService for capability lookups
@@ -46,12 +48,14 @@ namespace BareProx.Controllers
         public MigrationController(
             ILogger<MigrationController> logger,
             ApplicationDbContext db,
+            ProxmoxService proxmoxService,
             IProxmoxFileScanner scanner,
             IMigrationQueueRunner runner,
             IProxmoxMigration migration)
         {
             _logger = logger;
             _db = db;
+            _proxmoxService = proxmoxService;
             _scanner = scanner;
             _runner = runner;
             _migration = migration;
@@ -671,5 +675,158 @@ namespace BareProx.Controllers
 
             return Ok(logs);
         }
+
+        /// <summary>
+        /// Suggests the next VMID that is not already used in the migration queue.
+        /// This is only a helper for the wizard; the executor still validates against Proxmox.
+        /// </summary>
+        [HttpGet("NextVmId")]
+        [Produces(MediaTypeNames.Application.Json)]
+        [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+        public async Task<IActionResult> NextVmId(CancellationToken ct = default)
+        {
+            // 1) Find current migration selection (cluster)
+            var sel = await _db.MigrationSelections
+                .AsNoTracking()
+                .FirstOrDefaultAsync(ct);
+
+            if (sel == null)
+            {
+                _logger.LogWarning("NextVmId: no MigrationSelection exists; falling back to queue-only logic.");
+                var fallback = await ComputeNextVmIdFromQueueOnly(ct);
+                return Ok(new { vmId = fallback, source = "queue-only" });
+            }
+
+            var cluster = await _db.ProxmoxClusters
+                .Include(c => c.Hosts)
+                .FirstOrDefaultAsync(c => c.Id == sel.ClusterId, ct);
+
+            if (cluster == null)
+            {
+                _logger.LogWarning("NextVmId: cluster {ClusterId} not found; falling back to queue-only.", sel.ClusterId);
+                var fallback = await ComputeNextVmIdFromQueueOnly(ct);
+                return Ok(new { vmId = fallback, source = "queue-only" });
+            }
+
+            var used = new HashSet<int>();
+
+            // 2) VMIDs currently in use on the cluster (/cluster/resources?type=vm)
+            try
+            {
+                var clusterVmIds = await _proxmoxService.GetClusterVmIdsAsync(cluster, ct);
+                foreach (var id in clusterVmIds.Where(x => x > 0))
+                    used.Add(id);
+
+                _logger.LogDebug("NextVmId: {Count} VMIDs from /cluster/resources for cluster {ClusterId}.",
+                    used.Count, cluster.Id);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "NextVmId: error when calling GetClusterVmIdsAsync for cluster {ClusterId}", cluster.Id);
+            }
+
+            // 3) VMIDs from migration queue that are *not* in a final state
+            try
+            {
+                var queueItems = await _db.MigrationQueueItems
+                    .AsNoTracking()
+                    .Where(x => x.VmId != null && x.VmId > 0)
+                    .ToListAsync(ct);
+
+                foreach (var item in queueItems)
+                {
+                    if (!IsFinalStatus(item.Status) && item.VmId.HasValue && item.VmId.Value > 0)
+                        used.Add(item.VmId.Value);
+                }
+
+                _logger.LogDebug("NextVmId: used count after including active queue items = {Count}.", used.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "NextVmId: failed to inspect MigrationQueueItems.");
+            }
+
+            // 4) Ask Proxmox for /cluster/nextid and use it as a starting suggestion
+            int candidate = 100; // never hand out below 100
+
+            try
+            {
+                var nextFromCluster = await _proxmoxService.GetClusterNextVmIdAsync(cluster, ct);
+                if (nextFromCluster.HasValue && nextFromCluster.Value > 0)
+                {
+                    candidate = Math.Max(candidate, nextFromCluster.Value);
+                }
+
+                _logger.LogDebug("NextVmId: /cluster/nextid suggested {Candidate}.", candidate);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "NextVmId: failed to call GetClusterNextVmIdAsync for cluster {ClusterId}", cluster.Id);
+            }
+
+            // If Proxmox suggestion is below or equal to max used, bump it at least above max used + 1
+            if (used.Count > 0)
+            {
+                var maxUsed = used.Max();
+                candidate = Math.Max(candidate, maxUsed + 1);
+            }
+
+            // 5) Final safety: make sure candidate is not in "used"
+            while (used.Contains(candidate))
+                candidate++;
+
+            return Ok(new
+            {
+                vmId = candidate,
+                source = "cluster+resources+queue"
+            });
+        }
+        private static bool IsFinalStatus(string? status)
+        {
+            if (string.IsNullOrWhiteSpace(status))
+                return false;
+
+            switch (status.Trim().ToLowerInvariant())
+            {
+                case "done":
+                case "completed":
+                case "failed":
+                case "cancelled":
+                case "canceled":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private async Task<int> ComputeNextVmIdFromQueueOnly(CancellationToken ct)
+        {
+            var queueItems = await _db.MigrationQueueItems
+                .AsNoTracking()
+                .Where(x => x.VmId != null && x.VmId > 0)
+                .ToListAsync(ct);
+
+            var used = new HashSet<int>();
+
+            foreach (var item in queueItems)
+            {
+                if (!IsFinalStatus(item.Status) && item.VmId.HasValue && item.VmId.Value > 0)
+                    used.Add(item.VmId.Value);
+            }
+
+            var candidate = 100;
+
+            if (used.Count > 0)
+            {
+                var max = used.Max();
+                candidate = Math.Max(candidate, max + 1);
+            }
+
+            while (used.Contains(candidate))
+                candidate++;
+
+            return candidate;
+        }
+
     }
 }

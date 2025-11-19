@@ -738,47 +738,92 @@ namespace BareProx.Services.Proxmox
             return result;
         }
 
-        public async Task<List<ProxmoxStorageDto>> GetNfsStorageAsync(ProxmoxCluster cluster, CancellationToken ct = default)
+        public async Task<List<ProxmoxStorageDto>> GetNfsStorageAsync(
+    ProxmoxCluster cluster,
+    CancellationToken ct = default)
         {
             var result = new List<ProxmoxStorageDto>();
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase); // avoid duplicates by name
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase); // avoid duplicates by storage name
 
+            // Prefer helper, fall back to cluster.Hosts
             var hosts = _proxmoxHelpers.GetQueryableHostsAsync(cluster, CancellationToken.None)
-                           .GetAwaiter().GetResult()
-                           .ToList();
+                .GetAwaiter().GetResult()
+                .ToList();
+
             if (hosts.Count == 0 && cluster.Hosts != null)
                 hosts = cluster.Hosts.ToList();
 
             foreach (var host in hosts)
             {
-                var url = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/storage";
+                var listUrl = $"https://{host.HostAddress}:8006/api2/json/nodes/{host.Hostname}/storage";
 
                 try
                 {
-                    var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+                    var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, listUrl, null, ct);
                     var json = await resp.Content.ReadAsStringAsync(ct);
                     using var doc = JsonDocument.Parse(json);
 
                     foreach (var item in doc.RootElement.GetProperty("data").EnumerateArray())
                     {
-                        if (item.GetProperty("type").GetString() != "nfs")
+                        if (!string.Equals(item.GetProperty("type").GetString(), "nfs", StringComparison.OrdinalIgnoreCase))
                             continue;
 
                         var storageName = item.GetProperty("storage").GetString() ?? "";
-                        if (string.IsNullOrWhiteSpace(storageName) || seen.Contains(storageName))
+                        if (string.IsNullOrWhiteSpace(storageName))
                             continue;
 
-                        seen.Add(storageName);
+                        // Only resolve each storage once (cluster-level config is shared)
+                        if (!seen.Add(storageName))
+                            continue;
 
-                        var path = item.TryGetProperty("path", out var pathProp) ? pathProp.GetString() ?? "" : "";
+                        string server = "";
+                        string export = "";
+                        string serverExport = "";
+
+                        try
+                        {
+                            // Cluster-level storage config: /storage/{storage}
+                            var detailUrl =
+                                $"https://{host.HostAddress}:8006/api2/json/storage/{Uri.EscapeDataString(storageName)}";
+
+                            var detailResp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, detailUrl, null, ct);
+                            var detailJson = await detailResp.Content.ReadAsStringAsync(ct);
+                            using var detailDoc = JsonDocument.Parse(detailJson);
+
+                            var data = detailDoc.RootElement.GetProperty("data");
+
+                            if (data.TryGetProperty("server", out var serverProp) &&
+                                serverProp.ValueKind == JsonValueKind.String)
+                            {
+                                server = serverProp.GetString() ?? "";
+                            }
+
+                            if (data.TryGetProperty("export", out var exportProp) &&
+                                exportProp.ValueKind == JsonValueKind.String)
+                            {
+                                export = exportProp.GetString() ?? "";
+                            }
+
+                            if (!string.IsNullOrWhiteSpace(server) && !string.IsNullOrWhiteSpace(export))
+                                serverExport = $"{server}:{export}";
+                            else if (!string.IsNullOrWhiteSpace(export))
+                                serverExport = export; // fallback if server missing
+                            else
+                                serverExport = "";
+                        }
+                        catch (Exception exDetail)
+                        {
+                            // Non-fatal: keep storage entry but path stays empty
+                            Console.WriteLine($"[ProxmoxService] Failed to load /storage/{storageName} details: {exDetail.Message}");
+                        }
 
                         result.Add(new ProxmoxStorageDto
                         {
                             Id = storageName,
                             Storage = storageName,
                             Type = "nfs",
-                            Path = path,
-                            Node = host?.Hostname ?? ""
+                            Path = serverExport,              // <- server:export format
+                            Node = host?.Hostname ?? string.Empty
                         });
                     }
                 }
@@ -791,6 +836,8 @@ namespace BareProx.Services.Proxmox
 
             return result;
         }
+
+
 
         public async Task<(bool Quorate,int OnlineNodeCount,int TotalNodeCount,Dictionary<string, bool> HostStates,string Message)> GetClusterStatusAsync(
         ProxmoxCluster cluster,
@@ -1528,6 +1575,121 @@ namespace BareProx.Services.Proxmox
             {
                 _logger.LogError(ex, "SSH failure while preparing attach symlink on node {Node}", nodeName);
                 return (false, ex.Message);
+            }
+        }
+
+        public async Task<IReadOnlyList<int>> GetClusterVmIdsAsync(
+    ProxmoxCluster cluster,
+    CancellationToken ct = default)
+        {
+            if (cluster is null) throw new ArgumentNullException(nameof(cluster));
+
+            // 1) Pick any online host to call /cluster/resources from
+            var hosts = await _proxmoxHelpers.GetQueryableHostsAsync(cluster, ct);
+            var host = hosts.FirstOrDefault()
+                       ?? cluster.Hosts?.FirstOrDefault();
+
+            if (host == null || string.IsNullOrWhiteSpace(host.HostAddress))
+                return Array.Empty<int>();
+
+            var url = $"https://{host.HostAddress}:8006/api2/json/cluster/resources?type=vm";
+
+            try
+            {
+                var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+                if (!resp.IsSuccessStatusCode)
+                    return Array.Empty<int>();
+
+                var json = await resp.Content.ReadAsStringAsync(ct);
+                using var doc = JsonDocument.Parse(json);
+
+                if (!doc.RootElement.TryGetProperty("data", out var data) ||
+                    data.ValueKind != JsonValueKind.Array)
+                {
+                    return Array.Empty<int>();
+                }
+
+                var result = new List<int>();
+
+                foreach (var item in data.EnumerateArray())
+                {
+                    int vmid = 0;
+
+                    // Prefer explicit vmid field
+                    if (item.TryGetProperty("vmid", out var vmidEl) &&
+                        vmidEl.ValueKind == JsonValueKind.Number)
+                    {
+                        vmid = vmidEl.GetInt32();
+                    }
+                    else if (item.TryGetProperty("id", out var idEl) &&
+                             idEl.ValueKind == JsonValueKind.String)
+                    {
+                        // id like "qemu/100" or "lxc/101"
+                        var idStr = idEl.GetString() ?? string.Empty;
+                        var parts = idStr.Split('/');
+                        if (parts.Length == 2 && int.TryParse(parts[1], out var parsed))
+                            vmid = parsed;
+                    }
+
+                    if (vmid > 0)
+                        result.Add(vmid);
+                }
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "GetClusterVmIdsAsync: failed to query /cluster/resources for cluster {ClusterId}",
+                    cluster.Id);
+                return Array.Empty<int>();
+            }
+        }
+
+        public async Task<int?> GetClusterNextVmIdAsync(
+            ProxmoxCluster cluster,
+            CancellationToken ct = default)
+        {
+            if (cluster is null) throw new ArgumentNullException(nameof(cluster));
+
+            var hosts = await _proxmoxHelpers.GetQueryableHostsAsync(cluster, ct);
+            var host = hosts.FirstOrDefault()
+                       ?? cluster.Hosts?.FirstOrDefault();
+
+            if (host == null || string.IsNullOrWhiteSpace(host.HostAddress))
+                return null;
+
+            var url = $"https://{host.HostAddress}:8006/api2/json/cluster/nextid";
+
+            try
+            {
+                var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+                if (!resp.IsSuccessStatusCode)
+                    return null;
+
+                var json = await resp.Content.ReadAsStringAsync(ct);
+                using var doc = JsonDocument.Parse(json);
+
+                if (!doc.RootElement.TryGetProperty("data", out var data))
+                    return null;
+
+                if (data.ValueKind == JsonValueKind.Number)
+                    return data.GetInt32();
+
+                if (data.ValueKind == JsonValueKind.String &&
+                    int.TryParse(data.GetString(), out var parsed))
+                {
+                    return parsed;
+                }
+
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "GetClusterNextVmIdAsync: failed to query /cluster/nextid for cluster {ClusterId}",
+                    cluster.Id);
+                return null;
             }
         }
 

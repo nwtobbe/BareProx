@@ -7,6 +7,15 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
 
+## [1.0.2511.1920] - 2025-11-19
+
+### Fixed
+- Settings / Proxmox / Storage now displays the remote mount path.
+- Settings / Migration. Next available {vmid} is now suggested when preparing for migration.
+- Settings / Migration. Handling "strange naming" of Virtual Machines is introduced and inforced.
+
+
+
 ## [1.0.2511.1720] - 2025-11-17
 
 ### Changed
