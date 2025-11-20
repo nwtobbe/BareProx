@@ -92,7 +92,8 @@ namespace BareProx.Services.Migration
                                    (dict.TryGetValue("guestos", out var osLow) ? osLow : "");
                     var guestLabel = MapGuestOsLabel(guestRaw);
 
-                    var cpu = TryInt(dict, "numvcpus");
+                    // CPU: try to read, otherwise default to 2 vCPUs (1 CPU / 2 cores)
+                    var cpu = ReadCpuCount(dict) ?? 2;
                     var mem = TryInt(dict, "memsize");
 
                     // Disks
@@ -189,6 +190,31 @@ namespace BareProx.Services.Migration
 
         private static int? TryInt(Dictionary<string, string> d, string key)
             => d.TryGetValue(key, out var v) && int.TryParse(v, out var n) ? n : null;
+
+        /// <summary>
+        /// Reads total vCPU count from common VMX keys. Returns null if not present.
+        /// </summary>
+        private static int? ReadCpuCount(Dictionary<string, string> d)
+        {
+            // Common VMX variants for CPU count
+            var keys = new[]
+            {
+                "numvcpus",
+                "numVCPUs",
+                "numvcpu",
+                "numCPUs",
+                "numCpu"
+            };
+
+            foreach (var k in keys)
+            {
+                var v = TryInt(d, k);
+                if (v.HasValue && v.Value > 0)
+                    return v;
+            }
+
+            return null;
+        }
 
         private static bool? TryBool(Dictionary<string, string> d, string key)
         {
