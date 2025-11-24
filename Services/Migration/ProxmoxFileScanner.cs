@@ -18,7 +18,6 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
-
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Linq;
@@ -123,6 +122,10 @@ namespace BareProx.Services.Migration
 
                     var controllers = BuildControllers(dict);
 
+                    // NEW: derive a single Proxmox SCSI controller suggestion
+                    var vmxScsiDev = ParseVmwareScsiVirtualDev(dict);
+                    var scsiForProxmox = MapVmwareScsiToProxmoxScsihw(vmxScsiDev);
+
                     items.Add(new VmxItemDto
                     {
                         Name = name,
@@ -144,6 +147,9 @@ namespace BareProx.Services.Migration
                         NvramPath = nvram,
                         DiskEnableUuid = diskUuid,
                         Controllers = controllers,
+
+                        // NEW: this is what the wizard / queue should bind to
+                        ScsiController = scsiForProxmox,
 
                         Status = "Not queued"
                     });
@@ -367,6 +373,85 @@ namespace BareProx.Services.Migration
 
             return list.OrderBy(x => x.Type).ThenBy(x => x.Index).ToList();
         }
+
+        /// <summary>
+        /// Find the primary VMware SCSI controller model from VMX (e.g. "lsilogic", "pvscsi").
+        /// Prefer scsi0.virtualDev; if not present, use the lowest index found.
+        /// </summary>
+        private static string? ParseVmwareScsiVirtualDev(Dictionary<string, string> d)
+        {
+            // If scsi0.virtualDev exists, treat that as primary.
+            if (d.TryGetValue("scsi0.virtualDev", out var dev0) && !string.IsNullOrWhiteSpace(dev0))
+                return dev0.Trim();
+
+            var rxScsi = new Regex(@"^scsi(?<i>\d+)\.virtualDev$", RegexOptions.IgnoreCase);
+            string? bestDev = null;
+            int bestIndex = int.MaxValue;
+
+            foreach (var kv in d)
+            {
+                var m = rxScsi.Match(kv.Key);
+                if (!m.Success) continue;
+
+                if (!int.TryParse(m.Groups["i"].Value, out var idx))
+                    continue;
+
+                var val = kv.Value?.Trim();
+                if (string.IsNullOrWhiteSpace(val))
+                    continue;
+
+                if (idx < bestIndex)
+                {
+                    bestIndex = idx;
+                    bestDev = val;
+                }
+            }
+
+            return bestDev;
+        }
+
+        /// <summary>
+        /// Map VMware SCSI virtualDev (lsilogic, lsisas1068, pvscsi, buslogic)
+        /// to a Proxmox scsihw value that you pass to qm (--scsihw).
+        /// Adjust return strings to match CapabilityCatalog.DefaultScsi values.
+        /// </summary>
+        private static string? MapVmwareScsiToProxmoxScsihw(string? vmxDev)
+        {
+            if (string.IsNullOrWhiteSpace(vmxDev))
+                return null;
+
+            var v = vmxDev.Trim().ToLowerInvariant();
+
+            // Known exact IDs first
+            if (v == "lsilogic")
+                return "lsi";          // LSI 53C895A
+
+            if (v == "lsisas1068")
+                return "megasas";      // LSI Logic SAS → MegaRAID SAS 8708EM2
+
+            if (v == "pvscsi")
+                return "pvscsi";       // VMware PVSCSI
+
+            if (v == "buslogic")
+                return "lsi53c810";    // BusLogic → LSI 53C810 equivalent
+
+            // Fallbacks by pattern
+            if (v.Contains("lsisas"))
+                return "megasas";
+
+            if (v.Contains("lsilogic"))
+                return "lsi";
+
+            if (v.Contains("pvscsi"))
+                return "pvscsi";
+
+            if (v.Contains("buslogic"))
+                return "lsi53c810";
+
+            // Unknown → let the wizard default (virtio-scsi-single etc.)
+            return null;
+        }
+
 
         /// <summary>
         /// Computes VMDK virtual capacity in GiB from descriptor "RW &lt;sectors&gt;" lines.
@@ -633,7 +718,5 @@ namespace BareProx.Services.Migration
 
             return $"Other ({s})";
         }
-
-
     }
 }

@@ -223,12 +223,116 @@ namespace BareProx.Controllers
                 return View(vm);
             }
 
-            // Resolve SelectedNetappVolumeId via volume name (intersection guarantees it exists)
-            var selectedNetappVolumeId = await _db.SelectedNetappVolumes
-                .Where(v => v.VolumeName == vm.SelectedStorageIdentifier)
-                .Select(v => (int?)v.Id)
-                .FirstOrDefaultAsync(ct);
+            // ---------------------------------------------------------------------
+            // Local helpers – used only with in-memory LINQ, not EF expression trees
+            // ---------------------------------------------------------------------
+            static string NormalizePath(string? path)
+            {
+                if (string.IsNullOrWhiteSpace(path)) return string.Empty;
+                var p = path.Trim();
+                if (p.EndsWith("/"))
+                    p = p.TrimEnd('/');
+                return p;
+            }
 
+            static bool IpMatches(string? nfsIps, string? serverIp)
+            {
+                if (string.IsNullOrWhiteSpace(nfsIps) || string.IsNullOrWhiteSpace(serverIp))
+                    return false;
+
+                var ip = serverIp.Trim();
+                var candidates = nfsIps
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+                return candidates.Any(c => string.Equals(c, ip, StringComparison.OrdinalIgnoreCase));
+            }
+
+            int? selectedNetappVolumeId = null;
+
+            // 1) Inventory storage for this cluster + PVE storage id (pure EF → OK)
+            var invStorage = await _qdb.InventoryStorages
+                .AsNoTracking()
+                .FirstOrDefaultAsync(i =>
+                    i.ClusterId == vm.SelectedClusterId &&
+                    i.StorageId == vm.SelectedStorageIdentifier,
+                    ct);
+
+            if (invStorage != null)
+            {
+                var serverIp = invStorage.Server;
+                var export = NormalizePath(invStorage.Export);
+
+                if (!string.IsNullOrWhiteSpace(serverIp) && !string.IsNullOrWhiteSpace(export))
+                {
+                    // 2) Load all inventory NetApp volumes into memory
+                    var invNetappVolumes = await _qdb.InventoryNetappVolumes
+                        .AsNoTracking()
+                        .ToListAsync(ct);
+
+                    // 3) Now use helpers in LINQ-to-objects (NOT EF)
+                    var invVol = invNetappVolumes.FirstOrDefault(v =>
+                        IpMatches(v.NfsIps, serverIp) &&
+                        string.Equals(NormalizePath(v.JunctionPath), export, StringComparison.OrdinalIgnoreCase));
+
+                    if (invVol != null)
+                    {
+                        // 4) Find enabled SelectedNetappVolumes row by UUID (simple EF predicate → OK)
+                        var selVol = await _db.SelectedNetappVolumes
+                            .AsNoTracking()
+                            .FirstOrDefaultAsync(v =>
+                                v.Disabled != true &&
+                                v.Uuid == invVol.VolumeUuid,
+                                ct);
+
+                        if (selVol != null)
+                        {
+                            selectedNetappVolumeId = selVol.Id;
+                        }
+                        else
+                        {
+                            _logger.LogWarning(
+                                "Migration Settings: no enabled SelectedNetappVolume found for UUID {Uuid} (cluster {ClusterId}, storage {StorageId})",
+                                invVol.VolumeUuid, vm.SelectedClusterId, vm.SelectedStorageIdentifier);
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogWarning(
+                            "Migration Settings: no InventoryNetappVolume match for server {Server} export {Export} " +
+                            "(cluster {ClusterId}, storage {StorageId})",
+                            serverIp, export, vm.SelectedClusterId, vm.SelectedStorageIdentifier);
+                    }
+                }
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Migration Settings: InventoryStorage not found for cluster {ClusterId}, storage {StorageId}",
+                    vm.SelectedClusterId, vm.SelectedStorageIdentifier);
+            }
+
+            // Optional fallback: old name-based mapping
+            if (selectedNetappVolumeId == null)
+            {
+                var fallbackId = await _db.SelectedNetappVolumes
+                    .AsNoTracking()
+                    .Where(v => v.Disabled != true &&
+                                v.VolumeName == vm.SelectedStorageIdentifier)
+                    .Select(v => (int?)v.Id)
+                    .FirstOrDefaultAsync(ct);
+
+                if (fallbackId != null)
+                {
+                    _logger.LogInformation(
+                        "Migration Settings: falling back to name-based SelectedNetappVolume match for storage {StorageId}",
+                        vm.SelectedStorageIdentifier);
+                    selectedNetappVolumeId = fallbackId;
+                }
+            }
+
+            // ---------------------------------------------------------------------
+            // Save MigrationSelection
+            // ---------------------------------------------------------------------
             var existing = await _db.MigrationSelections
                 .FirstOrDefaultAsync(x => x.ClusterId == vm.SelectedClusterId, ct);
 
@@ -239,7 +343,7 @@ namespace BareProx.Controllers
                     ClusterId = vm.SelectedClusterId,
                     ProxmoxHostId = vm.SelectedHostId,
                     StorageIdentifier = vm.SelectedStorageIdentifier!,
-                    SelectedNetappVolumeId = selectedNetappVolumeId,   // NEW
+                    SelectedNetappVolumeId = selectedNetappVolumeId,
                     UpdatedAt = DateTime.UtcNow
                 });
             }
@@ -247,7 +351,7 @@ namespace BareProx.Controllers
             {
                 existing.ProxmoxHostId = vm.SelectedHostId;
                 existing.StorageIdentifier = vm.SelectedStorageIdentifier!;
-                existing.SelectedNetappVolumeId = selectedNetappVolumeId; // NEW
+                existing.SelectedNetappVolumeId = selectedNetappVolumeId;
                 existing.UpdatedAt = DateTime.UtcNow;
             }
 
@@ -256,6 +360,8 @@ namespace BareProx.Controllers
             TempData["SuccessMessage"] = "Settings saved.";
             return RedirectToAction(nameof(Settings), new { clusterId = vm.SelectedClusterId });
         }
+
+
 
         /// <summary>
         /// Fills dropdowns for the Settings view (clusters/hosts/storages).

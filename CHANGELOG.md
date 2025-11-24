@@ -11,8 +11,8 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - Settings / Migration. Defaults to 2 vcpus if we cannot read the original vm cpu count.
-- 
-
+- Settings / Migration. Can now handle missmatch in volume names. Yes, you can now name datastores in proxmox so it differs from the actual volume name i NetApp. I do not understand why you want that. But it's possible.
+- Settings / Migration. Updated Mappings for scsi-controllers. Note. Proxmox can boot a vm with the controller VMware PVSCSI if the vm is configured with VMware Paravirtual in the vmx-file. (Windows)
 
 
 ## [1.0.2511.1920] - 2025-11-19

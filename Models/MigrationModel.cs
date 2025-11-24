@@ -129,6 +129,7 @@ namespace BareProx.Models
         public string? NvramPath { get; set; }
 
         public List<VmxControllerDto> Controllers { get; set; } = new();
+        public string? ScsiController { get; set; }
 
         public string Status { get; set; } = "Not queued";
     }
