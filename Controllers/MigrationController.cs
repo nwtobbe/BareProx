@@ -40,6 +40,7 @@ namespace BareProx.Controllers
     {
         private readonly ILogger<MigrationController> _logger;
         private readonly ApplicationDbContext _db;
+        private readonly QueryDbContext _qdb;
         private readonly ProxmoxService _proxmoxService;
         private readonly IProxmoxFileScanner _scanner;
         private readonly IMigrationQueueRunner _runner;
@@ -48,6 +49,7 @@ namespace BareProx.Controllers
         public MigrationController(
             ILogger<MigrationController> logger,
             ApplicationDbContext db,
+            QueryDbContext qdb,
             ProxmoxService proxmoxService,
             IProxmoxFileScanner scanner,
             IMigrationQueueRunner runner,
@@ -55,6 +57,7 @@ namespace BareProx.Controllers
         {
             _logger = logger;
             _db = db;
+            _qdb = qdb;
             _proxmoxService = proxmoxService;
             _scanner = scanner;
             _runner = runner;
@@ -284,33 +287,112 @@ namespace BareProx.Controllers
                 Text = string.IsNullOrWhiteSpace(h.Hostname) ? h.HostAddress : h.Hostname!
             }).ToList();
 
-            // Proxmox-selected storages for this Proxmox cluster
-            var proxStorages = await _db.SelectedStorages.AsNoTracking()
-                .Where(s => s.ClusterId == vm.SelectedClusterId)
-                .Select(s => s.StorageIdentifier)
-                .ToListAsync(ct);
-
-            var proxSet = proxStorages.ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-            // NetApp-selected volumes (by volume name) – cluster-agnostic, we match by name
-            var netappNames = await _db.SelectedNetappVolumes.AsNoTracking()
-                .Select(v => v.VolumeName)
-                .Distinct()
-                .ToListAsync(ct);
-
-            var netappSet = netappNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-            // Intersection: only storages present on BOTH sides
-            var allowed = proxSet.Intersect(netappSet, StringComparer.OrdinalIgnoreCase)
-                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            vm.StorageOptions = allowed.Select(name => new SelectListItem
+            // ---------------------------------------------------------------------
+            // Storage options
+            // ---------------------------------------------------------------------
+            static string NormalizePath(string? path)
             {
-                Value = name,
-                Text = name
-            }).ToList();
+                if (string.IsNullOrWhiteSpace(path)) return string.Empty;
+                var p = path.Trim();
+                if (p.EndsWith("/"))
+                    p = p.TrimEnd('/');
+                return p;
+            }
+
+            static bool IpMatches(string? nfsIps, string? serverIp)
+            {
+                if (string.IsNullOrWhiteSpace(nfsIps) || string.IsNullOrWhiteSpace(serverIp))
+                    return false;
+
+                var ip = serverIp.Trim();
+                var candidates = nfsIps
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+                return candidates.Any(c => string.Equals(c, ip, StringComparison.OrdinalIgnoreCase));
+            }
+
+            // Proxmox-selected storages for this cluster (main DB)
+            var selectedStorages = await _db.SelectedStorages
+                .AsNoTracking()
+                .Where(s => s.ClusterId == vm.SelectedClusterId)
+                .ToListAsync(ct);
+
+            // Inventory storages for this cluster (Query DB)
+            var invStorages = await _qdb.InventoryStorages
+                .AsNoTracking()
+                .Where(i => i.ClusterId == vm.SelectedClusterId)
+                .ToListAsync(ct);
+
+            // All inventory NetApp volumes (Query DB)
+            var invNetappVolumes = await _qdb.InventoryNetappVolumes
+                .AsNoTracking()
+                .ToListAsync(ct);
+
+            // All *enabled* NetApp volumes that the user has selected (main DB)
+            var selectedNetappVolumes = await _db.SelectedNetappVolumes
+                .AsNoTracking()
+                .Where(v => v.Disabled != true)   // instead of !v.Disabled
+                .ToListAsync(ct);
+
+            var storageOptions = new List<SelectListItem>();
+
+            foreach (var s in selectedStorages)
+            {
+                if (string.IsNullOrWhiteSpace(s.StorageIdentifier))
+                    continue;
+
+                // 1) Match SelectedStorage -> InventoryStorage on (ClusterId, StorageId)
+                var inv = invStorages.FirstOrDefault(i =>
+                    string.Equals(i.StorageId, s.StorageIdentifier, StringComparison.OrdinalIgnoreCase));
+
+                if (inv == null)
+                    continue; // storage not discovered in QueryDB → skip
+
+                var serverIp = inv.Server;
+                var exportPath = NormalizePath(inv.Export);
+
+                if (string.IsNullOrWhiteSpace(serverIp) || string.IsNullOrWhiteSpace(exportPath))
+                    continue;
+
+                // 2) Match InventoryStorage(Server, Export) -> InventoryNetappVolumes(NfsIps, JunctionPath)
+                var invVol = invNetappVolumes.FirstOrDefault(v =>
+                    IpMatches(v.NfsIps, serverIp) &&
+                    string.Equals(NormalizePath(v.JunctionPath), exportPath, StringComparison.OrdinalIgnoreCase));
+
+                if (invVol == null)
+                    continue; // no matching NetApp volume in inventory → skip
+
+                // 3) Check that the volume exists in SelectedNetappVolumes and is NOT disabled
+                var selVol = selectedNetappVolumes.FirstOrDefault(v =>
+                    string.Equals(v.Uuid, invVol.VolumeUuid, StringComparison.OrdinalIgnoreCase));
+
+                if (selVol == null)
+                    continue; // not selected on NetApp side (or disabled) → skip
+
+                // 4) Build display label
+                var pveName = s.StorageIdentifier;
+                var netappName = selVol.VolumeName;
+
+                string label;
+                if (string.Equals(pveName, netappName, StringComparison.OrdinalIgnoreCase))
+                    label = pveName; // same name on both sides
+                else
+                    label = $"{pveName} ↔ {netappName}"; // show mapping when names differ
+
+                storageOptions.Add(new SelectListItem
+                {
+                    Value = pveName, // what the wizard will send back in vm.SelectedStorageIdentifier
+                    Text = label
+                });
+            }
+
+            // Sort by label for nicer UX
+            vm.StorageOptions = storageOptions
+                .OrderBy(x => x.Text, StringComparer.OrdinalIgnoreCase)
+                .ToList();
         }
+
+
 
         // =====================================================================
         // Capabilities (node bridges, SDN, VirtIO ISOs, catalogs)
