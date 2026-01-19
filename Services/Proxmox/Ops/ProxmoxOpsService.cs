@@ -62,13 +62,12 @@ namespace BareProx.Services.Proxmox.Ops
         /// Accepts absolute or relative URLs (your callers currently pass absolute).
         /// </summary>
         public async Task<HttpResponseMessage> SendWithRefreshAsync(
-        ProxmoxCluster cluster,
-        HttpMethod method,
-        string url,
-        HttpContent? content = null,
-        CancellationToken ct = default)
+            ProxmoxCluster cluster,
+            HttpMethod method,
+            string url,
+            HttpContent? content = null,
+            CancellationToken ct = default)
         {
-            // Resolve absolute URL and which host we’re talking to
             var absoluteUrl = await ResolveAbsoluteUrlAsync(cluster, url, ct);
 
             // Buffer content so we can resend safely
@@ -81,7 +80,23 @@ namespace BareProx.Services.Proxmox.Ops
                             ?? (content is FormUrlEncodedContent ? "application/x-www-form-urlencoded" : "application/json");
             }
 
-            // First attempt — token or ticket client (authenticator decides)
+            // Helper: pick the host that matches the absolute URL (if any), else online first
+            async Task<ProxmoxHost?> PickHostForRecoveryAsync()
+            {
+                if (Uri.TryCreate(absoluteUrl, UriKind.Absolute, out var abs))
+                {
+                    var h = cluster.Hosts?.FirstOrDefault(x =>
+                        string.Equals(x.HostAddress, abs.Host, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(x.Hostname, abs.Host, StringComparison.OrdinalIgnoreCase));
+                    if (h != null) return h;
+                }
+
+                var online = await _proxmoxHelpers.GetQueryableHostsAsync(cluster, ct);
+                return online.FirstOrDefault()
+                       ?? cluster.Hosts?.FirstOrDefault();
+            }
+
+            // --- Attempt 1
             var client1 = await _auth.GetAuthenticatedClientForUrlAsync(cluster, absoluteUrl, ct);
             using (var req1 = new HttpRequestMessage(method, absoluteUrl)
             {
@@ -92,91 +107,36 @@ namespace BareProx.Services.Proxmox.Ops
                 var resp1 = await client1.SendAsync(req1, ct);
 
                 if (resp1.IsSuccessStatusCode)
-                {
-                    _logger.LogDebug("◀ Proxmox {Code} {Reason}", (int)resp1.StatusCode, resp1.ReasonPhrase);
                     return resp1;
-                }
 
                 if (resp1.StatusCode is not HttpStatusCode.Unauthorized and not HttpStatusCode.Forbidden)
                 {
+                    // Keep existing behavior: throw on non-auth errors
                     var body = await resp1.Content.ReadAsStringAsync(ct);
                     _logger.LogDebug("◀ Proxmox {Code} {Reason}\nBody:\n{Body}", (int)resp1.StatusCode, resp1.ReasonPhrase, body);
                     resp1.EnsureSuccessStatusCode();
                     return resp1; // unreachable
                 }
 
-                // ---- 401/403: Optional hardening below ----
+                // Auth error: dispose and recover once
                 var body1 = await resp1.Content.ReadAsStringAsync(ct);
-                _logger.LogInformation("Auth issue ({Code}) on {Url}. Attempting recovery.\nBody:\n{Body}",
+                _logger.LogInformation("Auth issue ({Code}) on {Url}. Will attempt recovery and retry once. Body: {Body}",
                     (int)resp1.StatusCode, absoluteUrl, body1);
+
                 resp1.Dispose();
             }
 
-            // If we get here we had 401/403.
-            // Token-mode hardening: try recreate token, then retry once.
-            if (cluster.UseApiToken)
+            // --- Recovery
+            var hostForRecovery = await PickHostForRecoveryAsync();
+            if (hostForRecovery != null)
             {
-                // Pick a sensible host for token recovery
-                var recoverHost =
-                    (await _proxmoxHelpers.GetQueryableHostsAsync(cluster, ct)).FirstOrDefault()
-                    ?? cluster.Hosts?.FirstOrDefault();
-
-                if (recoverHost is null)
-                    throw new InvalidOperationException("No Proxmox hosts available for token recovery.");
-
-                if (recoverHost != null)
-                {
-                    var recovered = await _auth.TryRecoverApiTokenAsync(cluster, recoverHost, ct);
-                    _logger.LogInformation("Proxmox token recovery {Result}.",
-                        recovered ? "succeeded" : "failed");
-
-                    if (recovered)
-                    {
-                        var clientRecovered = await _auth.GetAuthenticatedClientForUrlAsync(cluster, absoluteUrl, ct);
-                        using var reqRecovered = new HttpRequestMessage(method, absoluteUrl)
-                        {
-                            Content = requestBody is null ? null : new StringContent(requestBody, Encoding.UTF8, mediaType)
-                        };
-                        var respRecovered = await clientRecovered.SendAsync(reqRecovered, ct);
-                        var bodyRecovered = await respRecovered.Content.ReadAsStringAsync(ct);
-                        _logger.LogDebug("◀ (retry after token recovery) Proxmox {Code} {Reason}\nBody:\n{Body}",
-                            (int)respRecovered.StatusCode, respRecovered.ReasonPhrase, bodyRecovered);
-
-                        respRecovered.EnsureSuccessStatusCode();
-                        return respRecovered;
-                    }
-
-                    // Belt & suspenders: temporary ticket fallback if recovery failed.
-                    // Flip UseApiToken in-memory (NOT persisted), do a single send, then restore.
-                    var originalUseToken = cluster.UseApiToken;
-                    try
-                    {
-                        cluster.UseApiToken = false; // force ticket path in authenticator
-                        var clientTicket = await _auth.GetAuthenticatedClientForUrlAsync(cluster, absoluteUrl, ct);
-                        using var reqTicket = new HttpRequestMessage(method, absoluteUrl)
-                        {
-                            Content = requestBody is null ? null : new StringContent(requestBody, Encoding.UTF8, mediaType)
-                        };
-                        var respTicket = await clientTicket.SendAsync(reqTicket, ct);
-                        var bodyTicket = await respTicket.Content.ReadAsStringAsync(ct);
-                        _logger.LogDebug("◀ (temporary ticket fallback) Proxmox {Code} {Reason}\nBody:\n{Body}",
-                            (int)respTicket.StatusCode, respTicket.ReasonPhrase, bodyTicket);
-
-                        respTicket.EnsureSuccessStatusCode();
-                        return respTicket;
-                    }
-                    finally
-                    {
-                        cluster.UseApiToken = true; // restore original behavior
-                    }
-                }
+                if (cluster.UseApiToken)
+                    await _auth.TryRecoverApiTokenAsync(cluster, hostForRecovery, ct);
                 else
-                {
-                    _logger.LogWarning("No Proxmox host available for token recovery; skipping recovery and retry.");
-                }
+                    await _auth.TryRecoverTicketAsync(cluster, hostForRecovery, ct);
             }
 
-            // Second attempt — default behavior (probe & refresh in authenticator)
+            // --- Attempt 2
             var client2 = await _auth.GetAuthenticatedClientForUrlAsync(cluster, absoluteUrl, ct);
             using (var req2 = new HttpRequestMessage(method, absoluteUrl)
             {
@@ -184,13 +144,19 @@ namespace BareProx.Services.Proxmox.Ops
             })
             {
                 var resp2 = await client2.SendAsync(req2, ct);
-                var body2 = await resp2.Content.ReadAsStringAsync(ct);
-                _logger.LogDebug("◀ (retry) Proxmox {Code} {Reason}\nBody:\n{Body}", (int)resp2.StatusCode, resp2.ReasonPhrase, body2);
 
-                resp2.EnsureSuccessStatusCode();
+                if (!resp2.IsSuccessStatusCode)
+                {
+                    var body2 = await resp2.Content.ReadAsStringAsync(ct);
+                    _logger.LogWarning("Proxmox retry failed: {Code} {Reason} for {Url}. Body: {Body}",
+                        (int)resp2.StatusCode, resp2.ReasonPhrase, absoluteUrl, body2);
+                    resp2.EnsureSuccessStatusCode();
+                }
+
                 return resp2;
             }
         }
+
 
 
         private async Task<string> ResolveAbsoluteUrlAsync(ProxmoxCluster cluster, string url, CancellationToken ct)
@@ -249,12 +215,19 @@ namespace BareProx.Services.Proxmox.Ops
             var url = $"https://{hostAddress}:8006/api2/json/nodes/{node}/tasks/{Uri.EscapeDataString(upid)}/status";
             var start = DateTime.UtcNow;
 
+            var pollInterval = TimeSpan.FromSeconds(5);
+            var perRequestTimeout = TimeSpan.FromSeconds(15);
+
             while (DateTime.UtcNow - start < timeout)
             {
                 try
                 {
-                    var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    cts.CancelAfter(perRequestTimeout);
+
+                    var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, cts.Token);
                     var json = await resp.Content.ReadAsStringAsync(ct);
+
                     using var doc = JsonDocument.Parse(json);
                     var data = doc.RootElement.GetProperty("data");
 
@@ -262,23 +235,32 @@ namespace BareProx.Services.Proxmox.Ops
                     if (string.Equals(status, "stopped", StringComparison.OrdinalIgnoreCase))
                     {
                         var exit = data.TryGetProperty("exitstatus", out var e) ? e.GetString() : null;
-                        var ok = !string.IsNullOrWhiteSpace(exit) && exit.StartsWith("OK", StringComparison.OrdinalIgnoreCase);
+                        var ok = !string.IsNullOrWhiteSpace(exit) &&
+                                 exit.StartsWith("OK", StringComparison.OrdinalIgnoreCase);
+
                         if (!ok)
                             logger.LogWarning("Task {Upid} exited with status: {Exit}", upid, exit ?? "(null)");
+
                         return ok;
                     }
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    // Only this poll timed out; keep polling
+                    logger.LogDebug("Task status poll timed out for {Upid} (will retry)", upid);
                 }
                 catch (Exception ex)
                 {
                     logger.LogWarning(ex, "Failed to check task status for UPID: {Upid}", upid);
                 }
 
-                await Task.Delay(TimeSpan.FromSeconds(5), ct);
+                await Task.Delay(pollInterval, ct);
             }
 
             logger.LogWarning("Timeout waiting for task {Upid}", upid);
             return false;
         }
+
 
         // The other IProxmoxOps methods (GetVmStatusAsync, GetVmConfigRawAsync, BuildUrl, ExtractUpidAsync)
         // stay as you already have them elsewhere in this file.

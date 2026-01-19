@@ -1260,6 +1260,17 @@ namespace BareProx.Services.Background
                 ? onlineHost.Hostname
                 : onlineHost.HostAddress;
 
+            // ✅ SAFEGUARD: only import disks for VMIDs that exist in InventoryVms
+            // (storage content can contain orphan folders like images/342 even if VM 342 is gone)
+            var validVmIds = await qdb.InventoryVms
+                .AsNoTracking()
+                .Where(v => v.ClusterId == cluster.Id)
+                .Select(v => v.VmId)
+                .ToHashSetAsync(ct);
+
+            // Log orphan VMIDs once per run
+            var warnedOrphans = new HashSet<int>();
+
             // Clear old rows for this cluster, then rebuild quickly
             qdb.InventoryVmDisks.RemoveRange(qdb.InventoryVmDisks.Where(d => d.ClusterId == cluster.Id));
             await qdb.SaveChangesAsync(ct);
@@ -1272,7 +1283,9 @@ namespace BareProx.Services.Background
             {
                 try
                 {
-                    var url = $"https://{onlineHost.HostAddress}:8006/api2/json/nodes/{Uri.EscapeDataString(nodeName)}/storage/{Uri.EscapeDataString(storage.StorageId)}/content";
+                    var url =
+                        $"https://{onlineHost.HostAddress}:8006/api2/json/nodes/{Uri.EscapeDataString(nodeName)}/storage/{Uri.EscapeDataString(storage.StorageId)}/content";
+
                     using var resp = await proxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
                     if (!resp.IsSuccessStatusCode) continue;
 
@@ -1313,6 +1326,22 @@ namespace BareProx.Services.Background
                             continue;
                         }
 
+                        // ✅ SAFEGUARD: skip orphan disks (prevents FK constraint failure)
+                        if (!validVmIds.Contains(vmid))
+                        {
+                            if (warnedOrphans.Add(vmid))
+                            {
+                                var exampleVolId =
+                                    item.TryGetProperty("volid", out var exVol) && exVol.ValueKind == JsonValueKind.String
+                                        ? (exVol.GetString() ?? "")
+                                        : "(no volid)";
+                                _logger.LogWarning(
+                                    "Inventory: skipping orphan disk(s) on storage {StorageId}: VMID {VmId} has no VM config/inventory (cluster {ClusterId}). Example volid: {VolId}",
+                                    storage.StorageId, vmid, cluster.Id, exampleVolId);
+                            }
+                            continue;
+                        }
+
                         var volId = item.TryGetProperty("volid", out var vProp) && vProp.ValueKind == JsonValueKind.String
                             ? vProp.GetString() ?? ""
                             : "";
@@ -1336,7 +1365,8 @@ namespace BareProx.Services.Background
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogDebug(ex, "Inventory: VM disk scan failed for Cluster {Cluster} Storage {Storage} via Node {Node}",
+                    _logger.LogDebug(ex,
+                        "Inventory: VM disk scan failed for Cluster {Cluster} Storage {Storage} via Node {Node}",
                         cluster.Id, storage.StorageId, nodeName);
                 }
             }
@@ -1347,6 +1377,7 @@ namespace BareProx.Services.Background
                 await qdb.SaveChangesAsync(ct);
             }
         }
+
 
         // =====================================================================
         // NetApp inventory + mapping + replication

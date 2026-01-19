@@ -40,5 +40,7 @@ namespace BareProx.Services.Proxmox.Authentication
         // Host-aware client based on the URL's host (IP/DNS)
         Task<HttpClient> GetAuthenticatedClientForUrlAsync(ProxmoxCluster cluster, string url, CancellationToken ct = default);
         Task<bool> TryRecoverApiTokenAsync(ProxmoxCluster cluster, ProxmoxHost host, CancellationToken ct = default);
+        Task<bool> TryRecoverTicketAsync(ProxmoxCluster cluster, ProxmoxHost host, CancellationToken ct = default);
+
     }
 }

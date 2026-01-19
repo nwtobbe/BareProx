@@ -140,13 +140,13 @@ namespace BareProx.Services.Proxmox.Authentication
                 ApplyApiToken(tokenClient, cluster);
 
                 // Optional probe on a sensible host
-                var probeHost = await PickHostForAsync(url, ct) ?? cluster.Hosts?.FirstOrDefault();
-                if (probeHost is not null)
-                {
-                    var baseUrl = $"https://{probeHost.HostAddress}:8006";
-                    if (!await ProbeAsync(tokenClient, baseUrl, ct))
-                        _logger.LogWarning("Proxmox token probe failed against {BaseUrl}. Check token id/secret/privileges.", baseUrl);
-                }
+                //var probeHost = await PickHostForAsync(url, ct) ?? cluster.Hosts?.FirstOrDefault();
+                //if (probeHost is not null)
+                //{
+                //    var baseUrl = $"https://{probeHost.HostAddress}:8006";
+                //    if (!await ProbeAsync(tokenClient, baseUrl, ct))
+                //        _logger.LogWarning("Proxmox token probe failed against {BaseUrl}. Check token id/secret/privileges.", baseUrl);
+               //  }
 
                 return tokenClient;
             }
@@ -174,6 +174,15 @@ namespace BareProx.Services.Proxmox.Authentication
             if (!ok)
                 _logger.LogWarning("Token recovery failed for {UserTokenId} on host {Host}.",
                     cluster.ApiTokenId ?? "(null)", host.HostAddress);
+            return ok;
+        }
+
+        public async Task<bool> TryRecoverTicketAsync(ProxmoxCluster cluster, ProxmoxHost host, CancellationToken ct = default)
+        {
+            // Ticket recovery: force refresh ticket+CSRF for the specific host that returned 401/403.
+            var ok = await AuthenticateAndStoreTicketForHostAsync(cluster, host, ct);
+            if (!ok)
+                _logger.LogWarning("Ticket recovery failed for host {Host} (cluster {ClusterId})", host.HostAddress, cluster.Id);
             return ok;
         }
 
@@ -219,18 +228,18 @@ namespace BareProx.Services.Proxmox.Authentication
                 var ok = await AuthenticateAndStoreTicketForHostAsync(cluster, host, ct);
                 if (!ok) throw new Exception($"Auth failed for host {host.HostAddress}");
             }
-            else
-            {
-                // probe; if 401/403 -> refresh once
-                var probeClient = MakeBareClient();
-                ApplyHostTicketHeaders(probeClient, host);
-                var baseUrl = $"https://{host.HostAddress}:8006";
-                if (!await ProbeAsync(probeClient, baseUrl, ct))
-                {
-                    var ok = await AuthenticateAndStoreTicketForHostAsync(cluster, host, ct);
-                    if (!ok) throw new Exception($"Auth refresh failed for host {host.HostAddress}");
-                }
-            }
+            //else
+            //{
+            //    // probe; if 401/403 -> refresh once
+            //    var probeClient = MakeBareClient();
+            //    ApplyHostTicketHeaders(probeClient, host);
+            //    var baseUrl = $"https://{host.HostAddress}:8006";
+            //    if (!await ProbeAsync(probeClient, baseUrl, ct))
+            //    {
+            //        var ok = await AuthenticateAndStoreTicketForHostAsync(cluster, host, ct);
+            //        if (!ok) throw new Exception($"Auth refresh failed for host {host.HostAddress}");
+            //    }
+            //}
 
             var authedClient = MakeBareClient();
             ApplyHostTicketHeaders(authedClient, host);

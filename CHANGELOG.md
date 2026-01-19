@@ -7,7 +7,12 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
 
-## [1.0.2511.1920] - 2025-11-xx
+## [1.0.2601.19] - 2026-01-xx
+
+### Changed
+- Minor tweaks for Proxmox Authentication.
+- Minor tweaks in Inventory / VM-disks
+- Program version is now shorter.
 
 ### Fixed
 - Settings / Migration. Defaults to 2 vcpus if we cannot read the original vm cpu count.

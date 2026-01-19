@@ -2,7 +2,7 @@
 
 $now = Get-Date
 $build = $now.ToString("yyMM")      # e.g. 2506 → June 2025
-$revision = $now.ToString("ddHH")   # e.g. 0117 → 1st day, 17:00
+$revision = $now.ToString("dd")   # e.g. 01 → 1st day
 
 $version = "1.0.$build.$revision"
 
