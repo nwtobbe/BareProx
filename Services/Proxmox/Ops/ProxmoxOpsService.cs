@@ -204,62 +204,170 @@ namespace BareProx.Services.Proxmox.Ops
 
 
         public async Task<bool> WaitForTaskCompletionAsync(
-            ProxmoxCluster cluster,
-            string node,
-            string hostAddress,
-            string upid,
-            TimeSpan timeout,
-            ILogger logger,
-            CancellationToken ct = default)
+     ProxmoxCluster cluster,
+     string node,
+     string hostAddress,
+     string upid,
+     TimeSpan timeout,
+     ILogger logger,
+     CancellationToken ct = default)
         {
-            var url = $"https://{hostAddress}:8006/api2/json/nodes/{node}/tasks/{Uri.EscapeDataString(upid)}/status";
+            if (cluster is null) throw new ArgumentNullException(nameof(cluster));
+            if (string.IsNullOrWhiteSpace(node)) throw new ArgumentException("node is required", nameof(node));
+            if (string.IsNullOrWhiteSpace(hostAddress)) throw new ArgumentException("hostAddress is required", nameof(hostAddress));
+            if (string.IsNullOrWhiteSpace(upid)) throw new ArgumentException("upid is required", nameof(upid));
+
+            // Build URL safely (escape node too)
+            var escapedNode = Uri.EscapeDataString(node);
+            var escapedUpid = Uri.EscapeDataString(upid);
+
+            var url = $"https://{hostAddress}:8006/api2/json/nodes/{escapedNode}/tasks/{escapedUpid}/status";
+
             var start = DateTime.UtcNow;
+            var deadline = start + timeout;
 
             var pollInterval = TimeSpan.FromSeconds(5);
-            var perRequestTimeout = TimeSpan.FromSeconds(15);
+            var perRequestTimeout = TimeSpan.FromSeconds(60); // 45s is OK, 60s is safer under load
 
-            while (DateTime.UtcNow - start < timeout)
+            int consecutivePollTimeouts = 0;
+            int consecutiveErrors = 0;
+            const int MaxConsecutivePollTimeouts = 6; // ~6 * 60s = 6 minutes of dead air
+            const int MaxConsecutiveErrors = 10;
+
+            // Optional: log once at start (helps correlate)
+            logger.LogDebug("Waiting for Proxmox task completion. upid={Upid} node={Node} host={Host} timeout={Timeout}",
+                upid, node, hostAddress, timeout);
+
+            while (DateTime.UtcNow < deadline)
             {
+                ct.ThrowIfCancellationRequested();
+
+                // Keep remaining time sane: don't request longer than we’re willing to wait overall
+                var remaining = deadline - DateTime.UtcNow;
+                var thisRequestTimeout = remaining < perRequestTimeout ? remaining : perRequestTimeout;
+                if (thisRequestTimeout <= TimeSpan.Zero)
+                    break;
+
                 try
                 {
                     using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                    cts.CancelAfter(perRequestTimeout);
+                    cts.CancelAfter(thisRequestTimeout);
 
-                    var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, cts.Token);
-                    var json = await resp.Content.ReadAsStringAsync(ct);
+                    using var resp = await SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, cts.Token);
+
+                    // If proxy returns HTML or empty, ReadAsString can throw; keep it inside the try.
+                    var json = await resp.Content.ReadAsStringAsync(cts.Token);
+
+                    // Reset transient counters on a successful HTTP round-trip
+                    consecutivePollTimeouts = 0;
+                    consecutiveErrors = 0;
 
                     using var doc = JsonDocument.Parse(json);
-                    var data = doc.RootElement.GetProperty("data");
 
-                    var status = data.TryGetProperty("status", out var s) ? s.GetString() : null;
-                    if (string.Equals(status, "stopped", StringComparison.OrdinalIgnoreCase))
+                    if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind == JsonValueKind.Null)
                     {
-                        var exit = data.TryGetProperty("exitstatus", out var e) ? e.GetString() : null;
-                        var ok = !string.IsNullOrWhiteSpace(exit) &&
-                                 exit.StartsWith("OK", StringComparison.OrdinalIgnoreCase);
+                        logger.LogDebug("Task status response had no data for {Upid} (will retry). BodyLen={Len}",
+                            upid, json?.Length ?? 0);
+                    }
+                    else
+                    {
+                        var status = data.TryGetProperty("status", out var s) ? s.GetString() : null;
 
-                        if (!ok)
-                            logger.LogWarning("Task {Upid} exited with status: {Exit}", upid, exit ?? "(null)");
+                        // Proxmox usually uses: running | stopped
+                        if (string.Equals(status, "stopped", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var exit = data.TryGetProperty("exitstatus", out var e) ? e.GetString() : null;
 
-                        return ok;
+                            // Proxmox commonly returns "OK" or "OK: ..." for success
+                            var ok = !string.IsNullOrWhiteSpace(exit) &&
+                                     exit.StartsWith("OK", StringComparison.OrdinalIgnoreCase);
+
+                            if (!ok)
+                            {
+                                // Also sometimes there’s an "errmsg"
+                                var errmsg = data.TryGetProperty("errmsg", out var em) ? em.GetString() : null;
+                                logger.LogWarning("Task {Upid} completed but not OK. exit={Exit} errmsg={Err}",
+                                    upid, exit ?? "(null)", errmsg ?? "(null)");
+                            }
+                            else
+                            {
+                                logger.LogDebug("Task {Upid} completed OK.", upid);
+                            }
+
+                            return ok;
+                        }
                     }
                 }
-                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
-                    // Only this poll timed out; keep polling
-                    logger.LogDebug("Task status poll timed out for {Upid} (will retry)", upid);
+                    // Real cancellation: bubble up so the job can stop immediately
+                    logger.LogInformation("Stopped waiting for task {Upid} due to cancellation.", upid);
+                    throw;
+                }
+                catch (OperationCanceledException)
+                {
+                    // Per-request timeout
+                    consecutivePollTimeouts++;
+
+                    logger.LogDebug("Task status poll timed out for {Upid} ({Count}/{Max}). url={Url}",
+                        upid, consecutivePollTimeouts, MaxConsecutivePollTimeouts, url);
+
+                    if (consecutivePollTimeouts >= MaxConsecutivePollTimeouts)
+                    {
+                        logger.LogWarning("Too many consecutive poll timeouts waiting for {Upid}. Giving up early. url={Url}",
+                            upid, url);
+                        return false;
+                    }
+                }
+                catch (HttpRequestException ex)
+                {
+                    consecutiveErrors++;
+
+                    logger.LogWarning(ex, "HTTP error polling task status for {Upid} ({Count}/{Max}). url={Url}",
+                        upid, consecutiveErrors, MaxConsecutiveErrors, url);
+
+                    if (consecutiveErrors >= MaxConsecutiveErrors)
+                    {
+                        logger.LogWarning("Too many consecutive errors waiting for {Upid}. Giving up early.", upid);
+                        return false;
+                    }
+                }
+                catch (JsonException ex)
+                {
+                    consecutiveErrors++;
+
+                    logger.LogWarning(ex, "JSON parse error polling task status for {Upid} ({Count}/{Max}). url={Url}",
+                        upid, consecutiveErrors, MaxConsecutiveErrors, url);
+
+                    if (consecutiveErrors >= MaxConsecutiveErrors)
+                        return false;
                 }
                 catch (Exception ex)
                 {
-                    logger.LogWarning(ex, "Failed to check task status for UPID: {Upid}", upid);
+                    consecutiveErrors++;
+
+                    logger.LogWarning(ex, "Failed to check task status for UPID: {Upid} ({Count}/{Max}). url={Url}",
+                        upid, consecutiveErrors, MaxConsecutiveErrors, url);
+
+                    if (consecutiveErrors >= MaxConsecutiveErrors)
+                        return false;
                 }
 
-                await Task.Delay(pollInterval, ct);
+                // Delay between polls (don’t delay past deadline)
+                var delay = pollInterval;
+                var remainingDelayBudget = deadline - DateTime.UtcNow;
+                if (remainingDelayBudget <= TimeSpan.Zero) break;
+                if (delay > remainingDelayBudget) delay = remainingDelayBudget;
+
+                await Task.Delay(delay, ct);
             }
 
-            logger.LogWarning("Timeout waiting for task {Upid}", upid);
+            logger.LogWarning("Timeout waiting for task {Upid}. node={Node} host={Host} waited={Waited}",
+                upid, node, hostAddress, DateTime.UtcNow - start);
+
             return false;
         }
+
 
 
         // The other IProxmoxOps methods (GetVmStatusAsync, GetVmConfigRawAsync, BuildUrl, ExtractUpidAsync)

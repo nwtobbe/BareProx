@@ -13,6 +13,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 - Minor tweaks for Proxmox Authentication.
 - Minor tweaks in Inventory / VM-disks
 - Program version is now shorter.
+- Changed timeout value for Proxmox snapshots.
 
 ### Fixed
 - Settings / Migration. Defaults to 2 vcpus if we cannot read the original vm cpu count.

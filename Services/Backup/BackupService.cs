@@ -139,6 +139,7 @@ namespace BareProx.Services.Backup
             var vmHadWarnings = new HashSet<int>();
             var skippedCount = 0;
             string? createdSnapshotName = null;
+            var completedSnapshotVmIds = new HashSet<int>();
 
             var excludedSet = new HashSet<int>();
             if (excludedVmIds != null)
@@ -491,6 +492,8 @@ namespace BareProx.Services.Backup
                     {
                         if (w.Task.Result)
                         {
+                            completedSnapshotVmIds.Add(w.Vm.Id);
+
                             await _jobs.MarkVmSnapshotTakenAsync(vmRows[w.Vm.Id], ct);
                             await _jobs.LogVmAsync(vmRows[w.Vm.Id], "Snapshot completed", "Info", ct);
                         }
@@ -630,16 +633,34 @@ namespace BareProx.Services.Backup
                 // 5c) Cleanup Proxmox snapshots (if taken)
                 if (useProxmoxSnapshot)
                 {
-                    await CleanupProxmoxSnapshots(cluster, vms, proxmoxSnapshotNames, shouldCleanup: true, ct: ct);
-                    proxSnapCleanup = true;
-                    _logger.LogInformation("Proxmox snapshots deleted after storage snapshot.");
+                    // Only delete snapshots for VMs whose snapshot task actually completed
+                    var cleanupMap = proxmoxSnapshotNames
+                        .Where(kv => completedSnapshotVmIds.Contains(kv.Key))
+                        .ToDictionary(kv => kv.Key, kv => kv.Value);
 
-                    foreach (var vm in vms)
+                    if (cleanupMap.Count == 0)
                     {
-                        if (proxmoxSnapshotNames.ContainsKey(vm.Id))
-                            await _jobs.LogVmAsync(vmRows[vm.Id], "Proxmox snapshot deleted after storage snapshot", "Info", ct);
+                        _logger.LogWarning("No Proxmox snapshots eligible for cleanup (none confirmed completed). Job {JobId}", jobId);
+                        proxSnapCleanup = true;
+                    }
+                    else
+                    {
+                        var deleted = await CleanupProxmoxSnapshotsWithResultsAsync(cluster, vms, cleanupMap, ct);
+                        proxSnapCleanup = true;
+
+                        _logger.LogInformation("Proxmox snapshot cleanup done. Requested={Requested} Deleted={Deleted} Job={JobId}",
+                            cleanupMap.Count, deleted.Count, jobId);
+
+                        foreach (var vm in vms)
+                        {
+                            if (deleted.TryGetValue(vm.Id, out var snapName))
+                                await _jobs.LogVmAsync(vmRows[vm.Id], $"Proxmox snapshot deleted: {snapName}", "Info", ct);
+                            else if (cleanupMap.ContainsKey(vm.Id))
+                                await _jobs.LogVmAsync(vmRows[vm.Id], "Proxmox snapshot delete failed (see logs)", "Warning", ct);
+                        }
                     }
                 }
+
 
                 // 5c) Index storage disks for this backup job (Proxmox side)
                 try
@@ -891,13 +912,14 @@ namespace BareProx.Services.Backup
                     }
                     catch { /* best effort */ }
 
-                    if (useProxmoxSnapshot && !proxSnapCleanup)
+                    if (useProxmoxSnapshot && !proxSnapCleanup && completedSnapshotVmIds.Count > 0)
                     {
-                        try
-                        {
-                            await CleanupProxmoxSnapshots(cluster, vms, proxmoxSnapshotNames, shouldCleanup: true, ct: ct);
-                        }
-                        catch { /* best effort */ }
+                        var cleanupMap = proxmoxSnapshotNames
+                            .Where(kv => completedSnapshotVmIds.Contains(kv.Key))
+                            .ToDictionary(kv => kv.Key, kv => kv.Value);
+
+                        if (cleanupMap.Count > 0)
+                            await CleanupProxmoxSnapshotsWithResultsAsync(cluster, vms, cleanupMap, ct);
                     }
                 }
             }
@@ -917,24 +939,24 @@ namespace BareProx.Services.Backup
             }
         }
 
-        private async Task CleanupProxmoxSnapshots(
-            ProxmoxCluster cluster,
-            IEnumerable<ProxmoxVM> vms,
-            Dictionary<int, string> snapshotMap,
-            bool shouldCleanup,
-            CancellationToken ct = default)
-        {
-            if (!shouldCleanup) return;
+        //private async Task CleanupProxmoxSnapshots(
+        //    ProxmoxCluster cluster,
+        //    IEnumerable<ProxmoxVM> vms,
+        //    Dictionary<int, string> snapshotMap,
+        //    bool shouldCleanup,
+        //    CancellationToken ct = default)
+        //{
+        //    if (!shouldCleanup) return;
 
-            foreach (var vm in vms)
-            {
-                if (snapshotMap.TryGetValue(vm.Id, out var snap) && !string.IsNullOrWhiteSpace(snap))
-                {
-                    try { await _proxmoxSnapshotsService.DeleteSnapshotAsync(cluster, vm.HostName, vm.HostAddress, vm.Id, snap, ct); }
-                    catch { /* best effort */ }
-                }
-            }
-        }
+        //    foreach (var vm in vms)
+        //    {
+        //        if (snapshotMap.TryGetValue(vm.Id, out var snap) && !string.IsNullOrWhiteSpace(snap))
+        //        {
+        //            try { await _proxmoxSnapshotsService.DeleteSnapshotAsync(cluster, vm.HostName, vm.HostAddress, vm.Id, snap, ct); }
+        //            catch { /* best effort */ }
+        //        }
+        //    }
+        //}
 
         private async Task<bool> FailAndNotifyAsync(
             int jobId,
@@ -1072,5 +1094,33 @@ namespace BareProx.Services.Backup
             if (string.IsNullOrWhiteSpace(volumeUuid))
                 _logger.LogWarning("[No UUID] Falling back to name-based NetApp ops: volume='{Storage}' controller={ControllerId}", storageName, controllerId);
         }
+
+        private async Task<Dictionary<int, string>> CleanupProxmoxSnapshotsWithResultsAsync(ProxmoxCluster cluster,IEnumerable<ProxmoxVM> vms,Dictionary<int, string> snapshotMap,CancellationToken ct = default)
+        {
+            var deleted = new Dictionary<int, string>();
+
+            foreach (var vm in vms)
+            {
+                if (!snapshotMap.TryGetValue(vm.Id, out var snap) || string.IsNullOrWhiteSpace(snap))
+                    continue;
+
+                try
+                {
+                    await _proxmoxSnapshotsService.DeleteSnapshotAsync(
+                        cluster, vm.HostName, vm.HostAddress, vm.Id, snap, ct);
+
+                    deleted[vm.Id] = snap;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex,
+                        "Failed to delete Proxmox snapshot {Snap} for VM {VmId} on node {Node} (addr {Addr}).",
+                        snap, vm.Id, vm.HostName, vm.HostAddress);
+                }
+            }
+
+            return deleted;
+        }
+
     }
 }
