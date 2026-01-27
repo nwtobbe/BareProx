@@ -29,7 +29,7 @@ namespace BareProx.Services.Backup
     public interface IBackupService
     {
         /// <summary>
-        /// Starts a storage-wide backup job and returns true if the job finished successfully.
+        /// Starts a storage-wide backup job and returns true if the job finished successfully..
         /// </summary>
         Task<bool> StartBackupAsync(
         // identity / scope
