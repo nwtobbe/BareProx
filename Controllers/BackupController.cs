@@ -738,7 +738,7 @@ namespace BareProx.Controllers
 
         // ---------- START NOW ----------
         [HttpPost]
-        public IActionResult StartBackupNow([FromForm] BackupRequest request, CancellationToken ct)
+        public IActionResult StartBackupNow([FromForm] BackupRequest request)
         {
             if (string.IsNullOrEmpty(request.StorageName) || request.RetentionCount < 1 || request.RetentionCount > 999)
                 return BadRequest("Invalid input");
@@ -749,6 +749,7 @@ namespace BareProx.Controllers
 
                 var scopedBackupService = scope.ServiceProvider.GetRequiredService<IBackupService>();
                 var logger = scope.ServiceProvider.GetRequiredService<ILogger<BackupController>>();
+                using var jobCts = new CancellationTokenSource();
 
                 if (!request.EnableLocking)
                 {
@@ -780,7 +781,7 @@ namespace BareProx.Controllers
                         lockRetentionUnit: request.LockRetentionUnit,
                         excludedVmIds: request.ExcludedVmIds,
                         volumeUuid: request.VolumeUuid,
-                        ct: ct
+                        ct: jobCts.Token
                     );
 
 

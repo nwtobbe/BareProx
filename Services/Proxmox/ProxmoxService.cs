@@ -27,6 +27,7 @@ using BareProx.Services.Proxmox.Ops;
 using BareProx.Services.Proxmox.Snapshots;
 using BareProx.Services.Restore;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Polly;
 using Renci.SshNet;
 using System.Diagnostics;
@@ -1693,6 +1694,44 @@ namespace BareProx.Services.Proxmox
             }
         }
 
+        public async Task<string?> GetVmLockAsync(
+    ProxmoxCluster cluster,
+    string node,
+    string hostAddress,
+    int vmid,
+    CancellationToken ct = default)
+        {
+            if (cluster is null) throw new ArgumentNullException(nameof(cluster));
+            if (string.IsNullOrWhiteSpace(node)) throw new ArgumentException(nameof(node));
+            if (string.IsNullOrWhiteSpace(hostAddress)) throw new ArgumentException(nameof(hostAddress));
+
+            var url =
+                $"https://{hostAddress}:8006/api2/json/nodes/{Uri.EscapeDataString(node)}/qemu/{vmid}/status/current";
+
+            var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+            if (!resp.IsSuccessStatusCode)
+                return null;
+
+            var json = await resp.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(json);
+
+            if (!doc.RootElement.TryGetProperty("data", out var data))
+                return null;
+
+            // Proxmox returns e.g.:
+            //   lock: "snapshot"
+            //   lock: "snapshot-delete"
+            //   lock: "backup"
+            // or no "lock" property at all
+            if (data.TryGetProperty("lock", out var lockProp) &&
+                lockProp.ValueKind == JsonValueKind.String)
+            {
+                var l = lockProp.GetString();
+                return string.IsNullOrWhiteSpace(l) ? null : l;
+            }
+
+            return null;
+        }
 
     }
 }

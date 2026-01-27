@@ -84,18 +84,18 @@ namespace BareProx.Services.Background
         private async Task DispatchScheduledBackupsAsync(CancellationToken ct)
         {
             using var scope = _services.CreateScope();
+
             // DbContext via factory (pooled, safe for singleton)
             await using var db = await _dbf.CreateAsync(ct);
-            var _proxmoxService = scope.ServiceProvider.GetRequiredService<ProxmoxService>();
-            var _backupService = scope.ServiceProvider.GetRequiredService<IBackupService>();
-            var _ctrlLogger = scope.ServiceProvider.GetRequiredService<ILogger<BackupController>>();
+
+            var ctrlLogger = scope.ServiceProvider.GetRequiredService<ILogger<BackupController>>();
 
             var localtime = _tz.ConvertUtcToApp(DateTime.UtcNow);
 
             // Pull only enabled schedules (already filtered) but keep a cheap safety check below.
             var schedules = await db.BackupSchedules
-                                          .Where(s => s.IsEnabled)
-                                          .ToListAsync(ct);
+                .Where(s => s.IsEnabled)
+                .ToListAsync(ct);
 
             foreach (var sched in schedules)
             {
@@ -113,12 +113,12 @@ namespace BareProx.Services.Background
 
                     if (controller == null || cluster == null)
                     {
-                        _ctrlLogger.LogWarning("Missing controller or cluster for schedule {Id}", sched.Id);
+                        ctrlLogger.LogWarning("Missing controller or cluster for schedule {Id}", sched.Id);
                         continue;
                     }
 
                     // Parse excluded VM IDs from CSV (may be null/empty)
-                    IEnumerable<string>? excludedVmIds = null;
+                    string[] excludedVmIds = Array.Empty<string>();
                     if (!string.IsNullOrWhiteSpace(sched.ExcludedVmIds))
                     {
                         excludedVmIds = sched.ExcludedVmIds
@@ -127,43 +127,70 @@ namespace BareProx.Services.Background
                             .ToArray();
                     }
 
-                    _ctrlLogger.LogInformation("Starting background backup for storage {StorageName}", sched.StorageName);
+                    ctrlLogger.LogInformation("Queueing background backup for storage {StorageName} (ScheduleId={ScheduleId})",
+                        sched.StorageName, sched.Id);
 
-                    _queue.QueueBackgroundWorkItem(async token =>
+                    // IMPORTANT: capture primitive values only (do NOT capture the EF entity)
+                    var storageName = sched.StorageName;
+                    var selectedNetappVolumeId = sched.SelectedNetappVolumeId;
+                    var volumeUuid = sched.VolumeUuid;
+                    var isApplicationAware = sched.IsApplicationAware;
+                    var label = (sched.Schedule ?? "").ToLowerInvariant();
+                    var clusterId = sched.ClusterId;
+                    var controllerId = sched.ControllerId;
+                    var retentionCount = sched.RetentionCount;
+                    var retentionUnit = sched.RetentionUnit;
+                    var enableIoFreeze = sched.EnableIoFreeze;
+                    var useProxmoxSnapshot = sched.UseProxmoxSnapshot;
+                    var withMemory = sched.WithMemory;
+                    var scheduleId = sched.Id;
+                    var replicateToSecondary = sched.ReplicateToSecondary;
+                    var enableLocking = sched.EnableLocking;
+                    var lockRetentionCount = sched.EnableLocking ? sched.LockRetentionCount : null;
+                    var lockRetentionUnit = sched.EnableLocking ? sched.LockRetentionUnit : null;
+
+                    _queue.QueueBackgroundWorkItem(async workerToken =>
                     {
+                        // If host is shutting down, don't start new work
+                        if (workerToken.IsCancellationRequested)
+                            return;
+
                         using var innerScope = _services.CreateScope();
                         var scopedBackupService = innerScope.ServiceProvider.GetRequiredService<IBackupService>();
 
-                        // Pass everything from the schedule, including excludes + locking
+                        // Decouple job token from worker token to avoid phantom "Job was cancelled"
+                        using var jobCts = new CancellationTokenSource();
+
                         await scopedBackupService.StartBackupAsync(
-                            storageName: sched.StorageName,
-                            selectedNetappVolumeId: sched.SelectedNetappVolumeId,   // <-- name fix
-                            volumeUuid: sched.VolumeUuid,
-                            isApplicationAware: sched.IsApplicationAware,
-                            label: sched.Schedule.ToLower(),                 // human label
-                            clusterId: sched.ClusterId,
-                            netappControllerId: sched.ControllerId,
-                            retentionCount: sched.RetentionCount,
-                            retentionUnit: sched.RetentionUnit,
-                            enableIoFreeze: sched.EnableIoFreeze,
-                            useProxmoxSnapshot: sched.UseProxmoxSnapshot,
-                            withMemory: sched.WithMemory,
+                            storageName: storageName,
+                            selectedNetappVolumeId: selectedNetappVolumeId,
+                            volumeUuid: volumeUuid,
+                            isApplicationAware: isApplicationAware,
+                            label: label,
+                            clusterId: clusterId,
+                            netappControllerId: controllerId,
+                            retentionCount: retentionCount,
+                            retentionUnit: retentionUnit,
+                            enableIoFreeze: enableIoFreeze,
+                            useProxmoxSnapshot: useProxmoxSnapshot,
+                            withMemory: withMemory,
                             dontTrySuspend: false,
-                            scheduleId: sched.Id,                  // so service can also fetch from DB if needed
-                            replicateToSecondary: sched.ReplicateToSecondary,
-                            enableLocking: sched.EnableLocking,
-                            lockRetentionCount: sched.EnableLocking ? sched.LockRetentionCount : null,
-                            lockRetentionUnit: sched.EnableLocking ? sched.LockRetentionUnit : null,
-                            excludedVmIds: excludedVmIds,             // <---explicit excludes for this run
-                            ct: token
+                            scheduleId: scheduleId,
+                            replicateToSecondary: replicateToSecondary,
+                            enableLocking: enableLocking,
+                            lockRetentionCount: lockRetentionCount,
+                            lockRetentionUnit: lockRetentionUnit,
+                            excludedVmIds: excludedVmIds.Length == 0 ? null : excludedVmIds,
+                            ct: jobCts.Token
                         );
                     });
 
+                    // Mark LastRun when queued (your existing behavior)
                     sched.LastRun = localtime;
                 }
                 catch (Exception ex)
                 {
-                    _ctrlLogger.LogError(ex, "Backup failed for {StorageName}: {Message}", sched.StorageName, ex.Message);
+                    ctrlLogger.LogError(ex, "Backup failed for {StorageName}: {Message}", sched.StorageName, ex.Message);
                 }
             }
 
@@ -182,6 +209,7 @@ namespace BareProx.Services.Background
                 }
             }
         }
+
 
 
         private bool IsDue(BackupSchedule sched, DateTime now)

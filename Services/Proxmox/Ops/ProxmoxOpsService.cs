@@ -368,9 +368,5 @@ namespace BareProx.Services.Proxmox.Ops
             return false;
         }
 
-
-
-        // The other IProxmoxOps methods (GetVmStatusAsync, GetVmConfigRawAsync, BuildUrl, ExtractUpidAsync)
-        // stay as you already have them elsewhere in this file.
     }
 }
