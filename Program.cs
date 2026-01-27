@@ -170,6 +170,16 @@ if (!File.Exists(appSettingsPath))
         "PfxPassword": "changeit",
         "SubjectName": "CN=localhost",
         "ValidDays": 365
+      },
+      "BackupThrottles": {
+        "MaxParallelVmStatus": 12,
+        "MaxParallelProxmoxSnapshotCreates": 4,
+        "MaxParallelProxmoxSnapshotDeletes": 2,
+        "DelayBetweenDeletesMs": 1500,
+        "MaxParallelPerNodeSnapshotCreate": 2,
+        "MaxParallelPerNodeSnapshotDelete": 1,
+        "ProxmoxSnapshotWaitTimeoutMinutes": 30,
+        "CleanupBudgetMinutes": 30
       }
     }
     """);
@@ -384,6 +394,7 @@ if (isConfigured)
     builder.Services.AddHttpClient(nameof(UpdateChecker));
     builder.Services.AddSingleton<IUpdateChecker, UpdateChecker>();
     builder.Services.AddScoped<IProxmoxClusterDiscoveryService, ProxmoxClusterDiscoveryService>();
+    builder.Services.AddSingleton<INodeSnapshotGateManager, NodeSnapshotGateManager>();
 
     // Remote-API client
     builder.Services.AddSingleton<IRemoteApiClient, RemoteApiClient>();
@@ -420,12 +431,28 @@ if (isConfigured)
 // ============================================================================
 // Time zone + MVC/Razor
 // ============================================================================
-builder.Services.Configure<ConfigSettings>(
-    builder.Configuration.GetSection("ConfigSettings"));
 builder.Services.AddSingleton<IAppTimeZoneService, AppTimeZoneService>();
 
 builder.Services.AddControllersWithViews();
 builder.Services.AddRazorPages();
+
+// ============================================================================
+// Proxmox backup settings
+// ============================================================================
+
+builder.Services.AddOptions<BackupThrottlesOptions>()
+    .Bind(builder.Configuration.GetSection("BackupThrottles"))
+    .Validate(o =>
+        o.MaxParallelVmStatus > 0 &&
+        o.MaxParallelProxmoxSnapshotCreates > 0 &&
+        o.MaxParallelProxmoxSnapshotDeletes > 0 &&
+        o.MaxParallelPerNodeSnapshotCreate > 0 &&
+        o.MaxParallelPerNodeSnapshotDelete > 0 &&
+        o.ProxmoxSnapshotWaitTimeoutMinutes > 0 &&
+        o.CleanupBudgetMinutes > 0,
+        "BackupThrottles values must be > 0")
+    .ValidateOnStart();
+
 
 // ============================================================================
 // Auth policy in Release

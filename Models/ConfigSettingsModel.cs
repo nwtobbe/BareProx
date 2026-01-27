@@ -52,6 +52,7 @@ namespace BareProx.Models
 
         /// <summary>List of time zones for the dropdown</summary>
         public IEnumerable<SelectListItem> TimeZones { get; set; }
+        public BackupThrottlesOptions? BackupThrottles { get; set; }
     }
 
 
@@ -237,5 +238,20 @@ namespace BareProx.Models
         // Read-only/status fields to show progress/errors in the UI
         public string? LastStatus { get; set; }
         public string? LastError { get; set; }
+    }
+
+
+    public sealed class BackupThrottlesOptions
+    {
+        public int MaxParallelVmStatus { get; set; } = 12;
+        public int MaxParallelProxmoxSnapshotCreates { get; set; } = 4;
+        public int MaxParallelProxmoxSnapshotDeletes { get; set; } = 2;
+        public int DelayBetweenDeletesMs { get; set; } = 1500;
+
+        public int MaxParallelPerNodeSnapshotCreate { get; set; } = 2;
+        public int MaxParallelPerNodeSnapshotDelete { get; set; } = 1;
+
+        public int ProxmoxSnapshotWaitTimeoutMinutes { get; set; } = 30;
+        public int CleanupBudgetMinutes { get; set; } = 30;
     }
 }

@@ -1695,11 +1695,11 @@ namespace BareProx.Services.Proxmox
         }
 
         public async Task<string?> GetVmLockAsync(
-    ProxmoxCluster cluster,
-    string node,
-    string hostAddress,
-    int vmid,
-    CancellationToken ct = default)
+            ProxmoxCluster cluster,
+            string node,
+            string hostAddress,
+            int vmid,
+            CancellationToken ct = default)
         {
             if (cluster is null) throw new ArgumentNullException(nameof(cluster));
             if (string.IsNullOrWhiteSpace(node)) throw new ArgumentException(nameof(node));

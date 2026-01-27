@@ -9,11 +9,16 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.0.2601.19] - 2026-01-xx
 
+## Added
+- Settings / System / Advanced. The possibility to mess things up by tweaking the parallellism of snapshots creation and deletion.
+
 ### Changed
 - Minor tweaks for Proxmox Authentication.
 - Minor tweaks in Inventory / VM-disks
 - Program version is now shorter.
 - Changed timeout value for Proxmox snapshots.
+- Changed error handling for proxmox snapshots.
+- Changed backup job error handling.
 
 ### Fixed
 - Settings / Migration. Defaults to 2 vcpus if we cannot read the original vm cpu count.

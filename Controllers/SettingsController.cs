@@ -216,7 +216,9 @@ namespace BareProx.Controllers
                 {
                     Enabled = (bool?)cfg["Updates"]?["Enabled"] ?? false,
                     FrequencyMinutes = (int?)cfg["Updates"]?["FrequencyMinutes"] ?? 360
-                }
+                },
+                BackupThrottles = cfg["BackupThrottles"]?.ToObject<BackupThrottlesOptions>()
+                   ?? new BackupThrottlesOptions()
             };
 
             // Ensure EmailSettings row exists
@@ -1651,6 +1653,39 @@ namespace BareProx.Controllers
                 await q.SaveChangesAsync(ct);
             }
         }
+
+        [HttpPost]
+        [ValidateAntiForgeryToken]
+        public IActionResult SaveBackupThrottles(
+    [FromForm][Bind(Prefix = "BackupThrottles")] BackupThrottlesOptions backupThrottles,
+    string? pane)
+        {
+            // clamp defensively (mirror your ValidateOnStart rules)
+            backupThrottles.MaxParallelVmStatus = Math.Max(1, backupThrottles.MaxParallelVmStatus);
+            backupThrottles.MaxParallelProxmoxSnapshotCreates = Math.Max(1, backupThrottles.MaxParallelProxmoxSnapshotCreates);
+            backupThrottles.MaxParallelProxmoxSnapshotDeletes = Math.Max(1, backupThrottles.MaxParallelProxmoxSnapshotDeletes);
+            backupThrottles.MaxParallelPerNodeSnapshotCreate = Math.Max(1, backupThrottles.MaxParallelPerNodeSnapshotCreate);
+            backupThrottles.MaxParallelPerNodeSnapshotDelete = Math.Max(1, backupThrottles.MaxParallelPerNodeSnapshotDelete);
+            backupThrottles.ProxmoxSnapshotWaitTimeoutMinutes = Math.Max(1, backupThrottles.ProxmoxSnapshotWaitTimeoutMinutes);
+            backupThrottles.CleanupBudgetMinutes = Math.Max(1, backupThrottles.CleanupBudgetMinutes);
+            backupThrottles.DelayBetweenDeletesMs = Math.Max(0, backupThrottles.DelayBetweenDeletesMs);
+
+            var appSettingsPath = Path.Combine("/config", "appsettings.json");
+            var json = System.IO.File.Exists(appSettingsPath) ? System.IO.File.ReadAllText(appSettingsPath) : "{}";
+            var root = JObject.Parse(json);
+
+            root["BackupThrottles"] = JObject.FromObject(backupThrottles);
+
+            var tmp = appSettingsPath + ".tmp";
+            System.IO.File.WriteAllText(tmp, root.ToString(Newtonsoft.Json.Formatting.Indented));
+            System.IO.File.Copy(tmp, appSettingsPath, overwrite: true);
+            System.IO.File.Delete(tmp);
+
+            TempData["Success"] = "Backup settings saved.";
+            return RedirectToAction(nameof(Config), new { pane = pane ?? "advanced" });
+        }
+
+
 
     }
 

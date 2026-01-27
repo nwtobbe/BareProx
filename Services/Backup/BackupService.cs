@@ -29,6 +29,7 @@ using BareProx.Services.Proxmox.Snapshots;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Linq;
@@ -53,16 +54,8 @@ namespace BareProx.Services.Backup
         private readonly IJobService _jobs;
         private readonly IEmailSender _email;
         private readonly IProxmoxSnapChains _snapChains;
-
-        // Per-node throttles (create/delete are node-local pain points)
-        private static readonly ConcurrentDictionary<string, SemaphoreSlim> _nodeSnapCreate = new(StringComparer.OrdinalIgnoreCase);
-        private static readonly ConcurrentDictionary<string, SemaphoreSlim> _nodeSnapDelete = new(StringComparer.OrdinalIgnoreCase);
-
-        private static SemaphoreSlim NodeCreateGate(string node) =>
-            _nodeSnapCreate.GetOrAdd(string.IsNullOrWhiteSpace(node) ? "unknown" : node, _ => new SemaphoreSlim(1, 1));
-
-        private static SemaphoreSlim NodeDeleteGate(string node) =>
-            _nodeSnapDelete.GetOrAdd(string.IsNullOrWhiteSpace(node) ? "unknown" : node, _ => new SemaphoreSlim(1, 1));
+        private readonly INodeSnapshotGateManager _gateManager;
+        private readonly IOptionsMonitor<BackupThrottlesOptions> _throttles;
 
         public BackupService(
             IDbContextFactory<ApplicationDbContext> dbf,
@@ -79,6 +72,8 @@ namespace BareProx.Services.Backup
             IJobService jobs,
             IEmailSender email,
             IProxmoxSnapChains snapChains,
+            INodeSnapshotGateManager gateManager,
+            IOptionsMonitor<BackupThrottlesOptions> throttles,
             IQueryDbFactory qdbf)
         {
             _dbf = dbf;
@@ -96,6 +91,8 @@ namespace BareProx.Services.Backup
             _jobs = jobs;
             _email = email;
             _snapChains = snapChains;
+            _gateManager = gateManager;
+            _throttles = throttles;
             _qdbf = qdbf;
         }
 
@@ -133,16 +130,7 @@ namespace BareProx.Services.Backup
             CancellationToken ct = default
         )
         {
-            // -------------------------
-            // TUNABLE THROTTLES
-            // -------------------------
-            const int MaxParallelVmStatus = 12;              // status reads
-            const int MaxParallelProxmoxSnapshotCreates = 4; // global cap; per-node gate does the real limiting
-            const int MaxParallelProxmoxSnapshotDeletes = 2; // global cap; per-node gate does the real limiting
-            const int DelayBetweenDeletesMs = 1500;
 
-            static TimeSpan ProxmoxSnapshotWaitTimeout() => TimeSpan.FromMinutes(30);
-            static TimeSpan CleanupBudget() => TimeSpan.FromMinutes(30);
 
             // ---- Identity split: Proxmox vs NetApp ----
             var proxmoxStorageId = storageName;
@@ -395,7 +383,8 @@ namespace BareProx.Services.Backup
                 var statusMap = new ConcurrentDictionary<int, string>();
                 await Parallel.ForEachAsync(
                     vms,
-                    new ParallelOptions { MaxDegreeOfParallelism = MaxParallelVmStatus, CancellationToken = ct },
+                    new ParallelOptions { MaxDegreeOfParallelism = _throttles.CurrentValue.MaxParallelVmStatus, CancellationToken = ct },
+
                     async (vm, token) =>
                     {
                         var st = await _proxmoxService.GetVmStatusAsync(cluster, vm.HostName, vm.HostAddress, vm.Id, token);
@@ -473,12 +462,11 @@ namespace BareProx.Services.Backup
 
                     await Parallel.ForEachAsync(
                         eligible,
-                        new ParallelOptions { MaxDegreeOfParallelism = MaxParallelProxmoxSnapshotCreates, CancellationToken = ct },
+                        new ParallelOptions { MaxDegreeOfParallelism = _throttles.CurrentValue.MaxParallelProxmoxSnapshotCreates, CancellationToken = ct },
                         async (vm, token) =>
                         {
                             // Per-node serialize create+wait (this is the big win)
-                            var gate = NodeCreateGate(vm.HostName);
-                            await gate.WaitAsync(token);
+                            using var nodeGate = await _gateManager.AcquireCreateAsync(vm.HostName, token);
                             try
                             {
                                 // VM lock poll (best-effort)
@@ -525,7 +513,7 @@ namespace BareProx.Services.Backup
                                     {
                                         var okInner = await _proxmoxOps.WaitForTaskCompletionAsync(
                                             cluster!, vm.HostName, vm.HostAddress, upid,
-                                            ProxmoxSnapshotWaitTimeout(),
+                                            TimeSpan.FromMinutes(_throttles.CurrentValue.ProxmoxSnapshotWaitTimeoutMinutes),
                                             _logger, token);
 
                                         if (!okInner)
@@ -566,10 +554,6 @@ namespace BareProx.Services.Backup
                                 await _jobs.LogVmAsync(vmRows[vm.Id], $"Snapshot failed: {ex.Message}", "Error", token);
                                 _logger.LogWarning(ex, "Snapshot create/wait failed for VM {VmId}", vm.Id);
                                 MarkVmWarning(vm.Id);
-                            }
-                            finally
-                            {
-                                gate.Release();
                             }
                         });
 
@@ -701,18 +685,18 @@ namespace BareProx.Services.Backup
                     }
                     else
                     {
-                        using var cleanupTokenSource = new CancellationTokenSource(CleanupBudget());
+                        using var cleanupTokenSource = new CancellationTokenSource(TimeSpan.FromMinutes(_throttles.CurrentValue.CleanupBudgetMinutes));
                         var cleanupToken = cleanupTokenSource.Token;
 
-                        await _jobs.UpdateJobStatusAsync(jobId, "Cleaning up Proxmox snapshots", null, ct);
+                        await _jobs.UpdateJobStatusAsync(jobId, "Cleaning up Proxmox snapshots", null, CancellationToken.None);
 
                         var deleted = await CleanupProxmoxSnapshotsWithResultsAsync(
                             cluster!,
                             vms,
                             cleanupMap,
                             cleanupToken,
-                            maxDegreeOfParallelism: MaxParallelProxmoxSnapshotDeletes,
-                            delayBetweenDeletesMs: DelayBetweenDeletesMs,
+                            maxDegreeOfParallelism: _throttles.CurrentValue.MaxParallelProxmoxSnapshotDeletes,
+                            delayBetweenDeletesMs: _throttles.CurrentValue.DelayBetweenDeletesMs,
                             isTransient: IsTransientProxmoxSnapshotError,
                             retry: (Func<Func<Task<bool>>, CancellationToken, Task<bool>>)(async (op, tok) =>
                                 await RetryAsync(op, IsTransientProxmoxSnapshotError, tok)));
@@ -1026,7 +1010,7 @@ namespace BareProx.Services.Backup
                     {
                         try
                         {
-                            using var cleanupCts = new CancellationTokenSource(CleanupBudget());
+                            using var cleanupCts = new CancellationTokenSource(TimeSpan.FromMinutes(_throttles.CurrentValue.CleanupBudgetMinutes));
                             var cleanupToken = cleanupCts.Token;
 
                             var cleanupMap = proxmoxSnapshotNames.ToDictionary(kv => kv.Key, kv => kv.Value);
@@ -1036,8 +1020,8 @@ namespace BareProx.Services.Backup
                                 vms,
                                 cleanupMap,
                                 cleanupToken,
-                                maxDegreeOfParallelism: MaxParallelProxmoxSnapshotDeletes,
-                                delayBetweenDeletesMs: DelayBetweenDeletesMs,
+                                maxDegreeOfParallelism: _throttles.CurrentValue.MaxParallelProxmoxSnapshotDeletes,
+                                delayBetweenDeletesMs: _throttles.CurrentValue.DelayBetweenDeletesMs,
                                 isTransient: IsTransientProxmoxSnapshotError,
                                 retry: (Func<Func<Task<bool>>, CancellationToken, Task<bool>>)(async (op, tok) =>
                                     await RetryAsync(op, IsTransientProxmoxSnapshotError, tok)));
@@ -1113,8 +1097,7 @@ namespace BareProx.Services.Backup
                     if (vm == null) return;
 
                     // Per-node serialize deletes
-                    var gate = NodeDeleteGate(vm.HostName);
-                    await gate.WaitAsync(token);
+                    using var nodeGate = await _gateManager.AcquireDeleteAsync(vm.HostName, token);
                     try
                     {
                         // optional: lock poll before delete (best-effort)
@@ -1155,10 +1138,7 @@ namespace BareProx.Services.Backup
                         _logger.LogWarning(ex, "Failed to delete Proxmox snapshot '{Snap}' for VM {VmId} (host={Host})",
                             snapName, vmid, vm.HostName);
                     }
-                    finally
-                    {
-                        gate.Release();
-                    }
+
                 });
 
             return deleted.ToDictionary(kv => kv.Key, kv => kv.Value);

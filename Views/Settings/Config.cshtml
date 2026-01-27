@@ -9,7 +9,7 @@
         (ViewContext?.HttpContext?.Request?.Query["pane"].ToString() ?? "general")
         .ToLowerInvariant();
 
-    if (initialPane != "general" && initialPane != "notifications" && initialPane != "certificates")
+    if (initialPane != "general" && initialPane != "notifications" && initialPane != "certificates" && initialPane != "advanced")
     {
         initialPane = "general";
     }
@@ -124,6 +124,10 @@
         <a class="item @(initialPane == "certificates" ? "active" : "")"
            href="?pane=certificates" data-pane="certificates" role="button">
             <span class="settings-icon">📁</span> <span>Certificates</span>
+        </a>
+        <a class="item @(initialPane == "advanced" ? "active" : "")"
+           href="?pane=advanced" data-pane="advanced" role="button">
+            <span class="settings-icon">📁</span> <span>Advanced</span>
         </a>
     </aside>
 
@@ -418,6 +422,76 @@
                 <button type="submit" class="btn btn-success mt-3">Install Certificate</button>
             }
         </div>
+        <!-- ===== Pane: ADVANCED ===== -->
+        <div class="pane @(initialPane == "advanced" ? "active" : "")" data-pane="advanced">
+            <h4 class="mb-3">Advanced</h4>
+
+            <div class="border rounded p-3 bg-light">
+                <div class="mb-3">
+                    <div class="text-muted">
+                        These settings control backup concurrency and snapshot cleanup behavior.
+                    </div>
+                </div>
+
+            @using (Html.BeginForm("SaveBackupThrottles", "Settings", FormMethod.Post, new { @class = "mb-3" }))
+            {
+                @Html.AntiForgeryToken()
+                <input type="hidden" name="pane" value="advanced" />
+
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <label class="form-label">Max parallel VM status</label>
+                        <input type="number" min="1" class="form-control" name="BackupThrottles.MaxParallelVmStatus"
+                               value="@(Model.BackupThrottles?.MaxParallelVmStatus ?? 12)" />
+                    </div>
+
+                    <div class="col-md-4">
+                        <label class="form-label">Max parallel Proxmox snapshot creates</label>
+                        <input type="number" min="1" class="form-control" name="BackupThrottles.MaxParallelProxmoxSnapshotCreates"
+                               value="@(Model.BackupThrottles?.MaxParallelProxmoxSnapshotCreates ?? 4)" />
+                    </div>
+
+                    <div class="col-md-4">
+                        <label class="form-label">Max parallel Proxmox snapshot deletes</label>
+                        <input type="number" min="1" class="form-control" name="BackupThrottles.MaxParallelProxmoxSnapshotDeletes"
+                               value="@(Model.BackupThrottles?.MaxParallelProxmoxSnapshotDeletes ?? 2)" />
+                    </div>
+
+                    <div class="col-md-4">
+                        <label class="form-label">Delay between deletes (ms)</label>
+                        <input type="number" min="0" class="form-control" name="BackupThrottles.DelayBetweenDeletesMs"
+                               value="@(Model.BackupThrottles?.DelayBetweenDeletesMs ?? 1500)" />
+                    </div>
+
+                    <div class="col-md-4">
+                        <label class="form-label">Per-node snapshot create limit</label>
+                        <input type="number" min="1" class="form-control" name="BackupThrottles.MaxParallelPerNodeSnapshotCreate"
+                               value="@(Model.BackupThrottles?.MaxParallelPerNodeSnapshotCreate ?? 2)" />
+                    </div>
+
+                    <div class="col-md-4">
+                        <label class="form-label">Per-node snapshot delete limit</label>
+                        <input type="number" min="1" class="form-control" name="BackupThrottles.MaxParallelPerNodeSnapshotDelete"
+                               value="@(Model.BackupThrottles?.MaxParallelPerNodeSnapshotDelete ?? 1)" />
+                    </div>
+
+                    <div class="col-md-4">
+                        <label class="form-label">Proxmox snapshot wait timeout (minutes)</label>
+                        <input type="number" min="1" class="form-control" name="BackupThrottles.ProxmoxSnapshotWaitTimeoutMinutes"
+                               value="@(Model.BackupThrottles?.ProxmoxSnapshotWaitTimeoutMinutes ?? 30)" />
+                    </div>
+
+                    <div class="col-md-4">
+                        <label class="form-label">Cleanup budget (minutes)</label>
+                        <input type="number" min="1" class="form-control" name="BackupThrottles.CleanupBudgetMinutes"
+                               value="@(Model.BackupThrottles?.CleanupBudgetMinutes ?? 30)" />
+                    </div>
+                </div>
+
+                <button type="submit" class="btn btn-primary mt-3">Save Backup Settings</button>
+            }
+        </div>
+
     </main>
 </div>
 
