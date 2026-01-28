@@ -507,38 +507,68 @@ namespace BareProx.Services.Backup
                                     return;
                                 }
 
-                                // Wait for completion. If not OK, treat as transient and retry a bit.
-                                var ok = await RetryAsync(
-                                    async () =>
+                                // Wait ONCE (hard cap = configured timeout)
+                                var ok = await _proxmoxOps.WaitForTaskCompletionAsync(
+                                    cluster!, vm.HostName, vm.HostAddress, upid,
+                                    TimeSpan.FromMinutes(_throttles.CurrentValue.ProxmoxSnapshotWaitTimeoutMinutes),
+                                    _logger, token);
+
+                                if (!ok)
+                                {
+                                    // Post-check (FAST) instead of waiting again.
+                                    bool snapExists = false;
+                                    string? lockState = null;
+
+                                    try
                                     {
-                                        var okInner = await _proxmoxOps.WaitForTaskCompletionAsync(
-                                            cluster!, vm.HostName, vm.HostAddress, upid,
-                                            TimeSpan.FromMinutes(_throttles.CurrentValue.ProxmoxSnapshotWaitTimeoutMinutes),
-                                            _logger, token);
+                                        snapExists = await _proxmoxSnapshotsService.SnapshotExistsAsync(
+                                            cluster!, vm.HostName, vm.HostAddress, vm.Id, proxmoxSnapshotName, token);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        _logger.LogDebug(ex, "Post-check SnapshotExistsAsync failed for VM {VmId}", vm.Id);
+                                    }
 
-                                        if (!okInner)
-                                            throw new Exception("Snapshot task not OK / timed out");
+                                    try
+                                    {
+                                        lockState = await _proxmoxService.GetVmLockAsync(
+                                            cluster!, vm.HostName, vm.HostAddress, vm.Id, token);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        _logger.LogDebug(ex, "Post-check GetVmLockAsync failed for VM {VmId}", vm.Id);
+                                    }
 
-                                        // extra safety: wait for lock to clear (best-effort)
-                                        try
-                                        {
-                                            await WaitForVmUnlockedAsync(
-                                                cluster!,
-                                                vm,
-                                                timeout: TimeSpan.FromMinutes(3),
-                                                pollInterval: TimeSpan.FromMilliseconds(750),
-                                                ct: token);
-                                        }
-                                        catch { /* best effort */ }
+                                    if (snapExists)
+                                    {
+                                        // Task wait timed out/not-ok, but snapshot exists => treat as success with warning
+                                        MarkVmWarning(vm.Id);
+                                        await _jobs.LogVmAsync(vmRows[vm.Id],
+                                            "Snapshot wait timed out/not-OK, but snapshot exists (treating as success).",
+                                            "Warning", token);
 
-                                        return true;
-                                    },
-                                    ex => IsTransientProxmoxSnapshotError(ex) ||
-                                          ex.Message.Contains("not OK", StringComparison.OrdinalIgnoreCase) ||
-                                          ex.Message.Contains("timed out", StringComparison.OrdinalIgnoreCase),
-                                    token,
-                                    maxAttempts: 3,
-                                    maxDelayMs: 10000);
+                                        ok = true;
+                                    }
+                                    else if (!string.IsNullOrWhiteSpace(lockState))
+                                    {
+                                        // Unknown/transient-ish state (still locked) => warning, keep ok=false
+                                        MarkVmWarning(vm.Id);
+                                        await _jobs.LogVmAsync(vmRows[vm.Id],
+                                            $"Snapshot wait timed out/not-OK and VM is still locked ({lockState}).",
+                                            "Warning", token);
+
+                                        ok = false;
+                                    }
+                                    else
+                                    {
+                                        // Real failure: no snapshot, no lock
+                                        await _jobs.LogVmAsync(vmRows[vm.Id],
+                                            "Snapshot failed: task not OK / timed out (snapshot not found).",
+                                            "Error", token);
+
+                                        ok = false;
+                                    }
+                                }
 
                                 if (ok)
                                 {
@@ -1075,19 +1105,31 @@ namespace BareProx.Services.Backup
             ProxmoxCluster cluster,
             List<ProxmoxVM> vms,
             Dictionary<int, string> cleanupMap,              // vmid -> snapshotName
-            CancellationToken ct,
+            CancellationToken ct,                            // GLOBAL cleanup budget token
             int maxDegreeOfParallelism,
             int delayBetweenDeletesMs,
             Func<Exception, bool> isTransient,
             Func<Func<Task<bool>>, CancellationToken, Task<bool>> retry
         )
         {
+            // Tracks snapshots that were actually confirmed deleted (task finished OK)
             var deleted = new ConcurrentDictionary<int, string>();
+
+            // Deterministic order helps debugging/log correlation
             var ordered = cleanupMap.OrderBy(kv => kv.Key).ToList();
+
+            // Compute an absolute deadline ONCE, based on the configured cleanup budget.
+            // We use it to cap *each* per-snapshot wait to the remaining time in the budget.
+            // NOTE: ct will still cancel everything when the budget expires; this just avoids silly timeouts.
+            var cleanupDeadlineUtc = DateTime.UtcNow.AddMinutes(_throttles.CurrentValue.CleanupBudgetMinutes);
 
             await Parallel.ForEachAsync(
                 ordered,
-                new ParallelOptions { MaxDegreeOfParallelism = maxDegreeOfParallelism, CancellationToken = ct },
+                new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = maxDegreeOfParallelism,
+                    CancellationToken = ct // global budget cancels the whole parallel loop
+                },
                 async (kv, token) =>
                 {
                     var vmid = kv.Key;
@@ -1096,11 +1138,14 @@ namespace BareProx.Services.Backup
                     var vm = vms.FirstOrDefault(x => x.Id == vmid);
                     if (vm == null) return;
 
-                    // Per-node serialize deletes
+                    // Per-node serialization of deletes:
+                    // Keeps Proxmox happier and reduces lock contention.
                     using var nodeGate = await _gateManager.AcquireDeleteAsync(vm.HostName, token);
+
                     try
                     {
-                        // optional: lock poll before delete (best-effort)
+                        // Best-effort: wait for VM to be unlocked before delete
+                        // (If it stays locked, we still attempt delete; Proxmox may reject it.)
                         try
                         {
                             await WaitForVmUnlockedAsync(
@@ -1116,13 +1161,50 @@ namespace BareProx.Services.Backup
                         {
                             try
                             {
-                                await _proxmoxSnapshotsService.DeleteSnapshotAsync(
+                                // 1) Issue delete => Proxmox returns a UPID (async task)
+                                var delUpid = await _proxmoxSnapshotsService.DeleteSnapshotAsync(
                                     cluster, vm.HostName, vm.HostAddress, vmid, snapName, token);
+
+                                if (string.IsNullOrWhiteSpace(delUpid))
+                                {
+                                    // No UPID => we can't confirm delete completion.
+                                    _logger.LogWarning(
+                                        "DeleteSnapshotAsync returned empty UPID for VM {VmId} snap '{Snap}' (host={Host})",
+                                        vmid, snapName, vm.HostName);
+                                    return false;
+                                }
+
+                                // 2) Wait for the delete task to finish.
+                                // OPTION B: cap the wait by *remaining global cleanup budget*.
+                                var remaining = cleanupDeadlineUtc - DateTime.UtcNow;
+
+                                // If we're out of budget, bail out quickly.
+                                // Returning false means "not deleted/confirmed".
+                                if (remaining <= TimeSpan.Zero)
+                                {
+                                    _logger.LogWarning(
+                                        "Cleanup budget exhausted before waiting for delete task. VM {VmId} snap '{Snap}' (host={Host})",
+                                        vmid, snapName, vm.HostName);
+                                    return false;
+                                }
+
+                                var okWait = await _proxmoxOps.WaitForTaskCompletionAsync(
+                                    cluster,
+                                    vm.HostName,
+                                    vm.HostAddress,
+                                    delUpid,
+                                    timeout: remaining,
+                                    logger: _logger,
+                                    ct: token); // global budget token cancels polling immediately
+
+                                if (!okWait)
+                                    throw new Exception("Snapshot delete task not OK / timed out");
 
                                 return true;
                             }
                             catch (Exception ex) when (isTransient(ex))
                             {
+                                // Bubble transient errors to RetryAsync
                                 throw;
                             }
                         }, token);
@@ -1130,19 +1212,29 @@ namespace BareProx.Services.Backup
                         if (ok)
                             deleted[vmid] = snapName;
 
+                        // Optional pacing between deletes (still under global token)
                         if (delayBetweenDeletesMs > 0)
                             await Task.Delay(delayBetweenDeletesMs, token);
                     }
-                    catch (Exception ex)
+                    catch (OperationCanceledException) when (token.IsCancellationRequested)
                     {
-                        _logger.LogWarning(ex, "Failed to delete Proxmox snapshot '{Snap}' for VM {VmId} (host={Host})",
+                        // Global cleanup budget expired (or caller cancelled).
+                        _logger.LogWarning(
+                            "Cleanup cancelled (budget/caller) while deleting Proxmox snapshot '{Snap}' for VM {VmId} (host={Host})",
                             snapName, vmid, vm.HostName);
                     }
-
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(
+                            ex,
+                            "Failed to delete Proxmox snapshot '{Snap}' for VM {VmId} (host={Host})",
+                            snapName, vmid, vm.HostName);
+                    }
                 });
 
             return deleted.ToDictionary(kv => kv.Key, kv => kv.Value);
         }
+
 
         private async Task<bool> WaitForVmUnlockedAsync(
             ProxmoxCluster cluster,
@@ -1182,12 +1274,12 @@ namespace BareProx.Services.Backup
         }
 
         private async Task FailAndThrowAsync(
-        int jobId,
-        string storageName,
-        string label,
-        string error,
-        int scheduleId,
-        CancellationToken ct)
+            int jobId,
+            string storageName,
+            string label,
+            string error,
+            int scheduleId,
+            CancellationToken ct)
         {
             try { await _jobs.FailJobAsync(jobId, error, ct); }
             catch (Exception ex) { _logger.LogWarning(ex, "FailJobAsync failed for Job {JobId}", jobId); }
@@ -1213,17 +1305,17 @@ namespace BareProx.Services.Backup
 
 
         private async Task TryNotifyAsync(
-    int jobId,
-    string storageName,
-    string label,
-    string finalStatus,          // "Success" | "Warning" | "Error"
-    string? errorOrNote,
-    string? snapshotName,
-    int totalVms,
-    int skippedVms,
-    int warnedVms,
-    int scheduleId,
-    CancellationToken ct)
+            int jobId,
+            string storageName,
+            string label,
+            string finalStatus,          // "Success" | "Warning" | "Error"
+            string? errorOrNote,
+            string? snapshotName,
+            int totalVms,
+            int skippedVms,
+            int warnedVms,
+            int scheduleId,
+            CancellationToken ct)
         {
             try
             {

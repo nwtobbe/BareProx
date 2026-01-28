@@ -52,6 +52,6 @@ namespace BareProx.Services.Proxmox.Ops
             ILogger logger,
             CancellationToken ct = default);
 
-     
+
     }
 }

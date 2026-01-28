@@ -28,8 +28,9 @@ namespace BareProx.Services.Proxmox.Snapshots
     {
 
         Task<List<ProxmoxSnapshotInfo>> GetSnapshotListAsync(ProxmoxCluster cluster, string node, string hostAddress, int vmid, CancellationToken ct = default);
+        Task<bool> SnapshotExistsAsync(ProxmoxCluster cluster, string node, string hostAddress, int vmid, string snapshotName, CancellationToken ct);
         Task<string?> CreateSnapshotAsync(ProxmoxCluster cluster, string node, string hostAddress, int vmid, string snapshotName, string description, bool withMemory, bool dontTrySuspend, CancellationToken ct = default);
-        Task DeleteSnapshotAsync(ProxmoxCluster cluster, string host, string hostaddress, int vmId, string snapshotName, CancellationToken ct = default);
+        Task<string?> DeleteSnapshotAsync(ProxmoxCluster cluster, string host, string hostaddress, int vmId, string snapshotName, CancellationToken ct = default);
         Task<bool> RollbackSnapshotAsync(ProxmoxCluster cluster, string node, string hostAddress, int vmid, string snapshotName, bool startAfterRollback, ILogger logger, CancellationToken ct = default);
     }
 }

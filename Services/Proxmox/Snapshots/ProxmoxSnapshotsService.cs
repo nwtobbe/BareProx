@@ -115,6 +115,32 @@ namespace BareProx.Services.Proxmox.Snapshots
             return list;
         }
 
+        public async Task<bool> SnapshotExistsAsync(ProxmoxCluster cluster, string node, string hostAddress, int vmid, string snapshotName, CancellationToken ct)
+        {
+            if (cluster is null) throw new ArgumentNullException(nameof(cluster));
+            if (string.IsNullOrWhiteSpace(node)) throw new ArgumentException("node is required", nameof(node));
+            if (string.IsNullOrWhiteSpace(hostAddress)) throw new ArgumentException("hostAddress is required", nameof(hostAddress));
+            if (string.IsNullOrWhiteSpace(snapshotName)) throw new ArgumentException("snapshotName is required", nameof(snapshotName));
+
+            var escNode = Uri.EscapeDataString(node);
+            var url = $"https://{hostAddress}:8006/api2/json/nodes/{escNode}/qemu/{vmid}/snapshot";
+
+            using var resp = await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+            var json = await resp.Content.ReadAsStringAsync(ct);
+
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+                return false;
+
+            foreach (var item in data.EnumerateArray())
+            {
+                var name = item.TryGetProperty("name", out var n) ? n.GetString() : null;
+                if (string.Equals(name, snapshotName, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
 
         public async Task<string?> CreateSnapshotAsync(
             ProxmoxCluster cluster,
@@ -148,7 +174,7 @@ namespace BareProx.Services.Proxmox.Snapshots
         }
 
 
-        public async Task DeleteSnapshotAsync(
+        public async Task<string?> DeleteSnapshotAsync(
             ProxmoxCluster cluster,
             string host,
             string hostaddress,
@@ -156,8 +182,33 @@ namespace BareProx.Services.Proxmox.Snapshots
             string snapshotName,
             CancellationToken ct = default)
         {
-            var url = $"https://{hostaddress}:8006/api2/json/nodes/{host}/qemu/{vmId}/snapshot/{snapshotName}";
-            await _proxmoxOps.SendWithRefreshAsync(cluster, HttpMethod.Delete, url, null, ct);
+            // Escape path components (node + snapshot name)
+            var escHost = Uri.EscapeDataString(host);
+            var escSnap = Uri.EscapeDataString(snapshotName);
+
+            // Proxmox DELETE snapshot endpoint (returns UPID for async task)
+            var url = $"https://{hostaddress}:8006/api2/json/nodes/{escHost}/qemu/{vmId}/snapshot/{escSnap}";
+
+            using var resp = await _proxmoxOps.SendWithRefreshAsync(
+                cluster,
+                HttpMethod.Delete,
+                url,
+                content: null,
+                ct);
+
+            // Proxmox normally returns:
+            // { "data": "UPID:node:..." }
+            // but we defensively parse.
+            var json = await resp.Content.ReadAsStringAsync(ct);
+
+            if (string.IsNullOrWhiteSpace(json))
+                return null;
+
+            using var doc = JsonDocument.Parse(json);
+
+            return doc.RootElement.TryGetProperty("data", out var d)
+                ? d.GetString()
+                : null;
         }
 
         public async Task<bool> RollbackSnapshotAsync(
