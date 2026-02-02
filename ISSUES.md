@@ -4,9 +4,9 @@ Below are problems we’re aware of but haven’t fixed yet.
 If you can help, comment on—or better, open a pull request for—the linked issue.
 
 | ID  | Short Description								| Work-around							| Status										|
-| #14 | Backup fails due to snapshots taking to long	| none									| **Fixed thx to lchanouha**								|
-| #13 | Backup failes due to auth-failuer				| none									| **Fixed thx to lchanouha**										|
-| #12 | Fails on orphan disks							| Remove the disk						| **Fixed thx to lchanouha**										|
+| #14 | Backup fails due to snapshots taking to long	| none									| **Fixed thx to lchanouha**					|
+| #13 | Backup failes due to auth-failuer				| none									| **Fixed thx to lchanouha**					|
+| #12 | Fails on orphan disks							| Remove the disk						| **Fixed thx to lchanouha**					|
 | #11 | Multiple netapp controllers cause confusion     | None									| **Fixed in 1.0.2511.0513**					|
 | #10 | Retention daily is not keeping correct retention| None									| **Rejected, working**							|
 | #9  | Toggle volumes not getting filled				| None									| **Fixed in 1.0.2510.3115**					|
