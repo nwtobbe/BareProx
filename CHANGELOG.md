@@ -7,7 +7,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
 
-## [1.0.2601.19] - 2026-01-xx
+## [1.0.2601.28] - 2026-01-28
 
 ## Added
 - Settings / System / Advanced. The possibility to mess things up by tweaking the parallellism of snapshots creation and deletion.
