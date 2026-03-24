@@ -1,2 +1,17 @@
 ﻿
 what happens if a vm is selected for skip in a job and gets removed
+
+
+
+security login rest-role create -vserver proxmox -role bareprox -api "/api/cluster" -access readonly
+security login rest-role create -vserver proxmox -role bareprox -api "/api/svm/svms" -access readonly
+security login rest-role create -vserver proxmox -role bareprox -api "/api/network/ip/interfaces" -access readonly
+security login rest-role create -vserver proxmox -role bareprox -api "/api/storage/volumes" -access all
+security login rest-role create -vserver proxmox -role bareprox -api "/api/storage/snaplock/compliance-clocks" -access readonly
+security login rest-role create -vserver proxmox -role bareprox -api "/api/protocols/nfs/export-policies" -access all
+security login rest-role create -vserver proxmox -role bareprox -api "/api/snapmirror/relationships" -access all
+security login rest-role create -vserver proxmox -role bareprox -api "/api/snapmirror/policies" -access readonly
+
+sec log create -vserver proxmox -user-or-group-name bpuser -application http -authentication-method password -role bareprox
+
+Add script from Patrik

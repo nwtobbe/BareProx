@@ -25,7 +25,6 @@ using BareProx.Services.Proxmox.Authentication; // assumes you have an auth serv
 using BareProx.Services.Proxmox.Helpers;
 using BareProx.Services.Proxmox.Ops;
 using BareProx.Services.Restore;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using System.Net;
 using System.Net.Http;

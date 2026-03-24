@@ -26,6 +26,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 - Settings / Migration. Updated Mappings for scsi-controllers. Note. Proxmox can boot a vm with the controller VMware PVSCSI if the vm is configured with VMware Paravirtual in the vmx-file. (Windows)
 
 
+
 ## [1.0.2511.1920] - 2025-11-19
 
 ### Fixed
