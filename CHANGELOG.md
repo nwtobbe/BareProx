@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
+## [1.0.2603.27] - 2026-03-27
+
+## Added
+- Network migration tool on the help page for migration
+
+### Changed
+- Updated to .NET 10
+
+### Fixed
+- 
+
 
 ## [1.0.2601.28] - 2026-01-28
 

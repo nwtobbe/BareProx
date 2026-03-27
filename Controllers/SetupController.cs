@@ -1,7 +1,7 @@
 ﻿/*
  * BareProx - Backup and Restore Automation for Proxmox using NetApp
  *
- * Copyright (C) 2025 Tobias Modig
+ * Copyright (C) 2025-2026 Tobias Modig
  *
  * This file is part of BareProx.
  *

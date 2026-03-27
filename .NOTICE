@@ -1,15 +1,25 @@
-BareProx
-========
+# BareProx
 
 Backup and Restore Automation for Proxmox using NetApp
 
-Author: Tobias Modig  
-License: GNU General Public License v3.0 (GPL-3.0)
+Author: Tobias Modig
+License: GNU Affero General Public License v3.0 (AGPL-3.0)
 
-This product includes software developed by Tobias Modig.
+Copyright (C) 2025–2026 Tobias Modig
 
-This software is provided "as-is" without any warranties or guarantees.
-Redistribution and modification are permitted under the terms of the GPLv3 license.
-See the LICENSE file for details.
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
 
-If you distribute a modified version of this software, you must include a prominent notice stating that you have changed the files.
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+In accordance with AGPLv3, if you modify this software and make it
+available for use over a network, you must also make the complete
+corresponding source code available to users of that service.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see https://www.gnu.org/licenses/.

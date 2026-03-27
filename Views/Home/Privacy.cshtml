@@ -1,7 +1,7 @@
 ﻿@{
     ViewData["Title"] = "Privacy Policy";
     var product = (string)(ViewBag.ProductName ?? "BareProx");
-    var contact = (string)(ViewBag.ContactEmail ?? "nwtobbe@gmail.com");
+    var contact = (string)(ViewBag.ContactEmail ?? "[nwtobbe@gmail.com](mailto:nwtobbe@gmail.com)");
 }
 
 <style>
@@ -22,65 +22,92 @@
 
 <div class="policy">
     <h1 class="mb-3">Privacy Policy</h1>
-    <p><em>Last updated: @DateTime.UtcNow.ToString("yyyy-MM-dd") UTC</em></p>
+    <p><em>Last updated: 2026-03-27 UTC</em></p>
 
+    ```
     <p>
         This Privacy Policy describes how <strong>@product</strong> processes data when you use the application.
-        @product is deployed and operated by you (self-hosted). No telemetry is sent to the developers by default.
+        @product is self-hosted software, meaning it is deployed, configured, and operated by you.
+    </p>
+
+    <h2>Data Controller</h2>
+    <p>
+        The operator of the @product installation is the data controller and is responsible for compliance with applicable
+        data protection laws (such as GDPR). The developer of @product does not have access to or process any data
+        from your installation.
     </p>
 
     <h2>What @product Stores</h2>
     <ul>
-        <li><strong>Configuration data:</strong> Proxmox and NetApp connection details, settings, schedules.</li>
-        <li><strong>Operational logs:</strong> Job history (backups, restores), warnings/errors, timestamps.</li>
+        <li><strong>Configuration data:</strong> Proxmox and NetApp connection details, settings, and schedules.</li>
+        <li><strong>Operational logs:</strong> Job history (backups, restores), warnings/errors, timestamps, and related metadata.</li>
         <li><strong>User accounts:</strong> Authentication and authorization data via ASP.NET Identity (if enabled).</li>
-        <li><strong>Notifications:</strong> Email settings and recipients if you enable email notifications.</li>
+        <li><strong>Notifications:</strong> Email settings and recipients if email notifications are configured.</li>
     </ul>
 
     <h2>What @product Does Not Do</h2>
     <ul>
-        <li>No built-in analytics or third-party tracking.</li>
-        <li>No automatic data sharing with external services, unless you configure features (e.g., email).</li>
+        <li>No built-in analytics or tracking.</li>
+        <li>No telemetry or usage data is sent to the developer unless explicitly configured by you.</li>
+        <li>No automatic data sharing with third parties.</li>
     </ul>
 
     <h2>Cookies</h2>
     <p>
-        @product may use cookies for authentication/session management. These are strictly necessary for the app to function.
-        If you enable anti-forgery tokens (default), related cookies are also used to protect against CSRF.
+        @product may use cookies for authentication and session management. These cookies are strictly necessary
+        for the application to function. Anti-forgery tokens (enabled by default) may also use cookies to protect
+        against cross-site request forgery (CSRF).
     </p>
 
     <h2>Log & Diagnostic Data</h2>
     <p>
-        Application and job logs are stored locally (e.g., database and/or rolling log files).
-        You control retention policies. Logs may include VM names, storage names, cluster/host names, timestamps and error details.
+        Application and job logs are stored locally (e.g., in a database or log files). You control retention and access.
+        Logs may include VM names, storage identifiers, cluster/host names, timestamps, and error details.
     </p>
 
     <h2>Security</h2>
     <ul>
-        <li>Credentials and secrets should be stored encrypted at rest (e.g., Data Protection APIs / your key vault).</li>
-        <li>Self-signed certificates can be generated in-app; consider replacing with a trusted certificate in production.</li>
-        <li>Restrict network access to the management UI and APIs.</li>
+        <li>Credentials and secrets should be stored encrypted at rest (e.g., using Data Protection APIs or a key vault).</li>
+        <li>Self-signed certificates may be generated in-app; using trusted certificates in production is recommended.</li>
+        <li>Access to the management interface and APIs should be restricted to trusted networks and users.</li>
     </ul>
 
     <h2>Data Export & Deletion</h2>
     <p>
-        As the operator, you control the database and file storage. You may export or delete data using your database tools.
-        For user-initiated deletion requests, follow your organization’s policy and remove data from the underlying stores.
+        As the operator, you control all stored data. You may export or delete data using your database or storage tools.
+        For user-related data requests, follow your organization’s policies and applicable legal requirements.
     </p>
 
     <h2>Third-Party Services</h2>
     <p>
-        Certain optional features may contact external endpoints (e.g., GitHub raw content for update checks).
-        These are opt-in and documented in the settings UI.
+        Optional features may connect to external services (for example, update checks, package repositories,
+        or configured email servers). These connections are initiated and controlled by your configuration.
+    </p>
+
+    <h2>Legal Basis</h2>
+    <p>
+        As a self-hosted application, @product processes data according to your configuration and usage.
+        The legal basis for processing (such as legitimate interest, contractual necessity, or consent)
+        is determined by the operator of the system.
+    </p>
+
+    <h2>Remote Access</h2>
+    <p>
+        @product does not include any remote access, telemetry, or backdoor functionality.
+        All data remains within your environment unless you explicitly configure external integrations.
     </p>
 
     <h2>Contact</h2>
     <p>
-        For privacy questions, contact: <a href="mailto:@contact">@contact</a>.
+        For questions about the software, contact: <a href="mailto:@contact">@contact</a>.<br />
+        For questions regarding data processed by your installation, contact your system administrator.
     </p>
 
     <hr />
     <small class="text-muted">
-        @product is GPL-3.0 licensed. You are responsible for running and configuring it in compliance with your local laws and policies.
+        @product is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+        You are responsible for operating and configuring the software in compliance with applicable laws and policies.
     </small>
+    ```
+
 </div>
