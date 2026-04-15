@@ -75,7 +75,7 @@ namespace BareProx.Services.Background
             var nextSelectedVolumeUpdate = DateTime.UtcNow;
             var nextClusterStatusCheck = DateTime.UtcNow;
 
-            var nextVmInventory = DateTime.UtcNow; // every 5 min
+            var nextVmInventory = DateTime.UtcNow;   // every 5 min
             var nextInfraInventory = DateTime.UtcNow; // every 24 hours
 
             try
@@ -96,15 +96,8 @@ namespace BareProx.Services.Background
             {
                 try
                 {
-                    // --- SnapMirror relation sync (scoped) ---
-                    using (var scope = _scopeFactory.CreateScope())
-                    {
-                        var netappSnapmirrorService = scope.ServiceProvider.GetRequiredService<INetappSnapmirrorService>();
-                        await netappSnapmirrorService.SyncSnapMirrorRelationsAsync(stoppingToken);
-                    }
-
-                    // Ensure SnapMirror policies
-                    await EnsureSnapMirrorPoliciesAsync(stoppingToken);
+                    // Refresh SnapMirror relations + policies
+                    await RefreshSnapMirrorStateAsync(stoppingToken);
 
                     // Update selected volumes hourly (legacy compatibility)
                     if (DateTime.UtcNow >= nextSelectedVolumeUpdate)
@@ -133,7 +126,7 @@ namespace BareProx.Services.Background
                     if (DateTime.UtcNow >= nextInfraInventory)
                     {
                         await SyncInventoryInfraSideAsync(stoppingToken);
-                        nextInfraInventory = DateTime.UtcNow.Add(InfraInventoryCadence);
+
                         // enforce retention after we’ve refreshed infra state
                         await EnforceSnapshotRetentionAsync(stoppingToken);
 
@@ -163,8 +156,22 @@ namespace BareProx.Services.Background
         public Task RunProxmoxClusterStatusCheckAsync(CancellationToken ct = default)
             => CheckProxmoxClusterAndHostsStatusAsync(ct);
 
-        public Task RunInventoryInfraSideAsync(CancellationToken ct = default)
-    => SyncInventoryInfraSideAsync(ct);
+        public async Task RunInventoryInfraSideAsync(CancellationToken ct = default)
+        {
+            // 1) Refresh selected volume metadata first, so main DB has current UUID/name/controller info
+            using (var scope = _scopeFactory.CreateScope())
+            {
+                var volumeService = scope.ServiceProvider.GetRequiredService<INetappVolumeService>();
+                await volumeService.UpdateAllSelectedVolumesAsync(ct);
+            }
+
+            // 2) Refresh SnapMirror relations + policies into main DB
+            await RefreshSnapMirrorStateAsync(ct);
+
+            // 3) Manual refresh should be authoritative:
+            // force a full volume scan so both primary and secondary endpoints exist in inventory
+            await SyncInventoryInfraSideAsync(ct, forceFullVolumeScan: true);
+        }
 
         // =====================================================================
         // SnapMirror policies sync (unchanged)
@@ -534,9 +541,10 @@ namespace BareProx.Services.Background
 
             // 2) Load SnapMirror relations once (MAIN DB)
             var relations = await main.SnapMirrorRelations.AsNoTracking().ToListAsync(ct);
-            var relByPrimary = relations.ToDictionary(
-                r => (r.SourceControllerId, (r.SourceVolume ?? "").ToLowerInvariant()),
-                r => r);
+            var relByPrimary = relations
+                .Where(r => r.SourceControllerId != 0 && !string.IsNullOrWhiteSpace(r.SourceVolume))
+                .GroupBy(r => MakeControllerVolumeKey(r.SourceControllerId, r.SourceVolume))
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
             foreach (var grp in expiredGroups)
             {
@@ -546,7 +554,7 @@ namespace BareProx.Services.Background
                 if (ex.ControllerId == 0 || string.IsNullOrWhiteSpace(ex.StorageName) || string.IsNullOrWhiteSpace(ex.SnapshotName))
                     continue;
 
-                var primaryKey = (ex.ControllerId, ex.StorageName.ToLowerInvariant());
+                var primaryKey = MakeControllerVolumeKey(ex.ControllerId, ex.StorageName);
 
                 try
                 {
@@ -559,49 +567,36 @@ namespace BareProx.Services.Background
 
                     if (!okToProceed)
                     {
-                        // log and skip this group
                         _logger.LogWarning("Retention: delete failed for {Snap} on {Vol}@{Ctl}: {Err}",
                             ex.SnapshotName, ex.StorageName, ex.ControllerId, del.ErrorMessage);
                         continue;
                     }
 
                     // 4) Probe presence on both ends and upsert QUERY DB flags
-                    bool existsOnPrimary = false;
+                    bool existsOnPrimary;
                     bool existsOnSecondary = false;
                     int? secCtl = null;
                     string? secVol = null;
 
-                    // Re-list primary
                     var primarySnaps = await netapp.GetSnapshotsAsync(ex.ControllerId, ex.StorageName, ct) ?? new List<string>();
                     existsOnPrimary = primarySnaps.Contains(ex.SnapshotName, StringComparer.OrdinalIgnoreCase);
 
-                    // If relation exists, check secondary
                     if (relByPrimary.TryGetValue(primaryKey, out var rel)
                         && rel.DestinationControllerId != 0
                         && !string.IsNullOrWhiteSpace(rel.DestinationVolume))
                     {
-                        var secCtlLocal = rel.DestinationControllerId;   // int (non-nullable)
-                        var secVolLocal = rel.DestinationVolume!;
+                        secCtl = rel.DestinationControllerId;
+                        secVol = rel.DestinationVolume!;
 
-                        var secondarySnaps = await netapp.GetSnapshotsAsync(secCtlLocal, secVolLocal, ct) ?? new List<string>();
+                        var secondarySnaps = await netapp.GetSnapshotsAsync(secCtl.Value, secVol, ct) ?? new List<string>();
                         existsOnSecondary = secondarySnaps.Contains(ex.SnapshotName, StringComparer.OrdinalIgnoreCase);
-
-                        // If you still need these outside, assign them here:
-                        // secCtl = secCtlLocal;
-                        // secVol = secVolLocal;
-                    }
-                    else
-                    {
-                        existsOnSecondary = false;
                     }
 
-                    // Upsert QUERY DB snapshot flags keyed by (JobId, SnapshotName)
                     var row = await qdb.NetappSnapshots
                         .FirstOrDefaultAsync(s => s.JobId == ex.JobId && s.SnapshotName == ex.SnapshotName, ct);
 
                     if (row is null)
                     {
-                        // Create a minimal row so downstream UI/Janitor can see state
                         row = new NetappSnapshot
                         {
                             JobId = ex.JobId,
@@ -614,14 +609,18 @@ namespace BareProx.Services.Background
 
                     row.ExistsOnPrimary = existsOnPrimary;
                     row.ExistsOnSecondary = existsOnSecondary;
-                    row.IsReplicated = existsOnSecondary;
+                    row.IsReplicated = existsOnPrimary && existsOnSecondary;
                     row.LastChecked = DateTime.UtcNow;
+
                     if (secCtl.HasValue) row.SecondaryControllerId = secCtl.Value;
                     if (!string.IsNullOrWhiteSpace(secVol)) row.SecondaryVolume = secVol;
 
                     await qdb.SaveChangesAsync(ct);
                 }
-                catch (OperationCanceledException) { throw; }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
                 catch (Exception exn)
                 {
                     _logger.LogWarning(exn,
@@ -693,7 +692,7 @@ namespace BareProx.Services.Background
         /// Infra-side: NetApp volumes, replication graph, and storage→volume mapping.
         /// Runs every 24 hours.
         /// </summary>
-        private async Task SyncInventoryInfraSideAsync(CancellationToken ct)
+        private async Task SyncInventoryInfraSideAsync(CancellationToken ct, bool forceFullVolumeScan = false)
         {
             using var scope = _scopeFactory.CreateScope();
 
@@ -702,25 +701,29 @@ namespace BareProx.Services.Background
 
             var netappVolumeService = scope.ServiceProvider.GetRequiredService<INetappVolumeService>();
 
-            var controllers = await mainDb.NetappControllers.AsNoTracking().ToListAsync(ct);
-            var relations = await mainDb.SnapMirrorRelations.AsNoTracking().ToListAsync(ct);
+            var controllers = await mainDb.NetappControllers
+                .AsNoTracking()
+                .ToListAsync(ct);
+
+            var relations = await mainDb.SnapMirrorRelations
+                .AsNoTracking()
+                .ToListAsync(ct);
 
             // Build a case-insensitive map of selected volume UUIDs per controller
             var selectedByController = await mainDb.SelectedNetappVolumes
                 .AsNoTracking()
-                .Where(x => !string.IsNullOrWhiteSpace(x.Uuid))
+                .Where(x => x.Disabled != true && !string.IsNullOrWhiteSpace(x.Uuid))
                 .GroupBy(x => x.NetappControllerId)
                 .ToDictionaryAsync(
                     g => g.Key,
                     g => g.Select(v => v.Uuid!).ToHashSet(StringComparer.OrdinalIgnoreCase),
                     ct);
 
-            // NetApp volumes:
-            // - If any selections exist, sync only those UUIDs per controller.
-            // - Otherwise, do a full scan.
             try
             {
-                if (selectedByController.Count > 0)
+                var useSelectedOnly = !forceFullVolumeScan && selectedByController.Count > 0;
+
+                if (useSelectedOnly)
                 {
                     await SyncNetappVolumesSelectedAsync(
                         qdb,
@@ -743,7 +746,6 @@ namespace BareProx.Services.Background
                 _logger.LogError(ex, "Inventory infra-side: NetApp volume sync failed.");
             }
 
-            // Replication table rebuild
             try
             {
                 await SyncVolumeReplicationAsync(qdb, relations, ct);
@@ -753,7 +755,6 @@ namespace BareProx.Services.Background
                 _logger.LogError(ex, "Inventory infra-side: replication sync failed.");
             }
 
-            // (Optional) Redundant if your volume sync already does this, but safe to keep.
             try
             {
                 await MapStoragesToNetappVolumesAsync(qdb, ct);
@@ -763,7 +764,6 @@ namespace BareProx.Services.Background
                 _logger.LogError(ex, "Inventory infra-side: storage mapping failed.");
             }
 
-            // Track snapshot presence after infra updates
             try
             {
                 await TrackNetappSnapshotsAsync(ct);
@@ -1465,8 +1465,6 @@ namespace BareProx.Services.Background
 
             await qdb.SaveChangesAsync(ct);
 
-            // After volumes updated, map storages -> NetApp volume UUID
-            await MapStoragesToNetappVolumesAsync(qdb, ct);
         }
 
         private static string NormalizeExport(string? s)
@@ -1630,16 +1628,14 @@ namespace BareProx.Services.Background
 
             await qdb.SaveChangesAsync(ct);
 
-            // Keep mapping step
-            await MapStoragesToNetappVolumesAsync(qdb, ct);
         }
 
 
 
         private async Task SyncVolumeReplicationAsync(
-            QueryDbContext qdb,
-            List<SnapMirrorRelation> relations,
-            CancellationToken ct)
+     QueryDbContext qdb,
+     List<SnapMirrorRelation> relations,
+     CancellationToken ct)
         {
             var now = DateTime.UtcNow;
 
@@ -1647,31 +1643,48 @@ namespace BareProx.Services.Background
             qdb.InventoryVolumeReplications.RemoveRange(qdb.InventoryVolumeReplications);
             await qdb.SaveChangesAsync(ct);
 
-            // Materialize groups first (avoid CS1662)
-            var groups = await qdb.InventoryNetappVolumes
+            var inventoryVolumes = await qdb.InventoryNetappVolumes
                 .AsNoTracking()
-                .GroupBy(v => new { v.NetappControllerId, v.VolumeName })
+                .Where(v =>
+                    v.NetappControllerId != 0 &&
+                    !string.IsNullOrWhiteSpace(v.VolumeName) &&
+                    !string.IsNullOrWhiteSpace(v.VolumeUuid))
                 .ToListAsync(ct);
 
-            var volsByControllerAndName = groups.ToDictionary(
-                g => (g.Key.NetappControllerId, Name: g.Key.VolumeName),
-                g => g.ToList());
+            var volsByControllerAndName = inventoryVolumes
+                .GroupBy(v => MakeControllerVolumeKey(v.NetappControllerId, v.VolumeName))
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.ToList(),
+                    StringComparer.OrdinalIgnoreCase);
+
+            var addedPairs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var r in relations)
             {
                 if (r.SourceControllerId == 0 || r.DestinationControllerId == 0)
                     continue;
+
                 if (string.IsNullOrWhiteSpace(r.SourceVolume) || string.IsNullOrWhiteSpace(r.DestinationVolume))
                     continue;
 
-                if (!volsByControllerAndName.TryGetValue((r.SourceControllerId, r.SourceVolume), out var srcList))
+                var srcKey = MakeControllerVolumeKey(r.SourceControllerId, r.SourceVolume);
+                var dstKey = MakeControllerVolumeKey(r.DestinationControllerId, r.DestinationVolume);
+
+                if (!volsByControllerAndName.TryGetValue(srcKey, out var srcList))
                     continue;
-                if (!volsByControllerAndName.TryGetValue((r.DestinationControllerId, r.DestinationVolume), out var dstList))
+
+                if (!volsByControllerAndName.TryGetValue(dstKey, out var dstList))
                     continue;
 
                 foreach (var src in srcList)
+                {
                     foreach (var dst in dstList)
                     {
+                        var pairKey = $"{src.VolumeUuid}|{dst.VolumeUuid}";
+                        if (!addedPairs.Add(pairKey))
+                            continue;
+
                         qdb.InventoryVolumeReplications.Add(new InventoryVolumeReplication
                         {
                             PrimaryVolumeUuid = src.VolumeUuid,
@@ -1679,6 +1692,7 @@ namespace BareProx.Services.Background
                             LastSeenUtc = now
                         });
                     }
+                }
             }
 
             await qdb.SaveChangesAsync(ct);
@@ -1700,6 +1714,27 @@ namespace BareProx.Services.Background
                 meta.Value = value;
             }
             await qdb.SaveChangesAsync(ct);
+        }
+
+        private async Task RefreshSnapMirrorStateAsync(CancellationToken ct)
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var netappSnapmirrorService = scope.ServiceProvider.GetRequiredService<INetappSnapmirrorService>();
+
+            await netappSnapmirrorService.SyncSnapMirrorRelationsAsync(ct);
+            await EnsureSnapMirrorPoliciesAsync(ct);
+        }
+
+        private static string NormalizeVolumeName(string? volumeName)
+        {
+            return string.IsNullOrWhiteSpace(volumeName)
+                ? string.Empty
+                : volumeName.Trim();
+        }
+
+        private static string MakeControllerVolumeKey(int controllerId, string? volumeName)
+        {
+            return $"{controllerId}|{NormalizeVolumeName(volumeName)}";
         }
 
         // =====================================================================

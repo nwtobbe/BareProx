@@ -15,3 +15,8 @@ security login rest-role create -vserver proxmox -role bareprox -api "/api/snapm
 sec log create -vserver proxmox -user-or-group-name bpuser -application http -authentication-method password -role bareprox
 
 Add script from Patrik
+
+Sök efter volymer fungerar inte
+
+Triggar inte snapmiror update korrekt. mirror / vault
+
