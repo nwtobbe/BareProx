@@ -971,15 +971,50 @@ namespace BareProx.Controllers
                 }
             }
 
-            // ---------- Replication map (by UUID) ----------
-            var repRows = await qdb.InventoryVolumeReplications
+            // ---------- Replication map from MAIN DB SnapMirrorRelations ----------
+            static string CvKey(int controllerId, string? volumeName)
+                => $"{controllerId}|{Nx(volumeName)}";
+
+            var selectedNetappKeys = new HashSet<string>(
+                selectedVolumes
+                    .Where(v => !string.IsNullOrWhiteSpace(v.VolumeName))
+                    .Select(v => CvKey(v.NetappControllerId, v.VolumeName)),
+                StringComparer.OrdinalIgnoreCase);
+
+            var smRows = await _context.SnapMirrorRelations
                 .AsNoTracking()
-                .Select(r => r.PrimaryVolumeUuid)
+                .Select(r => new
+                {
+                    r.SourceControllerId,
+                    r.SourceVolume,
+                    r.DestinationControllerId,
+                    r.DestinationVolume,
+                    r.state
+                })
                 .ToListAsync(ct);
 
-            var replicablePrimary = new HashSet<string>(
-                repRows.Where(u => !string.IsNullOrWhiteSpace(u)),
-                StringComparer.OrdinalIgnoreCase);
+            var replicableSourceKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var r in smRows)
+            {
+                if (string.IsNullOrWhiteSpace(r.SourceVolume) ||
+                    string.IsNullOrWhiteSpace(r.DestinationVolume))
+                    continue;
+
+                var srcKey = CvKey(r.SourceControllerId, r.SourceVolume);
+                var dstKey = CvKey(r.DestinationControllerId, r.DestinationVolume);
+
+                // Keep existing BareProx semantics:
+                // source is replicable only if both ends are selected/enabled
+                if (!selectedNetappKeys.Contains(srcKey) || !selectedNetappKeys.Contains(dstKey))
+                    continue;
+
+                if (!string.IsNullOrWhiteSpace(r.state) &&
+                    !string.Equals(r.state, "snapmirrored", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                replicableSourceKeys.Add(srcKey);
+            }
 
             // ---------- Output structures ----------
             var combined = new Dictionary<string, List<ProxmoxVM>>(StringComparer.OrdinalIgnoreCase);
@@ -1061,9 +1096,10 @@ namespace BareProx.Controllers
                     }
                 }
 
-                // Replication flag based on UUID (if we have one)
-                if (!string.IsNullOrWhiteSpace(resolvedUuid) &&
-                    replicablePrimary.Contains(resolvedUuid))
+                // Replication flag based on resolved NetApp controller + volume name
+                if (controllerId != 0 &&
+                    !string.IsNullOrWhiteSpace(resolvedVolumeName) &&
+                    replicableSourceKeys.Contains(CvKey(controllerId, resolvedVolumeName)))
                 {
                     replicable.Add(s.StorageId);
                 }

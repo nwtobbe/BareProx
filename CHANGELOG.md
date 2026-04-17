@@ -15,7 +15,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 - Updated to .NET 10
 
 ### Fixed
-- 
+- Replication not visible
 
 
 ## [1.0.2601.28] - 2026-01-28

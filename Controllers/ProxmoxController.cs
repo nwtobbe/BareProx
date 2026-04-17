@@ -205,22 +205,51 @@ namespace BareProx.Controllers
                 }
             }
 
-            // 7) Replication map (primary -> secondary) using UUIDs
-            var allUuids = invStorages
-                .Select(s => s.NetappVolumeUuid)
-                .Where(u => !string.IsNullOrWhiteSpace(u))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            // 7) Replication map from bareproxDB SnapMirrorRelations
+            static string CvKey(int controllerId, string? volumeName)
+                => $"{controllerId}|{Nx(volumeName)}";
 
-            var repRows = await qdb.InventoryVolumeReplications
+            var selectedNetappKeys = new HashSet<string>(
+                selRows
+                    .Where(v => !string.IsNullOrWhiteSpace(v.VolumeName))
+                    .Select(v => CvKey(v.NetappControllerId, v.VolumeName)),
+                StringComparer.OrdinalIgnoreCase);
+
+            var smRows = await _context.SnapMirrorRelations
                 .AsNoTracking()
-                .Where(r => allUuids.Contains(r.PrimaryVolumeUuid))
-                .Select(r => new { r.PrimaryVolumeUuid })
+                .Select(r => new
+                {
+                    r.SourceControllerId,
+                    r.SourceVolume,
+                    r.DestinationControllerId,
+                    r.DestinationVolume,
+                    r.state
+                })
                 .ToListAsync(ct);
 
-            var replicablePrimary = new HashSet<string>(
-                repRows.Select(r => r.PrimaryVolumeUuid),
-                StringComparer.OrdinalIgnoreCase);
+            var replicableSourceKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var r in smRows)
+            {
+                if (string.IsNullOrWhiteSpace(r.SourceVolume) ||
+                    string.IsNullOrWhiteSpace(r.DestinationVolume))
+                    continue;
+
+                var srcKey = CvKey(r.SourceControllerId, r.SourceVolume);
+                var dstKey = CvKey(r.DestinationControllerId, r.DestinationVolume);
+
+                // Keep same semantics as BackupController:
+                // only treat as replicable if both ends are selected/enabled
+                if (!selectedNetappKeys.Contains(srcKey) || !selectedNetappKeys.Contains(dstKey))
+                    continue;
+
+                // Optional safety: require the relationship to be in snapmirrored state
+                if (!string.IsNullOrWhiteSpace(r.state) &&
+                    !string.Equals(r.state, "snapmirrored", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                replicableSourceKeys.Add(srcKey);
+            }
 
             // 8) Build DTOs
             var model = new List<StorageWithVMsDto>(invStorages.Count);
@@ -313,8 +342,9 @@ namespace BareProx.Controllers
                     NetappControllerId = controllerId,
                     SelectedNetappVolumeId = selectedId,
                     SnapshotLockingEnabled = locking,
-                    IsReplicable = !string.IsNullOrWhiteSpace(volumeUuid)
-                                   && replicablePrimary.Contains(volumeUuid),
+                    IsReplicable = controllerId != 0
+                                   && !string.IsNullOrWhiteSpace(resolvedVolumeName)
+                                   && replicableSourceKeys.Contains(CvKey(controllerId, resolvedVolumeName)),
                     VolumeUuid = volumeUuid
                 };
 
