@@ -16,6 +16,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - Replication not visible, reverted back to mainDB for repl relatinships.
+- Small fix for applying export policy during restore.
 
 
 ## [1.0.2601.28] - 2026-01-28

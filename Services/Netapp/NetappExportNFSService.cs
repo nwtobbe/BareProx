@@ -1,7 +1,7 @@
 ﻿/*
  * BareProx - Backup and Restore Automation for Proxmox using NetApp
  *
- * Copyright (C) 2025 Tobias Modig
+ * Copyright (C) 2025-2026 Tobias Modig
  *
  * This file is part of BareProx.
  *
@@ -18,11 +18,10 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
-
 using BareProx.Data;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Polly;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 
@@ -30,13 +29,11 @@ namespace BareProx.Services.Netapp
 {
     public class NetappExportNFSService : INetappExportNFSService
     {
-
         private readonly ApplicationDbContext _context;
         private readonly ILogger<NetappExportNFSService> _logger;
         private readonly IAppTimeZoneService _tz;
         private readonly INetappAuthService _authService;
         private readonly INetappVolumeService _volumeService;
-
 
         public NetappExportNFSService(
             ApplicationDbContext context,
@@ -56,505 +53,368 @@ namespace BareProx.Services.Netapp
         {
             var controller = await _context.NetappControllers
                 .FirstOrDefaultAsync(c => c.Id == controllerId, ct);
+
             if (controller == null)
-                throw new Exception("NetApp controller not found.");
+                throw new InvalidOperationException("NetApp controller not found.");
 
             var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
-
             var url = $"{baseUrl}network/ip/interfaces?svm.name={Uri.EscapeDataString(vserver)}&fields=ip.address,services";
 
-            var resp = await httpClient.GetAsync(url, ct);
+            using var resp = await httpClient.GetAsync(url, ct);
             resp.EnsureSuccessStatusCode();
 
             using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
             return doc.RootElement
-                      .GetProperty("records")
-                      .EnumerateArray()
-                      .Where(e =>
-                          e.TryGetProperty("services", out var services) &&
-                          services.EnumerateArray().Any(s => s.GetString() == "data_nfs"))
-                      .Select(e => e.GetProperty("ip").GetProperty("address").GetString() ?? "")
-                      .Where(ip => !string.IsNullOrWhiteSpace(ip))
-                      .Distinct()
-                      .ToList();
+                .GetProperty("records")
+                .EnumerateArray()
+                .Where(e =>
+                    e.TryGetProperty("services", out var services) &&
+                    services.ValueKind == JsonValueKind.Array &&
+                    services.EnumerateArray().Any(s => s.GetString() == "data_nfs"))
+                .Select(e => e.GetProperty("ip").GetProperty("address").GetString() ?? "")
+                .Where(ip => !string.IsNullOrWhiteSpace(ip))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
         }
 
         public async Task<bool> CopyExportPolicyAsync(
-                  string sourceVolumeName,
-                  string targetCloneName,
-                  int controllerId,
-                  CancellationToken ct = default)
+            string sourceVolumeName,
+            string targetCloneName,
+            int controllerId,
+            CancellationToken ct = default)
         {
-            // Fetch controller
-            var controller = await _context.NetappControllers.FindAsync(controllerId, ct);
-            if (controller == null) return false;
-
-            var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
-
-            // Lookup source export policy
-            var srcLookupUrl = $"{baseUrl}storage/volumes" +
-                $"?name={Uri.EscapeDataString(sourceVolumeName)}" +
-                "&fields=nas.export_policy.name";
-
-            var srcResp = await httpClient.GetAsync(srcLookupUrl, ct);
-            srcResp.EnsureSuccessStatusCode();
-
-            using var srcDoc = JsonDocument.Parse(await srcResp.Content.ReadAsStringAsync(ct));
-            var srcRecs = srcDoc.RootElement.GetProperty("records");
-            if (srcRecs.GetArrayLength() == 0) return false;
-
-            var policyName = srcRecs[0]
-                .GetProperty("nas")
-                .GetProperty("export_policy")
-                .GetProperty("name")
-                .GetString();
-
-            if (string.IsNullOrWhiteSpace(policyName))
-                return false;
-
-            // Wait for clone to become available and online
-            string? tgtUuid = null;
-            for (int attempt = 0; attempt < 30; attempt++)
+            var controller = await _context.NetappControllers.FindAsync(new object[] { controllerId }, ct);
+            if (controller == null)
             {
-                var tgtLookupUrl = $"{baseUrl}storage/volumes" +
-                    $"?name={Uri.EscapeDataString(targetCloneName)}&fields=uuid,state";
-
-                var tgtResp = await httpClient.GetAsync(tgtLookupUrl, ct);
-                tgtResp.EnsureSuccessStatusCode();
-
-                using var tgtDoc = JsonDocument.Parse(await tgtResp.Content.ReadAsStringAsync(ct));
-                var tgtRecs = tgtDoc.RootElement.GetProperty("records");
-
-                if (tgtRecs.GetArrayLength() > 0)
-                {
-                    var volume = tgtRecs[0];
-                    var state = volume.TryGetProperty("state", out var st) ? st.GetString() : null;
-
-                    if (state != null && state.Equals("online", StringComparison.OrdinalIgnoreCase))
-                    {
-                        tgtUuid = volume.GetProperty("uuid").GetString();
-                        break;
-                    }
-                }
-
-                await Task.Delay(1000, ct);
-            }
-
-            if (string.IsNullOrEmpty(tgtUuid))
-            {
-                _logger.LogError("Clone volume '{TargetClone}' did not become available within timeout.", targetCloneName);
+                _logger.LogError("CopyExportPolicy: controller {ControllerId} not found.", controllerId);
                 return false;
             }
 
-            // PATCH export policy
-            var patchUrl = $"{baseUrl}storage/volumes/{tgtUuid}";
-            var payload = new
+            var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
+
+            // Read source volume export policy live from ONTAP
+            var sourceLookup = await LookupVolumeAsync(client, baseUrl, sourceVolumeName, ct);
+            if (!sourceLookup.Success)
             {
-                nas = new
-                {
-                    export_policy = new { name = policyName }
-                }
-            };
-
-            var content = new StringContent(
-                System.Text.Json.JsonSerializer.Serialize(payload),
-                Encoding.UTF8,
-                "application/json"
-            );
-
-            // Retry PATCH up to 3 times if needed
-            for (int retry = 0; retry < 3; retry++)
-            {
-                var request = new HttpRequestMessage(HttpMethod.Patch, patchUrl) { Content = content };
-                var patchResp = await httpClient.SendAsync(request, ct);
-
-                if (patchResp.IsSuccessStatusCode)
-                    return true;
-
-                var err = await patchResp.Content.ReadAsStringAsync(ct);
-                _logger.LogWarning("Attempt {Retry}/3: Export policy patch failed: {Error}", retry + 1, err);
-
-                await Task.Delay(2000, ct); // Wait before retry
+                _logger.LogError("CopyExportPolicy: source volume lookup failed for '{SourceVolume}': {Message}",
+                    sourceVolumeName, sourceLookup.Message);
+                return false;
             }
 
-            _logger.LogError("Failed to apply export policy after multiple retries for volume '{Clone}'.", targetCloneName);
-            return false;
+            if (sourceLookup.RecordCount > 1)
+            {
+                _logger.LogWarning(
+                    "CopyExportPolicy: volume name '{SourceVolume}' returned {Count} records on controller {ControllerId}; using first match.",
+                    sourceVolumeName, sourceLookup.RecordCount, controllerId);
+            }
+
+            if (string.IsNullOrWhiteSpace(sourceLookup.ExportPolicyName))
+            {
+                _logger.LogError("CopyExportPolicy: source volume '{SourceVolume}' has no export policy.", sourceVolumeName);
+                return false;
+            }
+
+            var targetUuid = await WaitForVolumeUuidAsync(
+                client,
+                baseUrl,
+                targetCloneName,
+                attempts: 60,
+                delayMs: 1000,
+                requireOnline: true,
+                ct: ct);
+
+            if (string.IsNullOrWhiteSpace(targetUuid))
+            {
+                _logger.LogError("CopyExportPolicy: clone volume '{TargetClone}' did not become available within timeout.", targetCloneName);
+                return false;
+            }
+
+            var ok = await PatchExportPolicyWithVerifyAsync(
+                client,
+                baseUrl,
+                targetUuid,
+                targetCloneName,
+                sourceLookup.ExportPolicyName!,
+                maxAttempts: 5,
+                ct: ct);
+
+            if (!ok)
+            {
+                _logger.LogError("CopyExportPolicy: failed to apply export policy '{Policy}' to clone '{Clone}'.",
+                    sourceLookup.ExportPolicyName, targetCloneName);
+            }
+
+            return ok;
         }
 
-        public async Task<bool> EnsureExportPolicyExistsOnSecondaryAsync(string exportPolicyName,int primaryControllerId,int secondaryControllerId,string svmName,CancellationToken ct = default)
+        public async Task<bool> EnsureExportPolicyExistsOnSecondaryAsync(
+            string exportPolicyName,
+            int primaryControllerId,
+            int secondaryControllerId,
+            string primarySvmName,
+            string secondarySvmName,
+            CancellationToken ct = default)
         {
-            // 1. Lookup controllers
-            var primaryController = await _context.NetappControllers.FindAsync(primaryControllerId, ct);
-            var secondaryController = await _context.NetappControllers.FindAsync(secondaryControllerId, ct);
+            var primaryController = await _context.NetappControllers.FindAsync(new object[] { primaryControllerId }, ct);
+            var secondaryController = await _context.NetappControllers.FindAsync(new object[] { secondaryControllerId }, ct);
+
             if (primaryController == null || secondaryController == null)
-                throw new Exception("Controller(s) not found.");
+            {
+                _logger.LogError(
+                    "EnsureExportPolicyExistsOnSecondary: controller(s) not found. primary={PrimaryControllerId}, secondary={SecondaryControllerId}",
+                    primaryControllerId, secondaryControllerId);
+                return false;
+            }
 
             var primaryClient = _authService.CreateAuthenticatedClient(primaryController, out var primaryBaseUrl);
             var secondaryClient = _authService.CreateAuthenticatedClient(secondaryController, out var secondaryBaseUrl);
 
-            // 2. Check if export policy exists on secondary
-            var secPolicyUrl = $"{secondaryBaseUrl}protocols/nfs/export-policies?name={Uri.EscapeDataString(exportPolicyName)}&svm.name={Uri.EscapeDataString(svmName)}";
-            var secPolicyResp = await secondaryClient.GetAsync(secPolicyUrl, ct);
-            secPolicyResp.EnsureSuccessStatusCode();
+            _logger.LogInformation(
+                "EnsureExportPolicyExistsOnSecondary: policy={Policy}, primary={PrimaryControllerId}/{PrimarySvm}, secondary={SecondaryControllerId}/{SecondarySvm}",
+                exportPolicyName, primaryControllerId, primarySvmName, secondaryControllerId, secondarySvmName);
 
-            using (var secPolicyDoc = JsonDocument.Parse(await secPolicyResp.Content.ReadAsStringAsync(ct)))
+            // 1) Already exists on secondary? Done.
+            var existingSecondaryPolicyId = await LookupExportPolicyIdAsync(
+                secondaryClient,
+                secondaryBaseUrl,
+                exportPolicyName,
+                secondarySvmName,
+                ct);
+
+            if (!string.IsNullOrWhiteSpace(existingSecondaryPolicyId))
             {
-                if (secPolicyDoc.RootElement.TryGetProperty("records", out var secRecordsElement) &&
-                    secRecordsElement.ValueKind == JsonValueKind.Array)
-                {
-                    var secPolicyRecord = secRecordsElement.EnumerateArray().FirstOrDefault();
-                    if (secPolicyRecord.ValueKind == JsonValueKind.Object)
-                    {
-                        // Policy already exists on secondary, done!
-                        return true;
-                    }
-                }
+                _logger.LogInformation(
+                    "EnsureExportPolicyExistsOnSecondary: policy '{Policy}' already exists on secondary SVM '{SecondarySvm}'.",
+                    exportPolicyName, secondarySvmName);
+                return true;
             }
 
-            // 3. Lookup export policy (and id) on primary
-            string? primaryPolicyId = null;
-            JsonElement primaryPolicyRecord = default;
+            // 2) Find the policy on primary, using PRIMARY SVM first
+            var primaryPolicyId = await LookupExportPolicyIdAsync(
+                primaryClient,
+                primaryBaseUrl,
+                exportPolicyName,
+                primarySvmName,
+                ct);
 
-            // Try SVM-scoped first
-            var primaryPolicyUrl = $"{primaryBaseUrl}protocols/nfs/export-policies?name={Uri.EscapeDataString(exportPolicyName)}&svm.name={Uri.EscapeDataString(svmName)}";
-            var primaryPolicyResp = await primaryClient.GetAsync(primaryPolicyUrl, ct);
+            var usedClusterLevelFallback = false;
 
-            bool tryClusterLevel = false;
-            if (primaryPolicyResp.IsSuccessStatusCode)
+            if (string.IsNullOrWhiteSpace(primaryPolicyId))
             {
-                using (var primaryPolicyDoc = JsonDocument.Parse(await primaryPolicyResp.Content.ReadAsStringAsync(ct)))
-                {
-                    if (primaryPolicyDoc.RootElement.TryGetProperty("records", out var policyArray) &&
-                        policyArray.ValueKind == JsonValueKind.Array)
-                    {
-                        primaryPolicyRecord = policyArray.EnumerateArray().FirstOrDefault();
-                        if (primaryPolicyRecord.ValueKind == JsonValueKind.Object &&
-                            primaryPolicyRecord.TryGetProperty("id", out var idProp))
-                        {
-                            // id is a number; convert to string for URLs
-                            primaryPolicyId = idProp.GetInt64().ToString();
-                        }
-                        else
-                        {
-                            tryClusterLevel = true; // No policy found at SVM level, try cluster
-                        }
-                    }
-                    else
-                    {
-                        tryClusterLevel = true;
-                    }
-                }
-            }
-            else
-            {
-                var body = await primaryPolicyResp.Content.ReadAsStringAsync(ct);
-                // Try cluster-level if SVM does not exist or policy not found (2621462)
-                if (primaryPolicyResp.StatusCode == System.Net.HttpStatusCode.NotFound ||
-                    body.Contains("does not exist", StringComparison.OrdinalIgnoreCase) ||
-                    body.Contains("\"code\": \"2621462\"", StringComparison.OrdinalIgnoreCase))
-                {
-                    tryClusterLevel = true;
-                }
-                else
-                {
-                    // Other error (auth, comms, etc)
-                    return false;
-                }
+                primaryPolicyId = await LookupExportPolicyIdAsync(
+                    primaryClient,
+                    primaryBaseUrl,
+                    exportPolicyName,
+                    svmName: null,
+                    ct);
+
+                usedClusterLevelFallback = !string.IsNullOrWhiteSpace(primaryPolicyId);
             }
 
-            if (tryClusterLevel)
+            if (string.IsNullOrWhiteSpace(primaryPolicyId))
             {
-                var clusterPolicyUrl = $"{primaryBaseUrl}protocols/nfs/export-policies?name={Uri.EscapeDataString(exportPolicyName)}";
-                var clusterPolicyResp = await primaryClient.GetAsync(clusterPolicyUrl, ct);
-                if (!clusterPolicyResp.IsSuccessStatusCode)
-                    return false;
-                using (var clusterPolicyDoc = JsonDocument.Parse(await clusterPolicyResp.Content.ReadAsStringAsync(ct)))
-                {
-                    if (clusterPolicyDoc.RootElement.TryGetProperty("records", out var clusterArray) &&
-                        clusterArray.ValueKind == JsonValueKind.Array)
-                    {
-                        primaryPolicyRecord = clusterArray.EnumerateArray().FirstOrDefault();
-                        if (primaryPolicyRecord.ValueKind == JsonValueKind.Object &&
-                            primaryPolicyRecord.TryGetProperty("id", out var idProp))
-                        {
-                            primaryPolicyId = idProp.GetInt64().ToString();
-                        }
-                        else
-                        {
-                            _logger?.LogError("primaryPolicyRecord did not have an id property. Record: {0}", primaryPolicyRecord.ToString());
-                            return false;
-                        }
-                    }
-                    else
-                    {
-                        return false;
-                    }
-                }
-            }
-
-            if (string.IsNullOrEmpty(primaryPolicyId))
+                _logger.LogError(
+                    "EnsureExportPolicyExistsOnSecondary: could not find policy '{Policy}' on primary controller {PrimaryControllerId}. primarySvm={PrimarySvm}",
+                    exportPolicyName, primaryControllerId, primarySvmName);
                 return false;
+            }
 
-            // 4. Get all rules for this policy from primary using the detailed policy endpoint
+            if (usedClusterLevelFallback)
+            {
+                _logger.LogWarning(
+                    "EnsureExportPolicyExistsOnSecondary: policy '{Policy}' was not found in primary SVM '{PrimarySvm}', used cluster-level fallback.",
+                    exportPolicyName, primarySvmName);
+            }
+
+            // 3) Read full policy on primary
             var policyDetailUrl = $"{primaryBaseUrl}protocols/nfs/export-policies/{primaryPolicyId}?fields=svm,id,rules,name";
-            var policyDetailResp = await primaryClient.GetAsync(policyDetailUrl, ct);
-            if (!policyDetailResp.IsSuccessStatusCode)
-                return false;
+            using var policyDetailResp = await primaryClient.GetAsync(policyDetailUrl, ct);
 
-            var policyDetailJson = await policyDetailResp.Content.ReadAsStringAsync(ct);
-            using var policyDetailDoc = JsonDocument.Parse(policyDetailJson);
+            if (!policyDetailResp.IsSuccessStatusCode)
+            {
+                var body = await policyDetailResp.Content.ReadAsStringAsync(ct);
+                _logger.LogError(
+                    "EnsureExportPolicyExistsOnSecondary: failed to read primary policy details for policy '{Policy}' (id {PolicyId}): {Status} {Body}",
+                    exportPolicyName, primaryPolicyId, (int)policyDetailResp.StatusCode, body);
+                return false;
+            }
+
+            using var policyDetailDoc = JsonDocument.Parse(await policyDetailResp.Content.ReadAsStringAsync(ct));
             var policyDetail = policyDetailDoc.RootElement;
 
-            // Extract the "rules" array
             if (!policyDetail.TryGetProperty("rules", out var rulesArray) || rulesArray.ValueKind != JsonValueKind.Array)
+            {
+                _logger.LogError(
+                    "EnsureExportPolicyExistsOnSecondary: primary policy '{Policy}' has no readable rules array.",
+                    exportPolicyName);
                 return false;
+            }
 
-            // 5. Create export policy on secondary
+            // 4) Create policy on secondary SVM
             var createBody = new
             {
                 name = exportPolicyName,
-                svm = new { name = svmName }
+                svm = new { name = secondarySvmName }
             };
-            var createContent = new StringContent(System.Text.Json.JsonSerializer.Serialize(createBody), Encoding.UTF8, "application/json");
-            var createResp = await secondaryClient.PostAsync($"{secondaryBaseUrl}protocols/nfs/export-policies", createContent, ct);
-            if (!createResp.IsSuccessStatusCode)
-                return false;
 
-            string? createdId = null;
-            using (var createDoc = JsonDocument.Parse(await createResp.Content.ReadAsStringAsync(ct)))
+            using (var createContent = new StringContent(
+                JsonSerializer.Serialize(createBody),
+                Encoding.UTF8,
+                "application/json"))
             {
-                if (createDoc.RootElement.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.Number)
+                using var createResp = await secondaryClient.PostAsync(
+                    $"{secondaryBaseUrl}protocols/nfs/export-policies",
+                    createContent,
+                    ct);
+
+                if (!createResp.IsSuccessStatusCode)
                 {
-                    createdId = idProp.GetInt64().ToString();
+                    var body = await createResp.Content.ReadAsStringAsync(ct);
+
+                    // race/duplicate: try lookup before giving up
+                    _logger.LogWarning(
+                        "EnsureExportPolicyExistsOnSecondary: create policy returned {Status}: {Body}",
+                        (int)createResp.StatusCode, body);
                 }
             }
 
-            // Fallback: If id is not present, look up by name and svm.name
-            if (string.IsNullOrEmpty(createdId))
-            {
-                var lookupUrl = $"{secondaryBaseUrl}protocols/nfs/export-policies?name={Uri.EscapeDataString(exportPolicyName)}&svm.name={Uri.EscapeDataString(svmName)}";
-                var lookupResp = await secondaryClient.GetAsync(lookupUrl, ct);
-                if (!lookupResp.IsSuccessStatusCode)
-                    return false;
+            // 5) Resolve created policy id on secondary
+            var createdId = await LookupExportPolicyIdAsync(
+                secondaryClient,
+                secondaryBaseUrl,
+                exportPolicyName,
+                secondarySvmName,
+                ct);
 
-                using var lookupDoc = JsonDocument.Parse(await lookupResp.Content.ReadAsStringAsync(ct));
-                if (lookupDoc.RootElement.TryGetProperty("records", out var recordsArray) && recordsArray.ValueKind == JsonValueKind.Array)
-                {
-                    var policyRec = recordsArray.EnumerateArray().FirstOrDefault();
-                    if (policyRec.ValueKind == JsonValueKind.Object && policyRec.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.Number)
-                    {
-                        createdId = idProp.GetInt64().ToString();
-                    }
-                }
+            if (string.IsNullOrWhiteSpace(createdId))
+            {
+                _logger.LogError(
+                    "EnsureExportPolicyExistsOnSecondary: policy '{Policy}' was not found on secondary after create attempt.",
+                    exportPolicyName);
+                return false;
             }
 
-            if (string.IsNullOrEmpty(createdId))
-                return false;
-
-
-            // 6. Copy each rule from primary to secondary using detailed rule
+            // 6) Copy rules from primary to secondary
             foreach (var rule in rulesArray.EnumerateArray())
             {
-                // Fetch detailed rule if possible
                 if (!rule.TryGetProperty("index", out var idxProp) || idxProp.ValueKind != JsonValueKind.Number)
                     continue;
-                int ruleIndex = idxProp.GetInt32();
 
-                // Fetch full details for this rule
+                var ruleIndex = idxProp.GetInt32();
+
                 var ruleDetailsUrl = $"{primaryBaseUrl}protocols/nfs/export-policies/{primaryPolicyId}/rules/{ruleIndex}";
-                var ruleDetailsResp = await primaryClient.GetAsync(ruleDetailsUrl, ct);
+                using var ruleDetailsResp = await primaryClient.GetAsync(ruleDetailsUrl, ct);
+
                 if (!ruleDetailsResp.IsSuccessStatusCode)
                 {
-                    _logger?.LogWarning("Failed to fetch detailed export policy rule for index {0}", ruleIndex);
+                    var body = await ruleDetailsResp.Content.ReadAsStringAsync(ct);
+                    _logger.LogWarning(
+                        "EnsureExportPolicyExistsOnSecondary: failed to fetch primary export policy rule {RuleIndex}: {Status} {Body}",
+                        ruleIndex, (int)ruleDetailsResp.StatusCode, body);
                     continue;
                 }
 
                 using var ruleDetailsDoc = JsonDocument.Parse(await ruleDetailsResp.Content.ReadAsStringAsync(ct));
                 var ruleDetails = ruleDetailsDoc.RootElement;
 
-                // Build payload ONLY with supported fields
-                var payload = new Dictionary<string, object>();
-
-                // List of NetApp export rule properties you want to copy if present:
-                var knownFields = new[] {
-        "clients", "protocols", "ro_rule", "rw_rule",
-        "anonymous_user", "superuser", "allow_device_creation", "ntfs_unix_security",
-        "chown_mode", "allow_suid"
-    };
-
-                foreach (var field in knownFields)
-                {
-                    if (ruleDetails.TryGetProperty(field, out var value) && value.ValueKind != JsonValueKind.Undefined && value.ValueKind != JsonValueKind.Null)
-                    {
-                        switch (value.ValueKind)
-                        {
-                            case JsonValueKind.String:
-                                payload[field] = value.GetString();
-                                break;
-                            case JsonValueKind.Number:
-                                if (value.TryGetInt64(out var longVal)) payload[field] = longVal;
-                                else if (value.TryGetDecimal(out var decVal)) payload[field] = decVal;
-                                break;
-                            case JsonValueKind.True:
-                            case JsonValueKind.False:
-                                payload[field] = value.GetBoolean();
-                                break;
-                            case JsonValueKind.Array:
-                                payload[field] = value.EnumerateArray().Select(x =>
-                                {
-                                    // for "clients" it may be array of objects, for others usually string
-                                    if (x.ValueKind == JsonValueKind.String)
-                                        return (object)x.GetString();
-                                    else if (x.ValueKind == JsonValueKind.Object)
-                                    {
-                                        // for "clients", e.g. [{"match": "10.0.0.0/24"}]
-                                        return x.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.ToString());
-                                    }
-                                    return x.ToString();
-                                }).ToList();
-                                break;
-                            case JsonValueKind.Object:
-                                // Only needed for "clients" (array of object)
-                                payload[field] = System.Text.Json.JsonSerializer.Deserialize<object>(value.GetRawText());
-                                break;
-                        }
-                    }
-                }
-
+                var payload = BuildExportRulePayload(ruleDetails);
                 if (payload.Count == 0)
                 {
-                    _logger?.LogWarning("Export policy rule for policy {0} (rule index {1}) is empty after filtering. Skipping.", createdId, ruleIndex);
+                    _logger.LogWarning(
+                        "EnsureExportPolicyExistsOnSecondary: export policy rule {RuleIndex} became empty after filtering; skipping.",
+                        ruleIndex);
                     continue;
                 }
 
-                var ruleContent = new StringContent(System.Text.Json.JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+                using var ruleContent = new StringContent(
+                    JsonSerializer.Serialize(payload),
+                    Encoding.UTF8,
+                    "application/json");
+
                 var rulePostUrl = $"{secondaryBaseUrl}protocols/nfs/export-policies/{createdId}/rules";
-                var ruleResp = await secondaryClient.PostAsync(rulePostUrl, ruleContent, ct);
+                using var ruleResp = await secondaryClient.PostAsync(rulePostUrl, ruleContent, ct);
+
                 if (!ruleResp.IsSuccessStatusCode)
                 {
                     var errText = await ruleResp.Content.ReadAsStringAsync(ct);
-                    _logger?.LogError("Failed to POST export policy rule {0} to {1}: {2}", ruleIndex, rulePostUrl, errText);
+                    _logger.LogError(
+                        "EnsureExportPolicyExistsOnSecondary: failed to POST export rule {RuleIndex} to secondary policy {PolicyId}: {Status} {Body}",
+                        ruleIndex, createdId, (int)ruleResp.StatusCode, errText);
                     return false;
                 }
             }
 
-            // Success!
             return true;
-
         }
 
-
-
-        public async Task<bool> SetExportPolicyAsync(string volumeName,string exportPolicyName,int controllerId,CancellationToken ct = default)
+        public async Task<bool> SetExportPolicyAsync(
+            string volumeName,
+            string exportPolicyName,
+            int controllerId,
+            CancellationToken ct = default)
         {
-            var controller = await _context.NetappControllers.FindAsync(controllerId, ct);
-            if (controller == null) return false;
+            var controller = await _context.NetappControllers.FindAsync(new object[] { controllerId }, ct);
+            if (controller == null)
+            {
+                _logger.LogError("SetExportPolicy: controller {ControllerId} not found.", controllerId);
+                return false;
+            }
 
             var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
 
-            // 1) Resolve volume UUID with a few tries (volume may appear a bit late)
-            string? uuid = null;
-            for (int i = 0; i < 15 && uuid == null; i++)
+            var uuid = await WaitForVolumeUuidAsync(
+                client,
+                baseUrl,
+                volumeName,
+                attempts: 60,
+                delayMs: 1000,
+                requireOnline: true,
+                ct: ct);
+
+            if (string.IsNullOrWhiteSpace(uuid))
             {
-                var lookupUrl = $"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volumeName)}&fields=uuid,state";
-                var lookupResp = await client.GetAsync(lookupUrl, ct);
-                if (!lookupResp.IsSuccessStatusCode)
-                {
-                    await Task.Delay(500, ct);
-                    continue;
-                }
-
-                using var doc = JsonDocument.Parse(await lookupResp.Content.ReadAsStringAsync(ct));
-                var recs = doc.RootElement.GetProperty("records");
-                if (recs.GetArrayLength() > 0)
-                {
-                    var v = recs[0];
-                    var state = v.TryGetProperty("state", out var st) ? st.GetString() : null;
-                    // Prefer to wait until online, but proceed if uuid is present.
-                    if (!string.IsNullOrEmpty(state) && state.Equals("online", StringComparison.OrdinalIgnoreCase))
-                        uuid = v.GetProperty("uuid").GetString();
-                    else
-                        uuid = v.GetProperty("uuid").GetString();
-                }
-
-                if (uuid == null) await Task.Delay(500, ct);
+                _logger.LogError("SetExportPolicy: volume '{Name}' not found or not ready.", volumeName);
+                return false;
             }
 
-            if (uuid == null) { _logger.LogError("SetExportPolicy: volume '{Name}' not found.", volumeName); return false; }
+            var ok = await PatchExportPolicyWithVerifyAsync(
+                client,
+                baseUrl,
+                uuid,
+                volumeName,
+                exportPolicyName,
+                maxAttempts: 5,
+                ct: ct);
 
-            // 2) PATCH with retries and verify
-            var patchUrl = $"{baseUrl}storage/volumes/{uuid}";
-            var payloadObj = new { nas = new { export_policy = new { name = exportPolicyName } } };
-
-            // simple manual retry (or use Polly if you prefer)
-            for (int attempt = 1; attempt <= 5; attempt++)
+            if (!ok)
             {
-                using var content = new StringContent(
-                    System.Text.Json.JsonSerializer.Serialize(payloadObj),
-                    Encoding.UTF8,
-                    "application/json");
-
-                var resp = await client.PatchAsync(patchUrl, content, ct);
-                if (resp.IsSuccessStatusCode)
-                {
-                    // verify applied value
-                    var verifyUrl = $"{baseUrl}storage/volumes/{uuid}?fields=nas.export_policy.name";
-                    var vResp = await client.GetAsync(verifyUrl, ct);
-                    if (vResp.IsSuccessStatusCode)
-                    {
-                        using var vDoc = JsonDocument.Parse(await vResp.Content.ReadAsStringAsync(ct));
-                        var name = vDoc.RootElement
-                                       .GetProperty("nas")
-                                       .GetProperty("export_policy")
-                                       .GetProperty("name")
-                                       .GetString();
-
-                        if (string.Equals(name, exportPolicyName, StringComparison.OrdinalIgnoreCase))
-                            return true;
-
-                        _logger.LogInformation("SetExportPolicy verify mismatch (expected '{Exp}', got '{Got}'), attempt {Attempt}",
-                            exportPolicyName, name, attempt);
-                    }
-                }
-                else
-                {
-                    var body = await resp.Content.ReadAsStringAsync(ct);
-                    // 409/423 => busy/locked; try again
-                    if ((int)resp.StatusCode == 409 || (int)resp.StatusCode == 423)
-                    {
-                        _logger.LogWarning("SetExportPolicy PATCH busy/locked (attempt {Attempt}): {Body}", attempt, body);
-                    }
-                    else
-                    {
-                        _logger.LogWarning("SetExportPolicy PATCH failed (attempt {Attempt}, {Status}): {Body}",
-                            attempt, (int)resp.StatusCode, body);
-                    }
-                }
-
-                await Task.Delay(TimeSpan.FromMilliseconds(400 * attempt), ct);
+                _logger.LogError(
+                    "SetExportPolicy: failed to apply '{Policy}' to volume '{Name}' after retries.",
+                    exportPolicyName, volumeName);
             }
 
-            _logger.LogError("SetExportPolicy: failed to apply '{Policy}' to volume '{Name}' after retries.", exportPolicyName, volumeName);
-            return false;
+            return ok;
         }
 
-        public async Task<bool> SetVolumeExportPathAsync(string volumeUuid,string exportPath,int controllerId,CancellationToken ct = default)
+        public async Task<bool> SetVolumeExportPathAsync(
+            string volumeUuid,
+            string exportPath,
+            int controllerId,
+            CancellationToken ct = default)
         {
-            // 1) Fetch controller
             var controller = await _context.NetappControllers
                 .FirstOrDefaultAsync(c => c.Id == controllerId, ct);
+
             if (controller == null)
                 return false;
 
-            // 2) Use helper to get HttpClient and base URL
             var client = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
 
             var patchUrl = $"{baseUrl}storage/volumes/{volumeUuid}";
-            var geturl = $"{patchUrl}?fields=nas.path";
+            var getUrl = $"{patchUrl}?fields=nas.path";
             var payloadObj = new { nas = new { path = exportPath } };
-            var payloadJson = System.Text.Json.JsonSerializer.Serialize(payloadObj);
+            var payloadJson = JsonSerializer.Serialize(payloadObj);
 
-            // 3) Polly retry policy
             var retryPolicy = Policy<bool>
                 .Handle<HttpRequestException>()
                 .OrResult(ok => !ok)
@@ -565,65 +425,62 @@ namespace BareProx.Services.Netapp
                     {
                         if (outcome.Exception != null)
                         {
-                            _logger?.LogWarning(
+                            _logger.LogWarning(
                                 outcome.Exception,
                                 "[ExportPath:{Attempt}] HTTP error; retrying in {Delay}s",
                                 attempt, delay.TotalSeconds);
                         }
                         else
                         {
-                            _logger?.LogWarning(
+                            _logger.LogWarning(
                                 "[ExportPath:{Attempt}] verification failed; retrying in {Delay}s",
                                 attempt, delay.TotalSeconds);
                         }
-                    }
-                );
+                    });
 
-            // 4) Execute PATCH + GET/verify under policy
             return await retryPolicy.ExecuteAsync(
-                async (pollyCt) =>
+                async pollyCt =>
                 {
-                    // a) PATCH
                     using var content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
-                    var patchResp = await client.PatchAsync(patchUrl, content, pollyCt);
+
+                    using var patchResp = await client.PatchAsync(patchUrl, content, pollyCt);
                     if (!patchResp.IsSuccessStatusCode)
                     {
-                        _logger?.LogError("[ExportPath] PATCH failed: {Status}", patchResp.StatusCode);
+                        _logger.LogError("[ExportPath] PATCH failed: {Status}", patchResp.StatusCode);
                         return false;
                     }
 
-                    // b) GET and capture raw JSON
-                    var getResp = await client.GetAsync(geturl, pollyCt);
+                    using var getResp = await client.GetAsync(getUrl, pollyCt);
                     if (!getResp.IsSuccessStatusCode)
                     {
-                        _logger?.LogError("[ExportPath] GET failed: {Status}", getResp.StatusCode);
+                        _logger.LogError("[ExportPath] GET failed: {Status}", getResp.StatusCode);
                         return false;
                     }
 
-                    string text = await getResp.Content.ReadAsStringAsync(pollyCt);
+                    var text = await getResp.Content.ReadAsStringAsync(pollyCt);
+
                     JsonDocument doc;
                     try
                     {
                         doc = JsonDocument.Parse(text);
                     }
-                    catch (System.Text.Json.JsonException je)
+                    catch (JsonException je)
                     {
-                        _logger?.LogError(je, "[ExportPath] Invalid JSON: {Json}", text);
+                        _logger.LogError(je, "[ExportPath] Invalid JSON: {Json}", text);
                         return false;
                     }
 
-                    // c) Safe navigation: nas → path
                     if (!doc.RootElement.TryGetProperty("nas", out var nasElem) ||
                         !nasElem.TryGetProperty("path", out var pathElem))
                     {
-                        _logger?.LogWarning("[ExportPath] missing 'nas.path' in response: {Json}", text);
+                        _logger.LogWarning("[ExportPath] missing 'nas.path' in response: {Json}", text);
                         return false;
                     }
 
                     var actual = pathElem.GetString();
-                    if (actual != exportPath)
+                    if (!string.Equals(actual, exportPath, StringComparison.Ordinal))
                     {
-                        _logger?.LogInformation(
+                        _logger.LogInformation(
                             "[ExportPath] path not yet applied: expected={Expected} actual={Actual}",
                             exportPath, actual);
                         return false;
@@ -631,8 +488,302 @@ namespace BareProx.Services.Netapp
 
                     return true;
                 },
-                ct // pass the outer CancellationToken here
-            );
+                ct);
+        }
+
+        // --------------------------------------------------------------------
+        // Helpers
+        // --------------------------------------------------------------------
+
+        private sealed class VolumeLookupResult
+        {
+            public bool Success { get; init; }
+            public string? Message { get; init; }
+            public int RecordCount { get; init; }
+            public string? Uuid { get; init; }
+            public string? State { get; init; }
+            public string? SvmName { get; init; }
+            public string? ExportPolicyName { get; init; }
+        }
+
+        private async Task<VolumeLookupResult> LookupVolumeAsync(
+            HttpClient client,
+            string baseUrl,
+            string volumeName,
+            CancellationToken ct)
+        {
+            var url = $"{baseUrl}storage/volumes?name={Uri.EscapeDataString(volumeName)}&fields=uuid,state,svm.name,nas.export_policy.name";
+            using var resp = await client.GetAsync(url, ct);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                var body = await resp.Content.ReadAsStringAsync(ct);
+                return new VolumeLookupResult
+                {
+                    Success = false,
+                    Message = $"HTTP {(int)resp.StatusCode}: {body}"
+                };
+            }
+
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            if (!doc.RootElement.TryGetProperty("records", out var records) || records.ValueKind != JsonValueKind.Array)
+            {
+                return new VolumeLookupResult
+                {
+                    Success = false,
+                    Message = "No records array in response."
+                };
+            }
+
+            var count = records.GetArrayLength();
+            if (count == 0)
+            {
+                return new VolumeLookupResult
+                {
+                    Success = false,
+                    Message = $"Volume '{volumeName}' not found.",
+                    RecordCount = 0
+                };
+            }
+
+            var first = records[0];
+
+            string? uuid = first.TryGetProperty("uuid", out var uuidProp) ? uuidProp.GetString() : null;
+            string? state = first.TryGetProperty("state", out var stateProp) ? stateProp.GetString() : null;
+
+            string? svmName = null;
+            if (first.TryGetProperty("svm", out var svmProp) &&
+                svmProp.ValueKind == JsonValueKind.Object &&
+                svmProp.TryGetProperty("name", out var svmNameProp))
+            {
+                svmName = svmNameProp.GetString();
+            }
+
+            string? exportPolicyName = null;
+            if (first.TryGetProperty("nas", out var nasProp) &&
+                nasProp.ValueKind == JsonValueKind.Object &&
+                nasProp.TryGetProperty("export_policy", out var epProp) &&
+                epProp.ValueKind == JsonValueKind.Object &&
+                epProp.TryGetProperty("name", out var epNameProp))
+            {
+                exportPolicyName = epNameProp.GetString();
+            }
+
+            return new VolumeLookupResult
+            {
+                Success = true,
+                RecordCount = count,
+                Uuid = uuid,
+                State = state,
+                SvmName = svmName,
+                ExportPolicyName = exportPolicyName
+            };
+        }
+
+        private async Task<string?> WaitForVolumeUuidAsync(
+            HttpClient client,
+            string baseUrl,
+            string volumeName,
+            int attempts,
+            int delayMs,
+            bool requireOnline,
+            CancellationToken ct)
+        {
+            string? anyUuid = null;
+
+            for (var attempt = 1; attempt <= attempts; attempt++)
+            {
+                var lookup = await LookupVolumeAsync(client, baseUrl, volumeName, ct);
+                if (lookup.Success && !string.IsNullOrWhiteSpace(lookup.Uuid))
+                {
+                    anyUuid = lookup.Uuid;
+
+                    var isOnline = string.Equals(lookup.State, "online", StringComparison.OrdinalIgnoreCase);
+                    if (!requireOnline || isOnline)
+                        return lookup.Uuid;
+                }
+
+                await Task.Delay(delayMs, ct);
+            }
+
+            if (!string.IsNullOrWhiteSpace(anyUuid))
+            {
+                _logger.LogWarning(
+                    "WaitForVolumeUuid: volume '{Volume}' was found but never reached online state; proceeding with UUID anyway.",
+                    volumeName);
+            }
+
+            return anyUuid;
+        }
+
+        private async Task<bool> PatchExportPolicyWithVerifyAsync(
+            HttpClient client,
+            string baseUrl,
+            string volumeUuid,
+            string volumeNameForLogs,
+            string exportPolicyName,
+            int maxAttempts,
+            CancellationToken ct)
+        {
+            var patchUrl = $"{baseUrl}storage/volumes/{volumeUuid}";
+            var verifyUrl = $"{baseUrl}storage/volumes/{volumeUuid}?fields=nas.export_policy.name";
+            var payloadObj = new
+            {
+                nas = new
+                {
+                    export_policy = new { name = exportPolicyName }
+                }
+            };
+
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                using (var content = new StringContent(
+                    JsonSerializer.Serialize(payloadObj),
+                    Encoding.UTF8,
+                    "application/json"))
+                {
+                    using var resp = await client.PatchAsync(patchUrl, content, ct);
+                    if (!resp.IsSuccessStatusCode)
+                    {
+                        var body = await resp.Content.ReadAsStringAsync(ct);
+
+                        if ((int)resp.StatusCode == 409 || (int)resp.StatusCode == 423)
+                        {
+                            _logger.LogWarning(
+                                "PatchExportPolicyWithVerify: PATCH busy/locked for '{Volume}' (attempt {Attempt}/{MaxAttempts}): {Body}",
+                                volumeNameForLogs, attempt, maxAttempts, body);
+                        }
+                        else
+                        {
+                            _logger.LogWarning(
+                                "PatchExportPolicyWithVerify: PATCH failed for '{Volume}' (attempt {Attempt}/{MaxAttempts}, {Status}): {Body}",
+                                volumeNameForLogs, attempt, maxAttempts, (int)resp.StatusCode, body);
+                        }
+
+                        await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt), ct);
+                        continue;
+                    }
+                }
+
+                using var verifyResp = await client.GetAsync(verifyUrl, ct);
+                if (verifyResp.IsSuccessStatusCode)
+                {
+                    using var verifyDoc = JsonDocument.Parse(await verifyResp.Content.ReadAsStringAsync(ct));
+
+                    if (verifyDoc.RootElement.TryGetProperty("nas", out var nasProp) &&
+                        nasProp.ValueKind == JsonValueKind.Object &&
+                        nasProp.TryGetProperty("export_policy", out var epProp) &&
+                        epProp.ValueKind == JsonValueKind.Object &&
+                        epProp.TryGetProperty("name", out var nameProp))
+                    {
+                        var actual = nameProp.GetString();
+                        if (string.Equals(actual, exportPolicyName, StringComparison.OrdinalIgnoreCase))
+                            return true;
+
+                        _logger.LogInformation(
+                            "PatchExportPolicyWithVerify: verify mismatch for '{Volume}' (attempt {Attempt}/{MaxAttempts}). expected='{Expected}', actual='{Actual}'",
+                            volumeNameForLogs, attempt, maxAttempts, exportPolicyName, actual);
+                    }
+                    else
+                    {
+                        _logger.LogInformation(
+                            "PatchExportPolicyWithVerify: verify response missing nas.export_policy.name for '{Volume}' (attempt {Attempt}/{MaxAttempts}).",
+                            volumeNameForLogs, attempt, maxAttempts);
+                    }
+                }
+                else
+                {
+                    var body = await verifyResp.Content.ReadAsStringAsync(ct);
+                    _logger.LogInformation(
+                        "PatchExportPolicyWithVerify: verify GET failed for '{Volume}' (attempt {Attempt}/{MaxAttempts}, {Status}): {Body}",
+                        volumeNameForLogs, attempt, maxAttempts, (int)verifyResp.StatusCode, body);
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt), ct);
+            }
+
+            return false;
+        }
+
+        private async Task<string?> LookupExportPolicyIdAsync(
+            HttpClient client,
+            string baseUrl,
+            string exportPolicyName,
+            string? svmName,
+            CancellationToken ct)
+        {
+            var url = string.IsNullOrWhiteSpace(svmName)
+                ? $"{baseUrl}protocols/nfs/export-policies?name={Uri.EscapeDataString(exportPolicyName)}"
+                : $"{baseUrl}protocols/nfs/export-policies?name={Uri.EscapeDataString(exportPolicyName)}&svm.name={Uri.EscapeDataString(svmName)}";
+
+            using var resp = await client.GetAsync(url, ct);
+            if (!resp.IsSuccessStatusCode)
+                return null;
+
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+
+            if (!doc.RootElement.TryGetProperty("records", out var records) || records.ValueKind != JsonValueKind.Array)
+                return null;
+
+            foreach (var rec in records.EnumerateArray())
+            {
+                if (rec.ValueKind != JsonValueKind.Object)
+                    continue;
+
+                if (rec.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.Number)
+                    return idProp.GetInt64().ToString();
+            }
+
+            return null;
+        }
+
+        private static Dictionary<string, object> BuildExportRulePayload(JsonElement ruleDetails)
+        {
+            var payload = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+
+            var knownFields = new[]
+            {
+                "clients",
+                "protocols",
+                "ro_rule",
+                "rw_rule",
+                "anonymous_user",
+                "superuser",
+                "allow_device_creation",
+                "ntfs_unix_security",
+                "chown_mode",
+                "allow_suid"
+            };
+
+            foreach (var field in knownFields)
+            {
+                if (!ruleDetails.TryGetProperty(field, out var value))
+                    continue;
+
+                if (value.ValueKind == JsonValueKind.Undefined || value.ValueKind == JsonValueKind.Null)
+                    continue;
+
+                payload[field] = ConvertJson(value)!;
+            }
+
+            return payload;
+        }
+
+        private static object? ConvertJson(JsonElement value)
+        {
+            return value.ValueKind switch
+            {
+                JsonValueKind.String => value.GetString(),
+                JsonValueKind.Number => value.TryGetInt64(out var l) ? l :
+                                        value.TryGetDecimal(out var d) ? d :
+                                        value.GetDouble(),
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.Array => value.EnumerateArray().Select(ConvertJson).ToList(),
+                JsonValueKind.Object => value.EnumerateObject()
+                    .ToDictionary(p => p.Name, p => ConvertJson(p.Value)),
+                _ => null
+            };
         }
     }
 }

@@ -104,8 +104,6 @@ namespace BareProx.Controllers
                 .Where(v => v.Disabled != true)
                 .ToListAsync(ct);
 
-            // --- Precompute which snapshots are indexed (have disk rows) ---
-
             var allVolumeNames = selectedVolumes
                 .Select(v => v.VolumeName)
                 .Where(v => !string.IsNullOrWhiteSpace(v))
@@ -116,7 +114,6 @@ namespace BareProx.Controllers
 
             if (allVolumeNames.Count > 0)
             {
-                // Snapshots for the selected volumes
                 var snapMeta = await qdb.NetappSnapshots
                     .AsNoTracking()
                     .Where(s =>
@@ -138,7 +135,6 @@ namespace BareProx.Controllers
 
                 if (jobIds.Count > 0)
                 {
-                    // Jobs that have at least one disk snapshot row
                     var indexedJobIds = await db.ProxmoxStorageDiskSnapshots
                         .AsNoTracking()
                         .Where(d => jobIds.Contains(d.JobId))
@@ -173,7 +169,6 @@ namespace BareProx.Controllers
             var volumeLookup = selectedVolumes.ToLookup(v => v.NetappControllerId);
             var result = new List<NetappControllerTreeDto>();
 
-            // throttle calls to GetSnapshotsAsync to avoid hammering the controller
             using var gate = new SemaphoreSlim(4);
             var tasks = new List<Task>();
 
@@ -208,7 +203,6 @@ namespace BareProx.Controllers
                             IsSelected = true
                         };
 
-                        // Pre-fill indexed snapshot names for this volume
                         if (!string.IsNullOrWhiteSpace(vol.VolumeName) &&
                             indexedByVolume.TryGetValue(vol.VolumeName, out var snapSet))
                         {
@@ -227,7 +221,6 @@ namespace BareProx.Controllers
                                     vol.VolumeName,
                                     ct);
 
-                                // newest first (lexicographically descending)
                                 volumeDto.Snapshots = snaps?
                                     .Where(s => !string.IsNullOrWhiteSpace(s))
                                     .OrderByDescending(s => s, StringComparer.OrdinalIgnoreCase)
@@ -258,11 +251,10 @@ namespace BareProx.Controllers
             return View(result);
         }
 
-
         public async Task<IActionResult> SnapMirrorGraph(CancellationToken ct)
         {
-            await using var db = await _dbf.CreateDbContextAsync(ct);   // Main DB
-            await using var qdb = await _qdbf.CreateDbContextAsync(ct); // Query DB
+            await using var db = await _dbf.CreateDbContextAsync(ct);
+            await using var qdb = await _qdbf.CreateDbContextAsync(ct);
 
             var snapshotList = await qdb.NetappSnapshots.AsNoTracking().ToListAsync(ct);
 
@@ -369,7 +361,6 @@ namespace BareProx.Controllers
             return Json(new { snapshots });
         }
 
-
         [HttpGet]
         public async Task<IActionResult> GetNfsIps(
             string vserver,
@@ -385,24 +376,27 @@ namespace BareProx.Controllers
         {
             if (!ModelState.IsValid) return BadRequest("Invalid input.");
 
+            string? cloneName = null;
+
             try
             {
                 var timestamp = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
-                var cloneName = $"restore_{model.VolumeName}_{timestamp}";
+                cloneName = $"restore_{model.VolumeName}_{timestamp}";
 
-                if (model.ControllerId <= 0) return BadRequest("Invalid controller ID.");
+                if (model.ControllerId <= 0)
+                    return BadRequest("Invalid controller ID.");
 
                 var result = await _netappflexcloneService.CloneVolumeFromSnapshotAsync(
                     model.VolumeName, model.SnapshotName, cloneName, model.ControllerId, ct);
 
-                if (!result.Success) return BadRequest("Failed to create FlexClone: " + result.Message);
+                if (!result.Success)
+                    return BadRequest("Failed to create FlexClone: " + result.Message);
 
                 await using (var db = await _dbf.CreateDbContextAsync(ct))
                 await using (var qdb = await _qdbf.CreateDbContextAsync(ct))
                 {
                     if (model.IsSecondary)
                     {
-                        // Read snapshot metadata from Query DB
                         var snapshotRecord = await qdb.NetappSnapshots
                             .AsNoTracking()
                             .FirstOrDefaultAsync(s =>
@@ -427,24 +421,40 @@ namespace BareProx.Controllers
                                     r.DestinationVolume == model.VolumeName, ct);
 
                             if (smr == null)
+                            {
+                                await TryDeleteCloneAsync(cloneName, model.ControllerId, ct);
                                 return BadRequest($"No snapshot metadata or SnapMirrorRelation found for '{model.SnapshotName}' on '{model.VolumeName}'.");
+                            }
 
                             primaryControllerId = smr.SourceControllerId;
                             primaryVolumeName = smr.SourceVolume;
                         }
 
-                        var primaryExportPolicy = await db.SelectedNetappVolumes
+                        var primaryMeta = await db.SelectedNetappVolumes
                             .AsNoTracking()
                             .Where(v => v.NetappControllerId == primaryControllerId &&
                                         v.VolumeName == primaryVolumeName &&
                                         v.Disabled != true)
-                            .Select(v => v.ExportPolicyName)
+                            .Select(v => new
+                            {
+                                v.ExportPolicyName,
+                                v.Vserver
+                            })
                             .FirstOrDefaultAsync(ct);
 
-                        if (string.IsNullOrEmpty(primaryExportPolicy))
+                        if (primaryMeta == null || string.IsNullOrWhiteSpace(primaryMeta.ExportPolicyName))
+                        {
+                            await TryDeleteCloneAsync(cloneName, model.ControllerId, ct);
                             return StatusCode(500, "Could not find export policy on primary volume.");
+                        }
 
-                        var svmName = await db.SelectedNetappVolumes
+                        if (string.IsNullOrWhiteSpace(primaryMeta.Vserver))
+                        {
+                            await TryDeleteCloneAsync(cloneName, model.ControllerId, ct);
+                            return StatusCode(500, "Could not determine primary SVM name.");
+                        }
+
+                        var secondarySvmName = await db.SelectedNetappVolumes
                             .AsNoTracking()
                             .Where(v => v.NetappControllerId == model.ControllerId &&
                                         v.VolumeName == model.VolumeName &&
@@ -452,41 +462,83 @@ namespace BareProx.Controllers
                             .Select(v => v.Vserver)
                             .FirstOrDefaultAsync(ct);
 
-                        if (string.IsNullOrEmpty(svmName))
-                            return StatusCode(500, "Could not determine SVM name for clone.");
+                        if (string.IsNullOrWhiteSpace(secondarySvmName))
+                        {
+                            await TryDeleteCloneAsync(cloneName, model.ControllerId, ct);
+                            return StatusCode(500, "Could not determine secondary SVM name for clone.");
+                        }
 
                         var copied = await _netappExportNFSService.EnsureExportPolicyExistsOnSecondaryAsync(
-                            primaryExportPolicy, primaryControllerId, model.ControllerId, svmName, ct);
+                            exportPolicyName: primaryMeta.ExportPolicyName!,
+                            primaryControllerId: primaryControllerId,
+                            secondaryControllerId: model.ControllerId,
+                            primarySvmName: primaryMeta.Vserver!,
+                            secondarySvmName: secondarySvmName,
+                            ct: ct);
 
                         if (!copied)
+                        {
+                            await TryDeleteCloneAsync(cloneName, model.ControllerId, ct);
                             return StatusCode(500, "Failed to ensure export policy exists on secondary controller.");
+                        }
 
                         var ok = await _netappExportNFSService.SetExportPolicyAsync(
-                            cloneName, primaryExportPolicy, model.ControllerId, ct);
+                            cloneName, primaryMeta.ExportPolicyName!, model.ControllerId, ct);
 
                         if (!ok)
+                        {
+                            await TryDeleteCloneAsync(cloneName, model.ControllerId, ct);
                             return StatusCode(500, "Failed to set export policy on clone from primary info.");
+                        }
                     }
                     else
                     {
-                        await _netappExportNFSService.CopyExportPolicyAsync(
+                        var exported = await _netappExportNFSService.CopyExportPolicyAsync(
                             model.VolumeName, cloneName, model.ControllerId, ct);
+
+                        if (!exported)
+                        {
+                            await TryDeleteCloneAsync(cloneName, model.ControllerId, ct);
+                            return StatusCode(500, "Failed to apply export policy on cloned volume.");
+                        }
                     }
 
                     var volumeInfo = await _netappVolumeService.LookupVolumeAsync(result.CloneVolumeName!, model.ControllerId, ct);
                     if (volumeInfo == null)
+                    {
+                        await TryDeleteCloneAsync(cloneName, model.ControllerId, ct);
                         return StatusCode(500, $"Failed to find UUID for cloned volume '{result.CloneVolumeName}'.");
+                    }
 
-                    await _netappExportNFSService.SetVolumeExportPathAsync(volumeInfo.Uuid, $"/{cloneName}", model.ControllerId, ct);
+                    var exportOk = await _netappExportNFSService.SetVolumeExportPathAsync(
+                        volumeInfo.Uuid,
+                        $"/{cloneName}",
+                        model.ControllerId,
+                        ct);
+
+                    if (!exportOk)
+                    {
+                        await TryDeleteCloneAsync(cloneName, model.ControllerId, ct);
+                        return StatusCode(500, "Failed to set export path on cloned volume.");
+                    }
 
                     var cluster = await db.ProxmoxClusters
                         .Include(c => c.Hosts)
                         .AsNoTracking()
                         .FirstOrDefaultAsync(ct);
 
-                    if (cluster == null) return NotFound("Proxmox cluster not found.");
+                    if (cluster == null)
+                    {
+                        await TryDeleteCloneAsync(cloneName, model.ControllerId, ct);
+                        return NotFound("Proxmox cluster not found.");
+                    }
+
                     var host = cluster.Hosts.FirstOrDefault();
-                    if (host == null) return NotFound("No Proxmox hosts available in the cluster.");
+                    if (host == null)
+                    {
+                        await TryDeleteCloneAsync(cloneName, model.ControllerId, ct);
+                        return NotFound("No Proxmox hosts available in the cluster.");
+                    }
 
                     var mounted = await _proxmoxService.MountNfsStorageViaApiAsync(
                         cluster,
@@ -498,7 +550,11 @@ namespace BareProx.Controllers
                         ct: ct
                     );
 
-                    if (!mounted) return StatusCode(500, "Failed to mount clone on Proxmox.");
+                    if (!mounted)
+                    {
+                        await TryDeleteCloneAsync(cloneName, model.ControllerId, ct);
+                        return StatusCode(500, "Failed to mount clone on Proxmox.");
+                    }
                 }
 
                 TempData["Message"] = $"Snapshot {model.SnapshotName} cloned and mounted as {cloneName}.";
@@ -508,6 +564,10 @@ namespace BareProx.Controllers
             {
                 _log.LogError(ex, "MountSnapshot failed for volume {Volume} snapshot {Snapshot}.",
                     model.VolumeName, model.SnapshotName);
+
+                if (!string.IsNullOrWhiteSpace(cloneName))
+                    await TryDeleteCloneAsync(cloneName, model.ControllerId, ct);
+
                 return StatusCode(500, "Mount failed: " + ex.Message);
             }
         }
@@ -547,6 +607,7 @@ namespace BareProx.Controllers
             if (int.TryParse(match.Groups["seconds"].Value, out var s) && s > 0) parts.Add($"{s}s");
             return string.Join(" ", parts);
         }
+
         [HttpGet]
         public async Task<IActionResult> GetSnapshotVmDisks(
             int clusterId,
@@ -567,7 +628,6 @@ namespace BareProx.Controllers
                 return Json(new { vms = Array.Empty<object>() });
             }
 
-            // 1) Find snapshot metadata for THIS snapshot + volume (primary OR secondary)
             var snapMeta = await qdb.NetappSnapshots
                 .AsNoTracking()
                 .Where(s =>
@@ -584,7 +644,6 @@ namespace BareProx.Controllers
             if (snapMeta.Count == 0)
                 return Json(new { vms = Array.Empty<object>() });
 
-            // All jobs that produced this snapshot on this SnapMirror pair
             var jobIds = snapMeta
                 .Select(s => s.JobId)
                 .Distinct()
@@ -593,7 +652,6 @@ namespace BareProx.Controllers
             if (jobIds.Count == 0)
                 return Json(new { vms = Array.Empty<object>() });
 
-            // 2) Restrict to the chosen Proxmox cluster via ProxmoxHosts
             var clusterJobIds = await (
                 from b in main.BackupRecords.AsNoTracking()
                 join h in main.ProxmoxHosts.AsNoTracking()
@@ -608,8 +666,6 @@ namespace BareProx.Controllers
             if (clusterJobIds.Count == 0)
                 return Json(new { vms = Array.Empty<object>() });
 
-            // 3) Load disk-index rows from MAIN DB
-            //    for this cluster + these jobs (StorageId no longer filtered by NetApp volume name)
             var diskRows = await main.ProxmoxStorageDiskSnapshots
                 .AsNoTracking()
                 .Where(d =>
@@ -620,7 +676,6 @@ namespace BareProx.Controllers
             if (diskRows.Count == 0)
                 return Json(new { vms = Array.Empty<object>() });
 
-            // 4) Optional: get VM names from JobVmResults
             var vmNames = await main.JobVmResults
                 .AsNoTracking()
                 .Where(r => clusterJobIds.Contains(r.JobId))
@@ -646,7 +701,6 @@ namespace BareProx.Controllers
                     x => string.IsNullOrWhiteSpace(x.VmName) ? $"VM {x.VmId}" : x.VmName!
                 );
 
-            // 5) Group to VM → disks
             var vms = diskRows
                 .GroupBy(d => d.VMID)
                 .Select(g =>
@@ -677,22 +731,20 @@ namespace BareProx.Controllers
             return Json(new { vms });
         }
 
-
-
         [HttpPost]
         public async Task<IActionResult> PrepareAttachDisk(
-      int clusterId,
-      int targetVmId,
-      string volumeName,
-      string snapshotName,
-      int controllerId,
-      string sourceVolid,
-      int? sourceVmId,
-      string? busType,
-      int? preferredIndex,
-      long? sourceSizeBytes,   // NEW
-      string? sourceFormat,    // NEW
-      CancellationToken ct)
+            int clusterId,
+            int targetVmId,
+            string volumeName,
+            string snapshotName,
+            int controllerId,
+            string sourceVolid,
+            int? sourceVmId,
+            string? busType,
+            int? preferredIndex,
+            long? sourceSizeBytes,
+            string? sourceFormat,
+            CancellationToken ct)
         {
             try
             {
@@ -723,7 +775,6 @@ namespace BareProx.Controllers
                     return Json(new { ok = false, error = $"VM {targetVmId} has no node name in inventory." });
                 }
 
-                // Read current config via ProxmoxService
                 var cfgJson = await _proxmoxService.GetVmConfigAsync(cluster, nodeName, targetVmId, ct);
                 using var cfgDoc = JsonDocument.Parse(cfgJson);
                 if (!cfgDoc.RootElement.TryGetProperty("config", out var cfgObj) ||
@@ -732,7 +783,6 @@ namespace BareProx.Controllers
                     return Json(new { ok = false, error = "VM config missing or invalid." });
                 }
 
-                // Collect existing disks
                 var diskRegex = new Regex(@"^(scsi|virtio|ide|sata|efidisk|tpmstate)\d+$",
                     RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
@@ -751,14 +801,11 @@ namespace BareProx.Controllers
 
                 var diskKeySet = new HashSet<string>(diskKeys, StringComparer.OrdinalIgnoreCase);
 
-                // --- Suggest next disk KEY (scsiN / sataN / etc.) ---
-
                 var validBuses = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "scsi", "virtio", "ide", "sata"
-        };
+                {
+                    "scsi", "virtio", "ide", "sata"
+                };
 
-                // Base bus: either from UI or majority bus in existing config
                 string bus = "scsi";
                 if (!string.IsNullOrWhiteSpace(busType) && validBuses.Contains(busType))
                 {
@@ -780,7 +827,6 @@ namespace BareProx.Controllers
                         })
                         .ToList();
 
-                    // If no busType was forced, pick the most common bus (ignoring efidisk/tpmstate)
                     if (string.IsNullOrWhiteSpace(busType) || !validBuses.Contains(bus))
                     {
                         var majority = keyInfos
@@ -793,7 +839,6 @@ namespace BareProx.Controllers
                             bus = majority.Key;
                     }
 
-                    // Max index for this bus (for scsi, virtio, sata, ide ...)
                     maxKeyIndexForBus = keyInfos
                         .Where(x => string.Equals(x.Bus, bus, StringComparison.OrdinalIgnoreCase))
                         .Select(x => x.Index)
@@ -803,7 +848,6 @@ namespace BareProx.Controllers
 
                 int nextKeyIndex = maxKeyIndexForBus + 1;
 
-                // If user specified a preferred index and it's free, honor it
                 if (preferredIndex.HasValue && preferredIndex.Value >= 0)
                 {
                     var candidateKey = $"{bus}{preferredIndex.Value}";
@@ -813,19 +857,15 @@ namespace BareProx.Controllers
 
                 var suggestedKey = $"{bus}{nextKeyIndex}";
 
-                // --- Suggest disk FILE name/path: <targetVmId>/vm-<targetVmId>-disk-N.ext ---
-
-                // 1) Figure out extension from the source volid, e.g. "113/vm-113-disk-1.qcow2"
                 var filePartRaw = sourceVolid.Split(':', 2).Length == 2
                     ? sourceVolid.Split(':', 2)[1]
                     : sourceVolid;
 
-                var basePathPart = filePartRaw.Split(',', 2)[0]; // strip trailing ",discard=...,size=..."
+                var basePathPart = filePartRaw.Split(',', 2)[0];
                 var ext = Path.GetExtension(basePathPart);
                 if (string.IsNullOrWhiteSpace(ext))
                     ext = ".qcow2";
 
-                // 2) Scan existing disks for this VM to find the highest "vm-<target>-disk-N"
                 int maxDiskNumber = -1;
                 var diskFileRegex = new Regex($@"vm-{targetVmId}-disk-(\d+)\.",
                     RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -841,7 +881,7 @@ namespace BareProx.Controllers
                         continue;
 
                     var afterColon = val.Substring(colonIdx + 1);
-                    var pathPart = afterColon.Split(',', 2)[0]; // e.g. "114/vm-114-disk-1.qcow2"
+                    var pathPart = afterColon.Split(',', 2)[0];
 
                     var m = diskFileRegex.Match(pathPart);
                     if (m.Success && int.TryParse(m.Groups[1].Value, out var diskNo))
@@ -851,35 +891,26 @@ namespace BareProx.Controllers
                     }
                 }
 
-                // Next free disk-N suffix
                 var newDiskNumber = maxDiskNumber + 1;
-                if (newDiskNumber < 0) newDiskNumber = 0; // brand new VM case
+                if (newDiskNumber < 0) newDiskNumber = 0;
 
                 var suggestedFileName = $"vm-{targetVmId}-disk-{newDiskNumber}{ext}";
                 var suggestedRelPath = $"{targetVmId}/{suggestedFileName}";
 
-                // --- Build options: backup=0 + format + size ---
                 var options = new List<string> { "backup=0" };
 
                 if (!string.IsNullOrWhiteSpace(sourceFormat))
-                {
                     options.Add($"format={sourceFormat}");
-                }
 
                 if (sourceSizeBytes.GetValueOrDefault() > 0)
                 {
                     var sizeGiB = sourceSizeBytes.Value / (1024d * 1024d * 1024d);
                     var sizeGiBInt = (int)Math.Round(sizeGiB, MidpointRounding.AwayFromZero);
                     if (sizeGiBInt > 0)
-                    {
                         options.Add($"size={sizeGiBInt}G");
-                    }
                 }
 
                 var optionsStr = string.Join(",", options);
-
-                // 3) Final placeholder value for UI:
-                //    <clone-storage>:114/vm-114-disk-2.qcow2,backup=0,format=qcow2,size=32G
                 var suggestedValue = $"<clone-storage>:{suggestedRelPath},{optionsStr}";
 
                 return Json(new
@@ -899,8 +930,6 @@ namespace BareProx.Controllers
             }
         }
 
-
-
         [HttpPost]
         public async Task<IActionResult> MountDiskFromSnapshot(
             int clusterId,
@@ -914,6 +943,8 @@ namespace BareProx.Controllers
             string diskValue,
             CancellationToken ct)
         {
+            string? cloneName = null;
+
             try
             {
                 if (string.IsNullOrWhiteSpace(volumeName) ||
@@ -950,8 +981,7 @@ namespace BareProx.Controllers
                 if (hostForStatus == null)
                     return Json(new { ok = false, error = "No Proxmox hosts available in the cluster." });
 
-                // 1) Clone NetApp volume from snapshot
-                var cloneName = $"attach_{targetVmId}_{DateTime.UtcNow:yyyyMMddHHmmss}";
+                cloneName = $"attach_{targetVmId}_{DateTime.UtcNow:yyyyMMddHHmmss}";
                 var cloneResult = await _netappflexcloneService.CloneVolumeFromSnapshotAsync(
                     volumeName,
                     snapshotName,
@@ -962,10 +992,6 @@ namespace BareProx.Controllers
                 if (!cloneResult.Success)
                     return Json(new { ok = false, error = $"FlexClone failed: {cloneResult.Message}" });
 
-                // 2) Apply export policy and set export path
-                //
-                // If this controller is SECONDARY, we want to use the PRIMARY's export policy
-                // (same logic as MountSnapshot) so the clone is RW for Proxmox.
                 var controllerEntity = await db.NetappControllers
                     .AsNoTracking()
                     .FirstOrDefaultAsync(c => c.Id == controllerId, ct);
@@ -974,7 +1000,6 @@ namespace BareProx.Controllers
 
                 if (isSecondary)
                 {
-                    // Resolve primary side for this secondary volume/snapshot
                     var snapshotRecord = await qdb.NetappSnapshots
                         .AsNoTracking()
                         .Where(s =>
@@ -1002,7 +1027,7 @@ namespace BareProx.Controllers
 
                         if (smr == null)
                         {
-                            await _netappVolumeService.DeleteVolumeAsync(cloneName, controllerId, ct);
+                            await TryDeleteCloneAsync(cloneName, controllerId, ct);
                             return Json(new
                             {
                                 ok = false,
@@ -1014,21 +1039,31 @@ namespace BareProx.Controllers
                         primaryVolumeName = smr.SourceVolume;
                     }
 
-                    var primaryExportPolicy = await db.SelectedNetappVolumes
+                    var primaryMeta = await db.SelectedNetappVolumes
                         .AsNoTracking()
                         .Where(v => v.NetappControllerId == primaryControllerId &&
                                     v.VolumeName == primaryVolumeName &&
                                     v.Disabled != true)
-                        .Select(v => v.ExportPolicyName)
+                        .Select(v => new
+                        {
+                            v.ExportPolicyName,
+                            v.Vserver
+                        })
                         .FirstOrDefaultAsync(ct);
 
-                    if (string.IsNullOrWhiteSpace(primaryExportPolicy))
+                    if (primaryMeta == null || string.IsNullOrWhiteSpace(primaryMeta.ExportPolicyName))
                     {
-                        await _netappVolumeService.DeleteVolumeAsync(cloneName, controllerId, ct);
+                        await TryDeleteCloneAsync(cloneName, controllerId, ct);
                         return Json(new { ok = false, error = "Could not find export policy on primary volume." });
                     }
 
-                    var svmName = await db.SelectedNetappVolumes
+                    if (string.IsNullOrWhiteSpace(primaryMeta.Vserver))
+                    {
+                        await TryDeleteCloneAsync(cloneName, controllerId, ct);
+                        return Json(new { ok = false, error = "Could not determine primary SVM name." });
+                    }
+
+                    var secondarySvmName = await db.SelectedNetappVolumes
                         .AsNoTracking()
                         .Where(v => v.NetappControllerId == controllerId &&
                                     v.VolumeName == volumeName &&
@@ -1036,40 +1071,40 @@ namespace BareProx.Controllers
                         .Select(v => v.Vserver)
                         .FirstOrDefaultAsync(ct);
 
-                    if (string.IsNullOrWhiteSpace(svmName))
+                    if (string.IsNullOrWhiteSpace(secondarySvmName))
                     {
-                        await _netappVolumeService.DeleteVolumeAsync(cloneName, controllerId, ct);
+                        await TryDeleteCloneAsync(cloneName, controllerId, ct);
                         return Json(new { ok = false, error = "Could not determine SVM name for clone on secondary." });
                     }
 
                     var copied = await _netappExportNFSService.EnsureExportPolicyExistsOnSecondaryAsync(
-                        primaryExportPolicy,
-                        primaryControllerId,
-                        controllerId,
-                        svmName,
-                        ct);
+                        exportPolicyName: primaryMeta.ExportPolicyName!,
+                        primaryControllerId: primaryControllerId,
+                        secondaryControllerId: controllerId,
+                        primarySvmName: primaryMeta.Vserver!,
+                        secondarySvmName: secondarySvmName,
+                        ct: ct);
 
                     if (!copied)
                     {
-                        await _netappVolumeService.DeleteVolumeAsync(cloneName, controllerId, ct);
+                        await TryDeleteCloneAsync(cloneName, controllerId, ct);
                         return Json(new { ok = false, error = "Failed to ensure export policy exists on secondary controller." });
                     }
 
                     var okPolicy = await _netappExportNFSService.SetExportPolicyAsync(
                         cloneName,
-                        primaryExportPolicy,
+                        primaryMeta.ExportPolicyName!,
                         controllerId,
                         ct);
 
                     if (!okPolicy)
                     {
-                        await _netappVolumeService.DeleteVolumeAsync(cloneName, controllerId, ct);
+                        await TryDeleteCloneAsync(cloneName, controllerId, ct);
                         return Json(new { ok = false, error = "Failed to set export policy on clone from primary info." });
                     }
                 }
                 else
                 {
-                    // Primary: just copy export policy from the source volume
                     var exported = await _netappExportNFSService.CopyExportPolicyAsync(
                         volumeName,
                         cloneName,
@@ -1078,12 +1113,11 @@ namespace BareProx.Controllers
 
                     if (!exported)
                     {
-                        await _netappVolumeService.DeleteVolumeAsync(cloneName, controllerId, ct);
+                        await TryDeleteCloneAsync(cloneName, controllerId, ct);
                         return Json(new { ok = false, error = "Failed to apply export policy on cloned volume." });
                     }
                 }
 
-                // 3) Set export path
                 var volInfo = await _netappVolumeService.LookupVolumeAsync(cloneName, controllerId, ct)
                              ?? throw new InvalidOperationException($"UUID not found for clone '{cloneName}'.");
 
@@ -1096,61 +1130,49 @@ namespace BareProx.Controllers
 
                 if (!exportOk)
                 {
-                    await _netappVolumeService.DeleteVolumeAsync(cloneName, controllerId, ct);
+                    await TryDeleteCloneAsync(cloneName, controllerId, ct);
                     return Json(new { ok = false, error = "Failed to set export path on cloned volume." });
                 }
 
-                // 4) Mount clone as NFS storage on the VM's node
                 var mounts = await _netappVolumeService.GetVolumesWithMountInfoAsync(controllerId, ct);
                 var cloneMount = mounts.FirstOrDefault(m =>
                     m.VolumeName.Equals(cloneName, StringComparison.OrdinalIgnoreCase));
 
                 if (cloneMount == null)
                 {
-                    await _netappVolumeService.DeleteVolumeAsync(cloneName, controllerId, ct);
+                    await TryDeleteCloneAsync(cloneName, controllerId, ct);
                     return Json(new { ok = false, error = $"Mount info not found for clone '{cloneName}'." });
                 }
 
                 var mountOk = await _proxmoxService.MountNfsStorageViaApiAsync(
                     cluster,
                     nodeName,
-                    cloneName,          // storage name
-                    cloneMount.MountIp, // server IP
+                    cloneName,
+                    cloneMount.MountIp,
                     exportPath,
                     snapshotChainActive: false,
                     ct: ct);
 
                 if (!mountOk)
                 {
-                    await _netappVolumeService.DeleteVolumeAsync(cloneName, controllerId, ct);
+                    await TryDeleteCloneAsync(cloneName, controllerId, ct);
                     return Json(new { ok = false, error = "Failed to mount clone on Proxmox node." });
                 }
 
-                // 5) Derive source + destination file paths for symlink prep
-                //
-                // sourceVolid example: "proxmox_ds_dev:101/vm-101-disk-1.qcow2"
-                // diskValue placeholder: "<clone-storage>:114/vm-114-disk-2.qcow2,backup=0"
-                //
-                // We want to create:
-                //   /mnt/pve/<cloneName>/images/114/vm-114-disk-2.qcow2  -> symlink ->  /mnt/pve/<cloneName>/images/101/vm-101-disk-1.qcow2
-
-                // Parse source path
                 var srcPartRaw = sourceVolid.Split(':', 2).Length == 2
-                    ? sourceVolid.Split(':', 2)[1]      // "101/vm-101-disk-1.qcow2"
+                    ? sourceVolid.Split(':', 2)[1]
                     : sourceVolid;
 
-                srcPartRaw = srcPartRaw.Split(',', 2)[0];          // strip any ",size=...,discard=..." if present
+                srcPartRaw = srcPartRaw.Split(',', 2)[0];
                 var srcSegments = srcPartRaw.Split('/', 2);
                 if (srcSegments.Length < 2)
                 {
                     return Json(new { ok = false, error = $"Source volid has unexpected format: {sourceVolid}" });
                 }
 
-                var srcVmFolder = srcSegments[0];                  // "101"
-                var srcFileName = srcSegments[1];                  // "vm-101-disk-1.qcow2"
+                var srcVmFolder = srcSegments[0];
+                var srcFileName = srcSegments[1];
 
-                // Parse destination path from diskValue
-                // e.g. "<clone-storage>:114/vm-114-disk-2.qcow2,backup=0"
                 var commaIdx = diskValue.IndexOf(',');
                 var valueHead = commaIdx >= 0 ? diskValue.Substring(0, commaIdx) : diskValue;
                 var tailOptions = commaIdx >= 0 ? diskValue.Substring(commaIdx + 1) : "backup=0";
@@ -1161,17 +1183,16 @@ namespace BareProx.Controllers
                     return Json(new { ok = false, error = $"Disk value has unexpected format: {diskValue}" });
                 }
 
-                var dstRelPath = headParts[1];                     // "114/vm-114-disk-2.qcow2"
+                var dstRelPath = headParts[1];
                 var dstSegments = dstRelPath.Split('/', 2);
                 if (dstSegments.Length < 2)
                 {
                     return Json(new { ok = false, error = $"Disk value path has unexpected format: {dstRelPath}" });
                 }
 
-                var dstVmFolder = dstSegments[0];                  // "114"
-                var dstFileName = dstSegments[1];                  // "vm-114-disk-2.qcow2"
+                var dstVmFolder = dstSegments[0];
+                var dstFileName = dstSegments[1];
 
-                // 6) Prepare symlink + folder layout on the Proxmox node
                 var symlinkResult = await _proxmoxService.PrepareAttachSymlinkOnCloneAsync(
                     nodeName,
                     cloneName,
@@ -1183,7 +1204,6 @@ namespace BareProx.Controllers
 
                 if (!symlinkResult.Ok)
                 {
-                    // We keep storage mounted so user can inspect manually, but we do NOT attach disk
                     return Json(new
                     {
                         ok = false,
@@ -1191,10 +1211,8 @@ namespace BareProx.Controllers
                     });
                 }
 
-                // 7) Build final disk value using the real storage name (cloneName) + the dest path + user options
                 var finalDiskValue = $"{cloneName}:{dstRelPath},{tailOptions}";
 
-                // 8) Attach disk via Proxmox API
                 var attachOk = await _proxmoxService.AttachDiskToVmAsync(
                     cluster,
                     nodeName,
@@ -1224,12 +1242,12 @@ namespace BareProx.Controllers
                     "MountDiskFromSnapshot failed for cluster {ClusterId}, vm {VmId}.",
                     clusterId, targetVmId);
 
+                if (!string.IsNullOrWhiteSpace(cloneName))
+                    await TryDeleteCloneAsync(cloneName, controllerId, ct);
+
                 return Json(new { ok = false, error = ex.Message });
             }
         }
-
-
-
 
         [HttpGet]
         public async Task<IActionResult> GetClusterVms(int clusterId, CancellationToken ct)
@@ -1271,25 +1289,17 @@ namespace BareProx.Controllers
             };
         }
 
-        /// <summary>
-        /// Rewrite a snapshot-backed file path to match the target VM and disk index.
-        /// Examples:
-        ///   vm-100-disk-0.qcow2  + (vm=123, index=2) → vm-123-disk-2.qcow2
-        ///   vm-42-disk-0.raw     + (vm=500, index=1) → vm-500-disk-1.raw
-        /// </summary>
         private static string RewriteSnapshotFilePart(string filePart, int targetVmId, int diskIndex)
         {
             if (string.IsNullOrWhiteSpace(filePart))
                 return filePart;
 
-            // Update vm-* portion if present
             filePart = Regex.Replace(
                 filePart,
                 @"vm-\d+",
                 $"vm-{targetVmId}",
                 RegexOptions.IgnoreCase);
 
-            // Update first -disk-* occurrence
             var diskRegex = new Regex(@"-disk-(\d+)", RegexOptions.IgnoreCase);
             if (diskRegex.IsMatch(filePart))
             {
@@ -1299,6 +1309,16 @@ namespace BareProx.Controllers
             return filePart;
         }
 
-
+        private async Task TryDeleteCloneAsync(string cloneName, int controllerId, CancellationToken ct)
+        {
+            try
+            {
+                await _netappVolumeService.DeleteVolumeAsync(cloneName, controllerId, ct);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "Failed to delete clone '{CloneName}' on controller {ControllerId}.", cloneName, controllerId);
+            }
+        }
     }
 }

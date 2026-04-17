@@ -29,7 +29,7 @@ namespace BareProx.Services.Netapp
         Task<List<string>> GetNfsEnabledIpsAsync(int controllerId, string vserver, CancellationToken ct = default);
         Task<bool> CopyExportPolicyAsync(string sourceVolumeName, string targetCloneName, int controllerId, CancellationToken ct = default);
         Task<bool> SetExportPolicyAsync(string volumeName, string exportPolicyName, int controllerId, CancellationToken ct = default);
-        Task<bool> EnsureExportPolicyExistsOnSecondaryAsync(string exportPolicyName, int primaryControllerId, int secondaryControllerId, string svmName, CancellationToken ct = default);
+        Task<bool> EnsureExportPolicyExistsOnSecondaryAsync(string exportPolicyName, int primaryControllerId, int secondaryControllerId, string primarySvmName, string secondarySvmName, CancellationToken ct = default);
         Task<bool> SetVolumeExportPathAsync(string volumeUuid, string exportPath, int controllerId, CancellationToken ct = default);
     } 
 
