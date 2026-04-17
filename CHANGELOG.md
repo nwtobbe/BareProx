@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
 
-## [1.0.2603.27] - 2026-03-27
+## [1.0.2604.17] - 2026-04-17
 
 ## Added
 - Network migration tool on the help page for migration
@@ -15,7 +15,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 - Updated to .NET 10
 
 ### Fixed
-- Replication not visible
+- Replication not visible, reverted back to mainDB for repl relatinships.
 
 
 ## [1.0.2601.28] - 2026-01-28
