@@ -1430,33 +1430,42 @@ namespace BareProx.Controllers
         }
 
         [HttpPost]
+        [ValidateAntiForgeryToken]
         public async Task<IActionResult> SaveNetappSelectedVolumes(
-            [FromBody] List<NetappVolumeExportDto> volumes,
+            [FromBody] SaveNetappSelectedVolumesRequest request,
             CancellationToken ct)
         {
-            var controllerId = volumes.FirstOrDefault()?.ClusterId ?? 0;
-            if (controllerId == 0)
+            if (request == null)
+                return BadRequest("Missing request body.");
+
+            var controllerId = request.NetappControllerId;
+            var volumes = request.Volumes ?? new();
+
+            if (controllerId <= 0)
                 return BadRequest("Missing controller id.");
 
             var existing = await _context.SelectedNetappVolumes
                 .Where(v => v.NetappControllerId == controllerId)
                 .ToListAsync(ct);
 
+            static string Normalize(string? value) =>
+                (value ?? "").Trim().ToLowerInvariant();
+
             static string Key(string? uuid, string? vol, string? ip) =>
-                $"{uuid ?? ""}||{vol ?? ""}||{ip ?? ""}".ToLowerInvariant();
+                $"{Normalize(uuid)}||{Normalize(vol)}||{Normalize(ip)}";
 
-            var existingByKey = existing.ToDictionary(
-                e => Key(e.Uuid, e.VolumeName, e.MountIp),
-                e => e
-            );
+            var existingByKey = existing
+                .GroupBy(e => Key(e.Uuid, e.VolumeName, e.MountIp))
+                .ToDictionary(g => g.Key, g => g.First());
 
-            var incomingKeys = new HashSet<string>(
-                volumes.Select(v => Key(v.Uuid, v.VolumeName, v.MountIp))
-            );
+            var incomingKeys = volumes
+                .Select(v => Key(v.Uuid, v.VolumeName, v.MountIp))
+                .ToHashSet();
 
             foreach (var v in volumes)
             {
                 var k = Key(v.Uuid, v.VolumeName, v.MountIp);
+
                 if (existingByKey.TryGetValue(k, out var row))
                 {
                     row.Disabled = false;
@@ -1483,17 +1492,26 @@ namespace BareProx.Controllers
             foreach (var e in existing)
             {
                 var k = Key(e.Uuid, e.VolumeName, e.MountIp);
+
                 if (!incomingKeys.Contains(k) && e.Disabled != true)
                     e.Disabled = true;
             }
 
             await _context.SaveChangesAsync(ct);
             await _netappVolumeService.UpdateAllSelectedVolumesAsync(ct);
+
             _ = Task.Run(async () =>
             {
-                try { await _collector.RunInventoryInfraSideAsync(CancellationToken.None); }
-                catch (Exception ex) {  }
+                try
+                {
+                    await _collector.RunInventoryInfraSideAsync(CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    // TODO: log this
+                }
             });
+
             TempData["Message"] = "Selected storage updated. Refresh started…";
 
             return Ok();

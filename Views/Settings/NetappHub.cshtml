@@ -517,21 +517,27 @@
             // 5) Save
             document.getElementById('saveVolumes')?.addEventListener('click', async () => {
                 const boxes = container.querySelectorAll('.volume-checkbox:checked');
-                const volumes = Array.from(boxes).map(cb => ({
-                    Vserver: cb.dataset.vserver,
-                    VolumeName: cb.dataset.volume,
-                    Uuid: cb.dataset.uuid,
-                    MountIp: cb.dataset.mountip,
-                    ClusterId: parseInt(cb.dataset.clusterid || controllerId, 10),
-                    NetappControllerId: controllerId
-                }));
+                 const volumes = Array.from(boxes).map(cb => ({
+                     Vserver: cb.dataset.vserver,
+                     VolumeName: cb.dataset.volume,
+                     Uuid: cb.dataset.uuid,
+                     MountIp: cb.dataset.mountip
+                 }));
 
-                const resp = await fetch("@Url.Action("SaveNetappSelectedVolumes", "Settings")", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(volumes),
-                    credentials: "same-origin"
-                });
+                 const token = document.querySelector('#__afTokenForm input[name="__RequestVerificationToken"]')?.value || '';
+
+                 const resp = await fetch("@Url.Action("SaveNetappSelectedVolumes", "Settings")", {
+                     method: "POST",
+                     headers: {
+                         "Content-Type": "application/json",
+                         "RequestVerificationToken": token
+                     },
+                     body: JSON.stringify({
+                         NetappControllerId: controllerId,
+                         Volumes: volumes
+                     }),
+                     credentials: "same-origin"
+                 });
 
                 if (resp.ok) {
                     alert("Volumes saved.");

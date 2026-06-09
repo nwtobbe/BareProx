@@ -222,6 +222,13 @@ namespace BareProx.Models
         public string? Message { get; set; }
     }
 
+    public sealed class SaveNetappSelectedVolumesRequest
+    {
+        public int NetappControllerId { get; set; }
+
+        public List<NetappVolumeExportDto> Volumes { get; set; } = new();
+    }
+
     public class AcmeSettingsViewModel
     {
         [EmailAddress]
