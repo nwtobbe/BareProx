@@ -267,8 +267,10 @@ namespace BareProx.Services.Backup
                         sel = await db0.SelectedNetappVolumes
                             .AsNoTracking()
                             .FirstOrDefaultAsync(v =>
+                                v.Disabled != true &&
                                 v.NetappControllerId == netappControllerId &&
-                                v.VolumeName == storageName, ct);
+                                v.VolumeName == storageName,
+                                ct);
 
                         var check = ValidateSelectedVolumeRow(sel, storageName);
                         if (check.error is not null)

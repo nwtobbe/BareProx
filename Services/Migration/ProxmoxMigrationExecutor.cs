@@ -1,7 +1,7 @@
 ﻿/*
  * BareProx - Backup and Restore Automation for Proxmox using NetApp
  *
- * Copyright (C) 2025 Tobias Modig
+ * Copyright (C) 2025-2026 Tobias Modig
  *
  * This file is part of BareProx.
  *
@@ -444,7 +444,7 @@ namespace BareProx.Services.Migration
                 parts.Add(string.IsNullOrWhiteSpace(mac) ? model : $"{model}={mac}");
                 if (!string.IsNullOrWhiteSpace(bridge)) parts.Add($"bridge={bridge}");
                 if (n.Vlan is > 0) parts.Add($"tag={n.Vlan}");
-                parts.Add("firewall=1");
+                //parts.Add("firewall=1");
 
                 sb.AppendLine($"net{i}: {string.Join(",", parts)}");
             }

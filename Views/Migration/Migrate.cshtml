@@ -251,6 +251,7 @@
 
                         <!-- Disks -->
                         <div class="tab-pane fade" id="tab-disks" role="tabpanel">
+                            <div id="diskValidationAlert" class="alert alert-danger py-2 mb-2 d-none"></div>
                             <div class="table-responsive">
                                 <table class="table table-sm align-middle" id="disks-table">
                                     <thead class="table-light">
@@ -260,12 +261,16 @@
                                             <th>Target Storage</th>
                                             <th>Bus</th>
                                             <th>Index</th>
+                                            <th class="text-nowrap">Disk ID</th>
                                         </tr>
                                     </thead>
                                     <tbody><!-- disk rows --></tbody>
                                 </table>
                             </div>
-                            <small class="text-muted">Disks are discovered from the VMX. Source, size, and target are fixed here; adjust bus/index only.</small>
+                            <small class="text-muted">
+                                Disks are discovered from the VMX. Source, size, and target are fixed here; adjust bus/index only.
+                                The final Proxmox disk ID is checked as <code>bus + index</code>, for example <code>scsi0</code>.
+                            </small>
                         </div>
 
                         <!-- Network -->
@@ -324,6 +329,54 @@
           function first(obj){ for (let i=1;i<arguments.length;i++){ const k=arguments[i]; const v=obj && obj[k]; if (v!==undefined && v!==null) return v; } return undefined; }
           function pick(){ for (let i=0;i<arguments.length;i++){ const v=arguments[i]; if (v!==undefined && v!==null) return v; } return undefined; }
           function escapeHtml(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+          // ---- Proxmox disk ID validation ----
+          // Valid IDs are built as bus + index, e.g. scsi0, sata1, virtio2.
+          // Keep this client-side check mirrored on the server-side Queue action as well.
+          const DISK_BUS_LIMITS = {
+            scsi:   { min: 0, max: 30 },
+            sata:   { min: 0, max: 5  },
+            virtio: { min: 0, max: 15 },
+            ide:    { min: 0, max: 3  }
+          };
+
+          function normalizeDiskBus(bus) {
+            return String(bus || '').trim().toLowerCase();
+          }
+
+          function normalizeDiskIndex(idx) {
+            return String(idx ?? '').trim();
+          }
+
+          function makeDiskId(bus, idx) {
+            const b = normalizeDiskBus(bus);
+            const i = normalizeDiskIndex(idx);
+            return (b && i !== '') ? `${b}${i}` : '';
+          }
+
+          function getDiskIdFromObject(d) {
+            const diskId = d?.diskId ?? d?.DiskId;
+            if (diskId) return String(diskId);
+
+            const bus = d?.bus ?? d?.Bus ?? '';
+            const idx = d?.index ?? d?.Index ?? '';
+            return makeDiskId(bus, idx);
+          }
+
+          function updateDiskIdPreviewForRow(tr) {
+            if (!tr) return;
+            const busEl = tr.querySelector('.disk-bus');
+            const idxEl = tr.querySelector('.disk-index');
+            const preview = tr.querySelector('.disk-id-preview');
+            if (!preview) return;
+
+            const diskId = makeDiskId(busEl?.value, idxEl?.value);
+            preview.textContent = diskId || '—';
+          }
+
+          function updateAllDiskIdPreviews() {
+            $$('#disks-table tbody tr').forEach(updateDiskIdPreviewForRow);
+          }
 
         const vmNameRegex = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
 
@@ -388,6 +441,7 @@
           const wizardModalEl   = $('#wizardModal');
           const wizardForm      = $('#wizardForm');
           const disksTbody      = $('#disks-table tbody');
+          const diskValidationAlert = $('#diskValidationAlert');
           const nicsTbody       = $('#nics-table tbody');
           const cpuTypeSelect   = $('#cpuTypeSelect');
           const osTypeSelect    = $('#osTypeSelect');
@@ -408,6 +462,85 @@
             vmNameInputEl.classList.remove('is-invalid');
           }
         });
+
+          function clearDiskValidation() {
+            if (diskValidationAlert) {
+              diskValidationAlert.classList.add('d-none');
+              diskValidationAlert.textContent = '';
+            }
+
+            $$('#disks-table tbody tr').forEach(tr => tr.classList.remove('table-danger'));
+            $$('#disks-table .disk-bus, #disks-table .disk-index').forEach(el => el.classList.remove('is-invalid'));
+          }
+
+          function showDiskValidationError(message, tr, input, showInlineMessage) {
+            if (showInlineMessage !== false && diskValidationAlert) {
+              diskValidationAlert.textContent = message;
+              diskValidationAlert.classList.remove('d-none');
+            }
+
+            if (tr) tr.classList.add('table-danger');
+            if (input) input.classList.add('is-invalid');
+          }
+
+          function validateDisks(showInlineMessage) {
+            clearDiskValidation();
+            updateAllDiskIdPreviews();
+
+            const rows = $$('#disks-table tbody tr');
+            if (!rows.length) {
+              showDiskValidationError('No disks were discovered for this VM. Cannot queue an import without disks.', null, null, showInlineMessage);
+              return false;
+            }
+
+            const seen = new Map();
+
+            for (const tr of rows) {
+              const busEl = tr.querySelector('.disk-bus');
+              const idxEl = tr.querySelector('.disk-index');
+              const bus = normalizeDiskBus(busEl?.value);
+              const idxRaw = normalizeDiskIndex(idxEl?.value);
+              const limits = DISK_BUS_LIMITS[bus];
+
+              if (!bus) {
+                showDiskValidationError('Each disk must have a bus.', tr, busEl, showInlineMessage);
+                return false;
+              }
+
+              if (!limits) {
+                showDiskValidationError(`Unsupported disk bus "${bus}". Allowed buses are: scsi, sata, virtio, ide.`, tr, busEl, showInlineMessage);
+                return false;
+              }
+
+              if (idxRaw === '') {
+                showDiskValidationError(`Disk index is required for ${bus}.`, tr, idxEl, showInlineMessage);
+                return false;
+              }
+
+              if (!/^\d+$/.test(idxRaw)) {
+                showDiskValidationError(`Disk index must be a whole number starting at ${limits.min}.`, tr, idxEl, showInlineMessage);
+                return false;
+              }
+
+              const idx = Number(idxRaw);
+              if (idx < limits.min || idx > limits.max) {
+                showDiskValidationError(`${bus}${idx} is outside the valid range. Use ${bus}${limits.min}–${bus}${limits.max}.`, tr, idxEl, showInlineMessage);
+                return false;
+              }
+
+              const diskId = `${bus}${idx}`;
+              if (seen.has(diskId)) {
+                const firstRow = seen.get(diskId);
+                if (firstRow) firstRow.classList.add('table-danger');
+                showDiskValidationError(`Duplicate disk ID "${diskId}". Each disk must have a unique bus/index combination.`, tr, idxEl, showInlineMessage);
+                return false;
+              }
+
+              seen.set(diskId, tr);
+            }
+
+            return true;
+          }
 
           // Logs modal elements
           const logsModalEl     = document.getElementById('queueLogsModal');
@@ -592,8 +725,9 @@
             const src   = d?.source ?? d?.Source ?? '';
             const size  = d?.sizeGiB ?? d?.SizeGiB ?? d?.size ?? d?.Size ?? '';
             const store = d?.storage ?? d?.Storage ?? '';
-            const bus   = d?.bus ?? d?.Bus ?? '';
+            const bus   = normalizeDiskBus(d?.bus ?? d?.Bus ?? 'scsi') || 'scsi';
             const idx   = (d && d.index!=='' && d.index!=null) ? d.index : (d?.Index ?? '');
+            const diskId = makeDiskId(bus, idx);
             return `
               <tr>
                 <td><input class="form-control form-control-sm" value="${escapeHtml(String(src))}" readonly></td>
@@ -603,13 +737,16 @@
                 <td style="width:200px"><input class="form-control form-control-sm" value="${escapeHtml(String(store))}" readonly></td>
                 <td style="width:120px">
                   <select class="form-select form-select-sm disk-bus">
-                    <option ${String(bus)==='scsi'?'selected':''}>scsi</option>
-                    <option ${String(bus)==='sata'?'selected':''}>sata</option>
-                    <option ${String(bus)==='virtio'?'selected':''}>virtio</option>
-                    <option ${String(bus)==='ide'?'selected':''}>ide</option>
+                    <option value="scsi" ${bus==='scsi'?'selected':''}>scsi</option>
+                    <option value="sata" ${bus==='sata'?'selected':''}>sata</option>
+                    <option value="virtio" ${bus==='virtio'?'selected':''}>virtio</option>
+                    <option value="ide" ${bus==='ide'?'selected':''}>ide</option>
                   </select>
                 </td>
-                <td style="width:90px"><input class="form-control form-control-sm disk-index" placeholder="0,1,2…" value="${String(idx)}"></td>
+                <td style="width:90px">
+                  <input class="form-control form-control-sm disk-index" type="number" min="0" step="1" placeholder="0" value="${String(idx)}">
+                </td>
+                <td class="text-nowrap" style="width:90px"><code class="disk-id-preview">${escapeHtml(diskId || '—')}</code></td>
               </tr>`;
           }
           function nicRow(n) {
@@ -739,6 +876,8 @@
                 const wrap = document.createElement('tbody'); wrap.innerHTML = diskRow(d);
                 disksTbody.appendChild(wrap.firstElementChild);
               });
+              updateAllDiskIdPreviews();
+              clearDiskValidation();
             }
 
             if (nicsTbody) {
@@ -764,11 +903,27 @@
               if (scsiController && virtScsi) scsiController.value = virtScsi;
               if (scsiController) scsiController.disabled = true;
               if (disksTbody) $$('#disks-table .disk-bus').forEach(sel => sel.value='sata');
+              updateAllDiskIdPreviews();
+              validateDisks(false);
               const virtNic = readVal((CAPS.nics||[]).find(n=>readVal(n)==='virtio')) || 'virtio';
               if (nicsTbody) $$('#nics-table .nic-model').forEach(sel => sel.value = virtNic);
             } else {
               if (scsiController) scsiController.disabled = false;
+              updateAllDiskIdPreviews();
+              validateDisks(false);
             }
+          });
+
+          // Live disk ID preview and validation while editing bus/index
+          on(disksTbody, 'input', function(e){
+            if (!e.target?.matches?.('.disk-index')) return;
+            updateDiskIdPreviewForRow(e.target.closest('tr'));
+            validateDisks(false);
+          });
+          on(disksTbody, 'change', function(e){
+            if (!e.target?.matches?.('.disk-bus, .disk-index')) return;
+            updateDiskIdPreviewForRow(e.target.closest('tr'));
+            validateDisks(false);
           });
 
           // Recompute vCPU on topology edits
@@ -837,12 +992,16 @@
               const srcEl = inputs[0], sizeEl = inputs[1], storageEl = inputs[2];
               const busEl = tr.querySelector('.disk-bus');
               const idxEl = tr.querySelector('.disk-index');
+              const bus = normalizeDiskBus(busEl?.value);
+              const idxRaw = normalizeDiskIndex(idxEl?.value);
+              const index = idxRaw !== '' ? Number(idxRaw) : null;
               out.push({
                 source: srcEl ? srcEl.value : '',
                 sizeGiB: (sizeEl && sizeEl.value) ? Number(sizeEl.value) : null,
                 storage: storageEl ? storageEl.value : '',
-                bus: busEl ? busEl.value : '',
-                index: (idxEl && idxEl.value !== '') ? Number(idxEl.value) : null
+                bus: bus,
+                index: index,
+                diskId: (bus && index !== null) ? `${bus}${index}` : ''
               });
             });
             return out;
@@ -1009,7 +1168,7 @@
               <h6>Disks (${disks.length})</h6>
               <div class="table-responsive mb-3">
                 <table class="table table-sm">
-                  <thead class="table-light"><tr><th>Source</th><th class="text-end">Size (GiB)</th><th>Storage</th><th>Bus</th><th>Index</th></tr></thead>
+                  <thead class="table-light"><tr><th>Source</th><th class="text-end">Size (GiB)</th><th>Storage</th><th>Bus</th><th>Index</th><th>Disk ID</th></tr></thead>
                   <tbody>
                     ${disks.map(d => `
                       <tr>
@@ -1018,6 +1177,7 @@
                         <td>${escapeHtml(d?.storage ?? d?.Storage ?? '')}</td>
                         <td>${escapeHtml(d?.bus ?? d?.Bus ?? '')}</td>
                         <td>${escapeHtml(d?.index ?? d?.Index ?? '')}</td>
+                        <td><code>${escapeHtml(getDiskIdFromObject(d) || '—')}</code></td>
                       </tr>
                     `).join('')}
                   </tbody>
@@ -1126,6 +1286,11 @@
           on(document.getElementById('btn-add'), 'click', async function () {
             // hard block invalid Proxmox VM names
             if (!validateVmName()) {
+              return;
+            }
+
+            // hard block invalid/duplicate Proxmox disk IDs, e.g. duplicate scsi0
+            if (!validateDisks(true)) {
               return;
             }
 

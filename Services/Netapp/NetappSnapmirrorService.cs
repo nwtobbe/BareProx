@@ -342,6 +342,7 @@ namespace BareProx.Services
             // Build a case-insensitive map of SelectedNetappVolumes -> controllerId
             var allSelectedVolumeEntries = await _context.SelectedNetappVolumes
                 .AsNoTracking()
+                .Where(v => v.Disabled != true && !string.IsNullOrWhiteSpace(v.VolumeName))
                 .ToListAsync(ct);
             var selectedVolumeToController = allSelectedVolumeEntries
                 .GroupBy(v => v.VolumeName, StringComparer.OrdinalIgnoreCase)
@@ -352,7 +353,10 @@ namespace BareProx.Services
                 // 3a) Volumes selected for this DEST controller
                 var selectedDestVolumes = await _context.SelectedNetappVolumes
                     .AsNoTracking()
-                    .Where(v => v.NetappControllerId == secondary.Id)
+                    .Where(v =>
+                        v.NetappControllerId == secondary.Id &&
+                        v.Disabled != true &&
+                        !string.IsNullOrWhiteSpace(v.VolumeName))
                     .Select(v => v.VolumeName)
                     .ToListAsync(ct);
 

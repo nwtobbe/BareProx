@@ -941,6 +941,7 @@ namespace BareProx.Services
 
             var selectedVolumes = await _context.SelectedNetappVolumes
                 .AsNoTracking()
+                .Where(v => v.Disabled != true && !string.IsNullOrWhiteSpace(v.Uuid))
                 .Select(v => new { v.NetappControllerId, v.Uuid })
                 .ToListAsync(ct);
 
@@ -978,8 +979,12 @@ namespace BareProx.Services
 
             // Fetch the row we will update (tracking enabled)
             var selected = await _context.SelectedNetappVolumes
-                .FirstOrDefaultAsync(v => v.Uuid == volumeUuid && v.NetappControllerId == controllerId, ct)
-                ?? throw new Exception($"SelectedNetappVolume {volumeUuid} not found for controller {controllerId}");
+                .FirstOrDefaultAsync(v =>
+                    v.Disabled != true &&
+                    v.Uuid == volumeUuid &&
+                    v.NetappControllerId == controllerId,
+                    ct)
+                ?? throw new Exception($"Enabled SelectedNetappVolume {volumeUuid} not found for controller {controllerId}");
 
             var httpClient = _authService.CreateAuthenticatedClient(controller, out var baseUrl);
             baseUrl = EnsureSlash(baseUrl);

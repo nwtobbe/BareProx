@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),  
 and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.2606.09] - xxx
+
+## Added
+- Check for dublicate disk ID:s during migration
+
+### Changed
+- Updated .NET
+- Removed Firewall for nics.
+
+### Fixed
+- Improved the check for disabled NetApp volumes.
+
 
 ## [1.0.2604.17] - 2026-04-17
 

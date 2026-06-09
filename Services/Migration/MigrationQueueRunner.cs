@@ -162,7 +162,9 @@ namespace BareProx.Services.Migration
                             {
                                 var mapped = await db.SelectedNetappVolumes
                                     .AsNoTracking()
-                                    .Where(v => v.VolumeName == selection.StorageIdentifier)
+                                    .Where(v =>
+                                        v.Disabled != true &&
+                                        v.VolumeName == selection.StorageIdentifier)
                                     .Select(v => v.VolumeName)
                                     .Distinct()
                                     .ToListAsync(ct);

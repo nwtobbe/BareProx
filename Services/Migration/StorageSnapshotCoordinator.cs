@@ -151,6 +151,7 @@ namespace BareProx.Services.Migration
             // Pull mappings (we filter in memory using CI matching to be safe across collations)
             var selectedMaps = await _db.SelectedNetappVolumes
                 .AsNoTracking()
+                .Where(v => v.Disabled != true)
                 .ToListAsync(ct);
 
             // Resolve a chosen mapping per storage (prefer PRIMARY controller)
