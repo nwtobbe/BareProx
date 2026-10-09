@@ -14,23 +14,23 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="Hangfire" Version="1.8.23" />
+		<PackageReference Include="Hangfire" Version="1.8.25" />
 		<PackageReference Include="jQuery" Version="3.7.1" />
 		<PackageReference Include="jquery.datatables" Version="1.10.15" />
-		<PackageReference Include="Markdig" Version="1.2.0" />
-		<PackageReference Include="Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore" Version="10.0.8" />
-		<PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="10.0.8" />
-		<PackageReference Include="Microsoft.AspNetCore.Identity.UI" Version="10.0.8" />
+		<PackageReference Include="Markdig" Version="1.4.0" />
+		<PackageReference Include="Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore" Version="10.0.12" />
+		<PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="10.0.12" />
+		<PackageReference Include="Microsoft.AspNetCore.Identity.UI" Version="10.0.12" />
 
-		<PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.8">
+		<PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12">
 			<PrivateAssets>all</PrivateAssets>
 			<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
 		</PackageReference>
 
-		<PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.8" />
-		<PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.8" />
+		<PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12" />
+		<PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.12" />
 
-		<PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="10.0.8">
+		<PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="10.0.12">
 			<PrivateAssets>all</PrivateAssets>
 			<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
 		</PackageReference>
@@ -39,13 +39,14 @@
 
 		<PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
 
-		<PackageReference Include="NuGet.Protocol" Version="7.6.0" />
-		<PackageReference Include="Polly" Version="8.6.6" />
+		<PackageReference Include="NuGet.Protocol" Version="7.9.0" />
+		<PackageReference Include="Polly" Version="8.8.0" />
 		<PackageReference Include="RestSharp" Version="114.0.0" />
 		<PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
 		<PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
-		<PackageReference Include="Serilog.Sinks.File.Archive" Version="1.0.6" />
-		<PackageReference Include="SSH.NET" Version="2025.1.0" />
+		<PackageReference Include="Serilog.Sinks.File.Archive" Version="1.0.8" />
+		<PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
+		<PackageReference Include="SSH.NET" Version="2026.0.0" />
 		<PackageReference Include="TimeZoneConverter" Version="7.2.0" />
 	</ItemGroup>
 

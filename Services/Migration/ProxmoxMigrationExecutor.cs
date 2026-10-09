@@ -111,6 +111,14 @@ namespace BareProx.Services.Migration
                 if (!free) throw new InvalidOperationException($"VMID {vmid} is already in use on node {node}.");
             });
 
+            // Select an explicit Q35 version before writing any VM files.
+            string machineType = string.Empty;
+            await Step(item, "SelectMachineType", async () =>
+            {
+                machineType = await _pve.GetLatestCommonQ35MachineAsync(node, ct);
+                await Log(item, "SelectMachineType", $"Selected {machineType} for all cluster nodes.", "Info", ct);
+            });
+
             // ---- 2) Copy & rewrite descriptors (on target node)
             for (int i = 0; i < disks.Count; i++)
             {
@@ -157,7 +165,7 @@ namespace BareProx.Services.Migration
             await Step(item, "WriteConf", async () =>
             {
                 var confPath = $"/etc/pve/qemu-server/{vmid}.conf";
-                var conf = BuildQemuConf(item, disks, nics, defaultStorage);
+                var conf = BuildQemuConf(item, disks, nics, defaultStorage, machineType);
                 _logger.LogInformation("Writing config for VMID {Vmid} on node '{Node}' → {Path}", vmid, node, confPath);
 
                 await _pve.WriteTextFileAsync(node, confPath, conf, ct);
@@ -360,13 +368,13 @@ namespace BareProx.Services.Migration
             return s;
         }
 
-        private static string BuildQemuConf(MigrationQueueItem item, List<DiskSpec> disks, List<NicSpec> nics, string defaultStorage)
+        private static string BuildQemuConf(MigrationQueueItem item, List<DiskSpec> disks, List<NicSpec> nics, string defaultStorage, string machineType)
         {
             var sb = new StringBuilder();
             var vmid = item.VmId!.Value;
 
             sb.AppendLine($"name: {item.Name}");
-            sb.AppendLine("machine: q35");
+            sb.AppendLine($"machine: {machineType}");
             sb.AppendLine($"bios: {(item.Uefi ? "ovmf" : "seabios")}");
 
             // NEW: write ostype if specified (must be a valid Proxmox code like l26, win11, win10, etc.)

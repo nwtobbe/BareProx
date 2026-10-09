@@ -1,7 +1,7 @@
 ﻿/*
  * BareProx - Backup and Restore Automation for Proxmox using NetApp
  *
- * Copyright (C) 2025 Tobias Modig
+ * Copyright (C) 2025-2026 Tobias Modig
  *
  * This file is part of BareProx.
  *
@@ -17,7 +17,6 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
-
 
 using System.Collections.Generic;
 using System.Threading;
@@ -48,8 +47,8 @@ namespace BareProx.Services.Proxmox.Migration
         Task SetCdromAsync(string node, int vmid, string volidOrName, CancellationToken ct = default);
         Task SetOsTypeAsync(string node, int vmid, string osType, CancellationToken ct = default);
 
-
         // Capabilities / inventory
+        Task<string> GetLatestCommonQ35MachineAsync(string node, CancellationToken ct = default);
         Task<IReadOnlyList<PveNetworkIf>> GetNodeNetworksAsync(string node, CancellationToken ct = default);
         Task<IReadOnlyList<PveSdnVnet>> GetSdnVnetsAsync(CancellationToken ct = default);
         Task<IReadOnlyList<PveStorageContentItem>> GetStorageContentAsync(string node, string storage, string content, CancellationToken ct = default);

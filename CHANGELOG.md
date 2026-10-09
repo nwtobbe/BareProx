@@ -13,6 +13,7 @@ and this project ~adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 - Updated .NET
 - Removed Firewall for nics.
+- Migration now sets the latest q35 type
 
 ### Fixed
 - Improved the check for disabled NetApp volumes.

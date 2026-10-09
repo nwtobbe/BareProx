@@ -1,7 +1,7 @@
 ﻿/*
  * BareProx - Backup and Restore Automation for Proxmox using NetApp
  *
- * Copyright (C) 2025 Tobias Modig
+ * Copyright (C) 2025-2026 Tobias Modig
  *
  * This file is part of BareProx.
  *
@@ -225,6 +225,105 @@ namespace BareProx.Services.Proxmox.Migration
             await _ops.SendWithRefreshAsync(cluster, HttpMethod.Post, url, form, ct);
         }
 
+
+        /// <summary>
+        /// Resolves the latest explicit Q35 machine ID supported by every node in
+        /// the selected node's Proxmox cluster. Fail closed if any node cannot
+        /// be queried (including an offline node).
+        /// </summary>
+        public async Task<string> GetLatestCommonQ35MachineAsync(string node, CancellationToken ct = default)
+        {
+            var resolved = await ResolveClusterAndHostAsync(node, ct)
+                ?? throw new InvalidOperationException($"Node '{node}' not found in any configured cluster.");
+            var (cluster, host) = resolved;
+            var origin = $"https://{host.HostAddress}:8006/api2/json";
+
+            using var statusResponse = await _ops.SendWithRefreshAsync(
+                cluster, HttpMethod.Get, $"{origin}/cluster/status", null, ct);
+            statusResponse.EnsureSuccessStatusCode();
+            using var statusDoc = JsonDocument.Parse(await statusResponse.Content.ReadAsStringAsync(ct));
+            if (!statusDoc.RootElement.TryGetProperty("data", out var statusData) ||
+                statusData.ValueKind != JsonValueKind.Array)
+                throw new InvalidOperationException("Invalid Proxmox cluster/status response.");
+
+            var nodes = new List<string>();
+            foreach (var entry in statusData.EnumerateArray())
+            {
+                if (!entry.TryGetProperty("type", out var type) || type.GetString() != "node")
+                    continue;
+                if (!entry.TryGetProperty("name", out var name))
+                    throw new InvalidOperationException("A Proxmox cluster node has no name.");
+                var nodeName = name.GetString();
+                if (string.IsNullOrWhiteSpace(nodeName))
+                    throw new InvalidOperationException("A Proxmox cluster node has an empty name.");
+                nodes.Add(nodeName);
+            }
+            nodes = nodes.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (nodes.Count == 0)
+                throw new InvalidOperationException("No Proxmox nodes returned by cluster/status.");
+            if (!nodes.Contains(host.Hostname, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"Selected node '{host.Hostname}' is not listed in cluster/status.");
+
+            HashSet<string>? common = null;
+            foreach (var nodeName in nodes)
+            {
+                ct.ThrowIfCancellationRequested();
+                var url = $"{origin}/nodes/{Uri.EscapeDataString(nodeName)}/capabilities/qemu/machines";
+                using var response = await _ops.SendWithRefreshAsync(cluster, HttpMethod.Get, url, null, ct);
+                response.EnsureSuccessStatusCode();
+                using var machinesDoc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+                if (!machinesDoc.RootElement.TryGetProperty("data", out var machines) ||
+                    machines.ValueKind != JsonValueKind.Array)
+                    throw new InvalidOperationException($"Invalid QEMU machines response for '{nodeName}'.");
+
+                var supported = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var machine in machines.EnumerateArray())
+                {
+                    if (!machine.TryGetProperty("type", out var family) || family.GetString() != "q35" ||
+                        !machine.TryGetProperty("id", out var idValue))
+                        continue;
+                    var id = idValue.GetString();
+                    if (id != null && Q35IdPattern.IsMatch(id))
+                        supported.Add(id);
+                }
+                if (supported.Count == 0)
+                    throw new InvalidOperationException($"Node '{nodeName}' returned no explicit Q35 versions.");
+
+                if (common == null)
+                    common = supported;
+                else
+                    common.IntersectWith(supported);
+
+                _log.LogInformation("Node {Node} reports {Count} explicit Q35 machines; {Common} remain common",
+                    nodeName, supported.Count, common.Count);
+                if (common.Count == 0)
+                    throw new InvalidOperationException("No Q35 machine version is common to all Proxmox cluster nodes checked.");
+            }
+
+            var selected = common!
+                .OrderByDescending(x => ParseQ35Version(x).major)
+                .ThenByDescending(x => ParseQ35Version(x).minor)
+                .ThenByDescending(x => ParseQ35Version(x).patch)
+                .ThenByDescending(x => ParseQ35Version(x).pveRevision)
+                .First();
+            _log.LogInformation("Selected Q35 machine {Machine} across {Count} cluster nodes", selected, nodes.Count);
+            return selected;
+        }
+
+        private static readonly Regex Q35IdPattern = new(
+            @"^pc-q35-(?<major>\d+)\.(?<minor>\d+)(?:\.(?<patch>\d+))?(?:\+pve(?<pve>\d+))?$",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+        private static (int major, int minor, int patch, int pveRevision) ParseQ35Version(string id)
+        {
+            var match = Q35IdPattern.Match(id);
+            if (!match.Success) throw new FormatException($"Invalid Q35 machine ID: '{id}'.");
+            return (
+                int.Parse(match.Groups["major"].Value),
+                int.Parse(match.Groups["minor"].Value),
+                match.Groups["patch"].Success ? int.Parse(match.Groups["patch"].Value) : 0,
+                match.Groups["pve"].Success ? int.Parse(match.Groups["pve"].Value) : 0);
+        }
 
         // ───────────────────── Capabilities / inventory (API; node-scoped) ─────────────────────
         // GET /api2/json/nodes/{node}/network
