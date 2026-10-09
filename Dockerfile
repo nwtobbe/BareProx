@@ -27,7 +27,7 @@ RUN dotnet publish BareProx.csproj \
     -o /app/publish
 
 ### 2) Runtime stage
-FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-bookworm-slim AS runtime
+FROM mcr.microsoft.com/dotnet/runtime-deps:10.0 AS runtime
 
 WORKDIR /app
 
