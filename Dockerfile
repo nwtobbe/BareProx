@@ -1,60 +1,64 @@
-﻿# syntax=docker/dockerfile:1.4
+﻿
+# syntax=docker/dockerfile:1.4
 
-### 1) Build stage using .NET SDK
+### 1) Build stage - .NET 10 SDK
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+
 WORKDIR /src
 
-# Copy solution and project files
+# Copy project files
 COPY BareProx.sln ./
 COPY BareProx.csproj ./
 
 # Restore dependencies
-RUN dotnet restore
+RUN dotnet restore BareProx.csproj -r linux-x64
 
-# Copy the entire project (everything in the current dir)
+# Copy source
 COPY . ./
 
-# Set working directory to project root
-WORKDIR /src
-
-# Publish self-contained for linux-x64
-RUN dotnet publish BareProx.csproj -c Release -r linux-x64 --self-contained true -p:PublishTrimmed=false -o /app/publish
+# Publish self-contained with ReadyToRun
+RUN dotnet publish BareProx.csproj \
+    -c Release \
+    -r linux-x64 \
+    --self-contained true \
+    --no-restore \
+    -p:PublishTrimmed=false \
+    -p:PublishReadyToRun=true \
+    -o /app/publish
 
 ### 2) Runtime stage
-FROM debian:bookworm-slim AS runtime
+FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-bookworm-slim AS runtime
+
 WORKDIR /app
 
-# Install runtime deps + CA bundle
-# - ca-certificates is what fixes the TLS "PartialChain" to GitHub
-# - libicu/openssl/tzdata already good to have for .NET + time zone
+# Apply Debian security updates and install required utilities
 RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      ca-certificates \
-      libicu72 \
-      libssl3 \
-      tzdata \
-      curl \
- && update-ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        tzdata \
+        curl \
+    && update-ca-certificates \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
- # Create a non-root user and group
-RUN groupadd --gid 1001 bareprox && \
-    useradd --uid 1001 --gid 1001 --shell /bin/bash --create-home bareprox
+# Create non-root user
+RUN groupadd --gid 1001 bareprox \
+    && useradd --uid 1001 --gid 1001 \
+       --shell /bin/bash \
+       --create-home bareprox
 
-# Copy published app and set ownership
-COPY --from=build /app/publish ./
-RUN chown -R bareprox:bareprox /app
+# Copy published application
+COPY --from=build --chown=1001:1001 /app/publish ./
 
-# Switch to the bareprox user
+# Run as non-root
 USER bareprox
 
-# Expose HTTP and HTTPS ports
 EXPOSE 443
 
-# Environment setup
 ENV ASPNETCORE_URLS="https://+:443" \
     DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false \
     DOTNET_EnableDiagnostics=0 \
     DOTNET_ENVIRONMENT=Production
-# Run the app
+
 ENTRYPOINT ["./BareProx"]
