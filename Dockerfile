@@ -11,7 +11,9 @@ COPY BareProx.sln ./
 COPY BareProx.csproj ./
 
 # Restore dependencies
-RUN dotnet restore BareProx.csproj -r linux-x64
+RUN dotnet restore BareProx.csproj \
+    -r linux-x64 \
+    -p:PublishReadyToRun=true
 
 # Copy source
 COPY . ./
