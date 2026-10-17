@@ -6,18 +6,17 @@
  * This file is part of BareProx.
  *
  * BareProx is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as published by
+ * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, version 3.
  *
  * BareProx is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Affero General Public License for more details.
+ * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
+ * You should have received a copy of the GNU General Public License
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
-
 
 using Microsoft.AspNetCore.Mvc.Rendering;
 using System.ComponentModel.DataAnnotations;
@@ -26,6 +25,30 @@ namespace BareProx.Models
 {
     public class MigrationSettingsViewModel
     {
+        [Range(1, 8)]
+        [Display(Name = "Parallel migrations")]
+        public int MaxParallelMigrations { get; set; } = 4;
+
+        [Range(1, 8)]
+        [Display(Name = "Parallel automated cutovers")]
+        public int MaxParallelCutovers { get; set; } = 1;
+
+        [Range(5, 120)]
+        [Display(Name = "GuestPrep preparation timeout (minutes)")]
+        public int GuestPrepTimeoutMinutes { get; set; } = 35;
+
+        [Range(1, 120)]
+        [Display(Name = "VMware shutdown timeout (minutes)")]
+        public int VmwareShutdownTimeoutMinutes { get; set; } = 15;
+
+        [Range(5, 180)]
+        [Display(Name = "QEMU Guest Agent startup timeout (minutes)")]
+        public int GuestAgentStartupTimeoutMinutes { get; set; } = 20;
+
+        [Range(5, 180)]
+        [Display(Name = "Guest verification timeout (minutes)")]
+        public int GuestVerificationTimeoutMinutes { get; set; } = 20;
+
         [Display(Name = "Proxmox Cluster")]
         public int SelectedClusterId { get; set; }
 
@@ -39,6 +62,13 @@ namespace BareProx.Models
         public List<SelectListItem> HostOptions { get; set; } = new();
         public List<SelectListItem> StorageOptions { get; set; } = new();
         public bool HasSavedConfigForCluster { get; set; }
+
+        // Optional vCenter credentials; password is never displayed.
+        public string? VCenterServer { get; set; }
+        public string? VCenterUsername { get; set; }
+        public string? VCenterPassword { get; set; }
+        public bool VCenterPasswordSaved { get; set; }
+        public bool VCenterAllowUntrustedCertificate { get; set; }
     }
 
     public class MigratePageViewModel
@@ -110,6 +140,12 @@ namespace BareProx.Models
         public string VmxPath { get; set; } = "";
         public string? GuestOs { get; set; }           // friendly label for UI
         public string? GuestOsRaw { get; set; }        // raw VMX value
+        // A failed or uncertain VMware snapshot check blocks automatic migration.
+        public bool SnapshotCheckPassed { get; set; }
+        public bool HasVmwareSnapshots { get; set; }
+        public string? SnapshotWarning { get; set; }
+        public string PowerStatus { get; set; } = "Unknown";
+        public string VmwareToolsStatus { get; set; } = "Unknown";
 
         public int? CpuCores { get; set; }
         public int? MemoryMiB { get; set; }
@@ -147,6 +183,7 @@ namespace BareProx.Models
     {
         public string Model { get; set; } = "vmxnet3"; // vmxnet3/e1000/virtio…
         public string? Mac { get; set; }               // address or generatedAddress
+        public string? SourceNetwork { get; set; }     // VMware VMX ethernetX.networkName
         public string? Bridge { get; set; }            // filled in wizard
         public string? Vlan { get; set; }              // filled in wizard
     }
@@ -187,6 +224,8 @@ namespace BareProx.Models
 
     public sealed class QueueItemDto
     {
+        public bool Automated { get; set; }
+        public string? GuestVerificationToken { get; set; }
         public int? VmId { get; set; }
         public string? Name { get; set; }
         public string? CpuType { get; set; }

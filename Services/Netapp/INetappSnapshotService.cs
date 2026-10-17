@@ -1,7 +1,7 @@
-﻿/*
+/*
  * BareProx - Backup and Restore Automation for Proxmox using NetApp
  *
- * Copyright (C) 2025 Tobias Modig
+ * Copyright (C) 2025-2026 Tobias Modig
  *
  * This file is part of BareProx.
  *
@@ -18,16 +18,16 @@
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
 
-
 using BareProx.Models;
 
 namespace BareProx.Services
 {
     public interface INetappSnapshotService
     {
-        Task<SnapshotResult> CreateSnapshotAsync(int controllerId, string storageName, string snapmirrorLabel, bool snapLocking = false, int? lockRetentionCount = null, string? lockRetentionUnit = null, string? volumeUuid = null, string? svmName = null, CancellationToken ct = default);
+        // Optional migrationVmId is deliberately after CancellationToken to preserve
+        // existing positional callers. Null keeps all existing snapshot names unchanged.
+        Task<SnapshotResult> CreateSnapshotAsync(int controllerId, string storageName, string snapmirrorLabel, bool snapLocking = false, int? lockRetentionCount = null, string? lockRetentionUnit = null, string? volumeUuid = null, string? svmName = null, CancellationToken ct = default, int? migrationVmId = null);
         Task<List<string>> GetSnapshotsAsync(int controllerId, string volumeName, CancellationToken ct = default);
         Task<DeleteSnapshotResult> DeleteSnapshotAsync(int controllerId, string volumeName, string snapshotName, CancellationToken ct = default);
-
     }
 }

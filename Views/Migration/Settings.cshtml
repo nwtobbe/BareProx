@@ -1,36 +1,13 @@
 ﻿@model BareProx.Models.MigrationSettingsViewModel
 @{
     ViewData["Title"] = "Migration – Settings";
-
-    var hasStorages = Model?.StorageOptions != null && Model.StorageOptions.Any();
-    var hasClusterSelection = (Model?.SelectedClusterId ?? 0) > 0;
-
-    // This comes from the DB via the controller
-    var hasSavedConfig = Model?.HasSavedConfigForCluster ?? false;
+    // The controller supplies saved values, or 1 / 1 for first-time setup.
+    // On validation errors, ModelState and the posted model retain the user's selection.
+    var maxParallelMigrations = Model.MaxParallelMigrations;
+    var maxParallelCutovers = Model.MaxParallelCutovers;
 }
 
-<h2 class="mb-1">Migration Settings</h2>
-
-@if (hasClusterSelection)
-{
-    <div class="mb-3 small text-muted">
-        Status:
-        @if (hasSavedConfig)
-        {
-            <span class="text-success">configured and ready</span>
-        }
-        else
-        {
-            <span class="text-warning">not configured yet</span>
-        }
-    </div>
-}
-else
-{
-    <div class="mb-3 small text-muted">
-        Select a Proxmox cluster and click <strong>Load Cluster</strong> to view migration settings.
-    </div>
-}
+<h2 class="mb-3">Migration Settings</h2>
 
 @if (TempData["ErrorMessage"] is string err)
 {
@@ -54,7 +31,7 @@ else
     </div>
 </form>
 
-<form asp-action="Settings" method="post" novalidate>
+<form id="migrationSettingsForm" asp-action="Settings" method="post">
     @Html.AntiForgeryToken()
     <input type="hidden" asp-for="SelectedClusterId" />
     <div asp-validation-summary="ModelOnly" class="text-danger mb-3"></div>
@@ -67,52 +44,235 @@ else
         </div>
 
         <div class="col-md-6">
-            <label class="form-label" asp-for="SelectedStorageIdentifier">
-                Migration Datastore
-                <span class="badge bg-secondary ms-1" title="Only datastores that exist in BOTH Proxmox → Selected storage and NetApp → Selected volumes">
-                    intersection
-                </span>
-            </label>
-
-            @if (hasStorages)
-            {
-                <select class="form-select"
-                        asp-for="SelectedStorageIdentifier"
-                        asp-items="Model.StorageOptions">
-                </select>
-                <div class="form-text">
-                    @Model.StorageOptions.Count option@(Model.StorageOptions.Count == 1 ? "" : "s") available.
-                </div>
-            }
-            else
-            {
-                <select class="form-select"
-                        asp-for="SelectedStorageIdentifier"
-                        asp-items="Model.StorageOptions"
-                        disabled="disabled">
-                </select>
-                <div class="alert alert-warning mt-2 py-2">
-                    <strong>No eligible datastores.</strong>
-                    Select at least one storage in <em>Proxmox → Selected storage</em>
-                    <span class="text-muted">and</span>
-                    the matching volume in <em>NetApp → Selected volumes</em>.
-                </div>
-            }
-
+            <label class="form-label" asp-for="SelectedStorageIdentifier">Migration Datastore</label>
+            <select class="form-select" asp-for="SelectedStorageIdentifier" asp-items="Model.StorageOptions"></select>
             <span class="text-danger small" asp-validation-for="SelectedStorageIdentifier"></span>
         </div>
     </div>
 
+<section class="card mt-4" aria-labelledby="vcenter-title">
+    <div class="card-body">
+        <h3 class="h5 card-title" id="vcenter-title">vCenter credentials <span class="text-muted fw-normal">(optional)</span></h3>
+        <p class="text-muted small">Optional connection for future guest preparation. Saved with the other migration settings; password is encrypted and never displayed.</p>
+            <div class="row g-3">
+                <div class="col-lg-4"><label class="form-label" for="vcServer">vCenter server</label><input id="vcServer" asp-for="VCenterServer" class="form-control" placeholder="vcenter.example.com" spellcheck="false" autocomplete="off" /></div>
+                <div class="col-lg-4"><label class="form-label" for="vcUsername">Username</label><input id="vcUsername" asp-for="VCenterUsername" class="form-control" placeholder="administrator@vsphere.local" autocomplete="off" /></div>
+                <div class="col-lg-4"><label class="form-label" for="vcPassword">Password</label><input id="vcPassword" asp-for="VCenterPassword" type="password" class="form-control" autocomplete="new-password" /></div>
+            </div>
+            @if (Model.VCenterPasswordSaved) { <div class="form-text mt-2">A password is saved. Leave the password field blank to keep it unchanged.</div> }
+            <div class="form-check mt-3">
+                <input class="form-check-input" type="checkbox" id="vcAllowUntrusted" asp-for="VCenterAllowUntrustedCertificate" />
+                <label class="form-check-label" for="vcAllowUntrusted">Allow untrusted TLS certificate</label>
+                <div class="form-text">Off by default. Use only for a trusted vCenter with a self-signed or otherwise untrusted certificate. Certificate validation is skipped for this vCenter verification; the preference is saved for future use.</div>
+            </div>
+            <div class="mt-3 d-flex align-items-center gap-3">
+                <button id="vcVerifyButton" type="button" class="btn btn-outline-primary">Verify connection</button>
+                <span id="vcVerifyStatus" role="status" aria-live="polite"></span>
+            </div>
+    </div>
+</section>
+
+
+<section class="card mt-4" aria-labelledby="migration-concurrency-heading">
+    <div class="card-body">
+        <h3 class="h5 card-title" id="migration-concurrency-heading">Migration concurrency</h3>
+        <p class="text-muted small">Per-cluster limits. Changes take effect at the next migration run.</p>
+        <div class="row g-3">
+            <div class="col-md-6">
+                <label asp-for="MaxParallelMigrations" class="form-label">
+                    Maximum parallel migrations:
+                    <output id="parallelMigrationsValue" for="MaxParallelMigrations">@maxParallelMigrations</output>
+                </label>
+                <input asp-for="MaxParallelMigrations" type="range" min="1" max="8" step="1"
+                       value="@maxParallelMigrations" class="form-range"
+                       aria-describedby="parallelMigrationsHelp" />
+                <div class="d-flex justify-content-between text-muted small" aria-hidden="true">
+                    <span>1</span><span>8</span>
+                </div>
+                <span asp-validation-for="MaxParallelMigrations" class="text-danger small"></span>
+                <div id="parallelMigrationsHelp" class="form-text">Default: 1. Number of concurrently processed VMs.</div>
+            </div>
+            <div class="col-md-6">
+                <label asp-for="MaxParallelCutovers" class="form-label">Maximum parallel automated cutovers</label>
+                <select asp-for="MaxParallelCutovers" class="form-select"
+                        asp-items="@(Enumerable.Range(1, 8).Select(i => new Microsoft.AspNetCore.Mvc.Rendering.SelectListItem { Value = i.ToString(), Text = i.ToString(), Selected = i == maxParallelCutovers }))">
+                </select>
+                <span asp-validation-for="MaxParallelCutovers" class="text-danger small"></span>
+                <div class="form-text">Default: 1. Limits disruptive shutdown/import operations.</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="card mt-4" aria-labelledby="migration-timeouts-heading">
+    <div class="card-body">
+        <h3 class="h5 card-title" id="migration-timeouts-heading">Automatic migration timeouts</h3>
+        <p class="text-muted small">Saved per Proxmox cluster. Values are captured when an automatic migration starts; Continue on a paused shutdown uses the saved shutdown setting for another waiting interval.</p>
+        <div class="row g-3">
+            <div class="col-md-6">
+                <label asp-for="GuestPrepTimeoutMinutes" class="form-label"></label>
+                <div class="input-group"><input asp-for="GuestPrepTimeoutMinutes" class="form-control" type="number" min="5" max="120" step="1" /><span class="input-group-text">minutes</span></div>
+                <span asp-validation-for="GuestPrepTimeoutMinutes" class="text-danger small"></span>
+                <div class="form-text">Default 35. Maximum time to complete initial GuestPrep preparation.</div>
+            </div>
+            <div class="col-md-6">
+                <label asp-for="VmwareShutdownTimeoutMinutes" class="form-label"></label>
+                <div class="input-group"><input asp-for="VmwareShutdownTimeoutMinutes" class="form-control" type="number" min="1" max="120" step="1" /><span class="input-group-text">minutes</span></div>
+                <span asp-validation-for="VmwareShutdownTimeoutMinutes" class="text-danger small"></span>
+                <div class="form-text">Default 15. If VMware remains powered on, the VM pauses for Continue or Cancel.</div>
+            </div>
+            <div class="col-md-6">
+                <label asp-for="GuestAgentStartupTimeoutMinutes" class="form-label"></label>
+                <div class="input-group"><input asp-for="GuestAgentStartupTimeoutMinutes" class="form-control" type="number" min="5" max="180" step="1" /><span class="input-group-text">minutes</span></div>
+                <span asp-validation-for="GuestAgentStartupTimeoutMinutes" class="text-danger small"></span>
+                <div class="form-text">Default 20. Wait for the QEMU Guest Agent after starting the Proxmox VM.</div>
+            </div>
+            <div class="col-md-6">
+                <label asp-for="GuestVerificationTimeoutMinutes" class="form-label"></label>
+                <div class="input-group"><input asp-for="GuestVerificationTimeoutMinutes" class="form-control" type="number" min="5" max="180" step="1" /><span class="input-group-text">minutes</span></div>
+                <span asp-validation-for="GuestVerificationTimeoutMinutes" class="text-danger small"></span>
+                <div class="form-text">Default 20. Wait for the Windows first-boot verification to finish.</div>
+            </div>
+        </div>
+    </div>
+</section>
+
     <div class="mt-4 d-flex gap-2">
-        @if (hasStorages)
-        {
-            <button type="submit" class="btn btn-primary">Save</button>
-        }
-        else
-        {
-            <button type="submit" class="btn btn-primary" disabled="disabled">Save</button>
-        }
+        <button id="saveMigrationSettings" type="submit" class="btn btn-primary">Save all settings</button>
         <a asp-action="Migrate" class="btn btn-outline-secondary">Back to Migrate</a>
         <a asp-action="Help" class="btn btn-outline-info">Help</a>
     </div>
 </form>
+
+<section class="card border-danger mt-4" aria-labelledby="clearQueueHeading">
+    <div class="card-header bg-danger text-white">
+        <strong id="clearQueueHeading">Clear migration queue</strong>
+    </div>
+    <div class="card-body">
+        <p class="mb-2">Clear <strong>all</strong> migration queue entries, regardless of status: queued, running, stuck, failed, cancelled and completed.</p>
+        <div class="alert alert-warning small" role="alert">
+            <strong>Important:</strong> Migration queue logs are preserved. Clearing the queue does <strong>not</strong>
+            stop active GuestPrep, VMware shutdown, NetApp snapshots or Proxmox imports. A running worker can continue
+            and may write new records after the queue has been cleared. Check the actual VM state before using this option.
+        </div>
+        <form id="clearMigrationQueueForm">
+            @Html.AntiForgeryToken()
+            <label for="clearQueueConfirmation" class="form-label">Type <code>CLEAR</code> to confirm</label>
+            <div class="d-flex flex-wrap gap-2 align-items-center">
+                <input id="clearQueueConfirmation" class="form-control" style="max-width:220px" autocomplete="off" placeholder="CLEAR" />
+                <button id="clearQueueButton" type="submit" class="btn btn-danger" disabled>Clear queue</button>
+            </div>
+            <div id="clearQueueRunnerStatus" class="small text-muted mt-2" role="status"></div>
+            <div id="clearQueueMessage" class="small mt-2" role="status" aria-live="polite"></div>
+        </form>
+    </div>
+</section>
+
+<script>
+(() => {
+    const form = document.getElementById('clearMigrationQueueForm');
+    const button = document.getElementById('clearQueueButton');
+    const typed = document.getElementById('clearQueueConfirmation');
+    const message = document.getElementById('clearQueueMessage');
+    const runnerStatus = document.getElementById('clearQueueRunnerStatus');
+    let sending = false;
+    let active = false;
+    const refreshButton = () => { button.disabled = sending || typed.value.trim() !== 'CLEAR'; };
+    async function poll() {
+        try {
+            const response = await fetch('@Url.Content("~/Migration/QueueControl/State")', {
+                cache: 'no-store', credentials: 'same-origin', headers: { Accept: 'application/json' }
+            });
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            const state = await response.json();
+            if (typeof state.running !== 'boolean') throw new Error('Invalid status response');
+            active = state.running;
+            runnerStatus.textContent = active
+                ? 'Runner active: clearing records will not stop operations already in progress.'
+                : 'Runner idle.';
+            runnerStatus.className = active ? 'small text-danger mt-2' : 'small text-muted mt-2';
+        } catch {
+            active = false;
+            runnerStatus.textContent = 'Runner status unavailable. Check VMware and Proxmox activity before clearing.';
+            runnerStatus.className = 'small text-warning mt-2';
+        }
+    }
+    typed.addEventListener('input', refreshButton);
+    form.addEventListener('submit', async event => {
+        event.preventDefault();
+        if (button.disabled || sending) return;
+        if (!confirm('Permanently delete ALL migration queue entries? Migration logs will be preserved.\n\nThis does NOT stop operations already running on VMware, NetApp or Proxmox.')) return;
+        sending = true;
+        refreshButton();
+        message.className = 'small mt-2 text-muted';
+        message.textContent = 'Clearing migration queue…';
+        try {
+            const fields = new FormData();
+            fields.append('__RequestVerificationToken', form.querySelector('input[name="__RequestVerificationToken"]').value);
+            fields.append('confirmation', 'CLEAR');
+            const response = await fetch('@Url.Content("~/Migration/QueueControl/Clear")', {
+                method: 'POST', credentials: 'same-origin', body: fields,
+                headers: { Accept: 'application/json' }
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok || !result.ok) throw new Error(result.error || ('HTTP ' + response.status));
+            message.className = 'small mt-2 text-success';
+            message.textContent = (result.message || 'Queue cleared. Migration logs preserved.') + ' Removed items: ' + result.removed + '.';
+            typed.value = '';
+        } catch (error) {
+            message.className = 'small mt-2 text-danger';
+            message.textContent = error.message || 'Clear queue failed.';
+        } finally {
+            sending = false;
+            refreshButton();
+            await poll();
+        }
+    });
+    refreshButton();
+    poll();
+    setInterval(poll, 5000);
+})();
+</script>
+
+<script>
+(() => {
+    const slider = document.getElementById('MaxParallelMigrations');
+    const output = document.getElementById('parallelMigrationsValue');
+    if (slider && output) {
+        const update = () => { output.value = slider.value; output.textContent = slider.value; };
+        slider.addEventListener('input', update);
+        update();
+    }
+})();
+</script>
+
+<script>
+(() => {
+    const button = document.getElementById('vcVerifyButton');
+    const status = document.getElementById('vcVerifyStatus');
+    button.addEventListener('click', async () => {
+        const form = button.closest('form');
+        const fields = new FormData();
+        fields.append('__RequestVerificationToken', form.querySelector('input[name="__RequestVerificationToken"]').value);
+        fields.append('Server', document.getElementById('vcServer').value);
+        fields.append('Username', document.getElementById('vcUsername').value);
+        fields.append('Password', document.getElementById('vcPassword').value);
+        if (document.getElementById('vcAllowUntrusted').checked) fields.append('AllowUntrustedCertificate', 'true');
+        button.disabled = true;
+        status.className = 'text-muted'; status.textContent = 'Verifying…';
+        try {
+            const response = await fetch('@Url.Content("~/Migration/VerifyVCenter")', {
+                method: 'POST', credentials: 'same-origin', body: fields,
+                headers: { Accept: 'application/json' }, cache: 'no-store'
+            });
+            if (response.redirected) throw new Error('Sign in to BareProx before verifying vCenter credentials.');
+            const result = await response.json();
+            status.className = result.success ? 'text-success' : 'text-danger';
+            status.textContent = result.message || 'Verification failed.';
+        } catch (error) {
+            status.className = 'text-danger';
+            status.textContent = error.message || 'Could not verify connection.';
+        } finally { button.disabled = false; }
+    });
+})();
+</script>

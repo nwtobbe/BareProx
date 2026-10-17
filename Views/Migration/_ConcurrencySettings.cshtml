@@ -1,0 +1,41 @@
+@model BareProx.Models.MigrationSettingsViewModel
+@using Microsoft.EntityFrameworkCore
+@inject BareProx.Data.ApplicationDbContext Db
+@{
+    var selection = Model.SelectedClusterId > 0
+        ? await Db.MigrationSelections.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.ClusterId == Model.SelectedClusterId)
+        : null;
+    var parallel = selection?.MaxParallelMigrations ?? 4;
+    var cutovers = selection?.MaxParallelCutovers ?? 1;
+}
+<section class="card mt-4" aria-labelledby="migration-concurrency-heading">
+    <div class="card-body">
+        <h3 class="h5 card-title" id="migration-concurrency-heading">Migration concurrency</h3>
+        <p class="text-muted small">Per-cluster worker limits. Changes apply to the next run. A cutover includes shutdown, final snapshot, Proxmox import and verification.</p>
+        @if (selection == null)
+        {
+            <p class="text-muted">Save this cluster's migration settings before setting concurrency limits.</p>
+        }
+        else
+        {
+            <form asp-controller="MigrationConcurrency" asp-action="Save" method="post">
+                @Html.AntiForgeryToken()
+                <input type="hidden" name="clusterId" value="@Model.SelectedClusterId" />
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label for="maxParallelMigrations" class="form-label">Maximum parallel migrations</label>
+                        <input id="maxParallelMigrations" name="maxParallelMigrations" type="number" class="form-control" min="1" max="8" required value="@parallel" />
+                        <div class="form-text">Default: 4. Limits concurrent migration preparation/import workers.</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label for="maxParallelCutovers" class="form-label">Maximum parallel automated cutovers</label>
+                        <input id="maxParallelCutovers" name="maxParallelCutovers" type="number" class="form-control" min="1" max="8" required value="@cutovers" />
+                        <div class="form-text">Default: 1. Restricts disruptive automated cutovers.</div>
+                    </div>
+                </div>
+                <button class="btn btn-outline-primary mt-3" type="submit">Save concurrency limits</button>
+            </form>
+        }
+    </div>
+</section>

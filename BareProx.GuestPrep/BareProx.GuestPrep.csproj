@@ -1,0 +1,46 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<!-- Application -->
+		<OutputType>Exe</OutputType>
+		<TargetFramework>net10.0</TargetFramework>
+		<AssemblyName>BareProx.GuestPrep</AssemblyName>
+		<RootNamespace>BareProx.GuestPrep</RootNamespace>
+
+		<!-- Windows x64 executable -->
+		<RuntimeIdentifier>win-x64</RuntimeIdentifier>
+		<SelfContained>true</SelfContained>
+		<PublishSingleFile>true</PublishSingleFile>
+		<EnableWindowsTargeting>true</EnableWindowsTargeting>
+
+		<!-- Compiler settings -->
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+
+		<!-- Application information -->
+		<Product>BareProx Guest Preparation</Product>
+		<Title>BareProx GuestPrep</Title>
+		<Description>Windows VirtIO driver preparation utility for VMware to Proxmox migration.</Description>
+		<Authors>BareProx contributors</Authors>
+		<Company>BareProx</Company>
+		<Copyright>Copyright © 2025-2026 BareProx contributors</Copyright>
+
+		<!-- Licensing -->
+		<PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
+
+		<!-- Version information -->
+		<Version>1.0.0</Version>
+		<AssemblyVersion>1.0.0.0</AssemblyVersion>
+		<FileVersion>1.0.0.0</FileVersion>
+
+		<!-- Publish settings -->
+		<PublishTrimmed>false</PublishTrimmed>
+		<DebugType>embedded</DebugType>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<Compile Remove="THIRD-PARTY-NOTICES.txt" />
+		<None Update="THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+	</ItemGroup>
+	
+</Project>

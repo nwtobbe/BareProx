@@ -16,3 +16,7 @@ sec log create -vserver proxmox -user-or-group-name bpuser -application http -au
 
 
 Kolla indexering för snapshots
+migrering för 2016 och nyare. 2012 kan fungera om man installerar .net10 runtime.
+
+1,fstrim_cloned_disks=1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\test\Uninstall-VMwareTools.ps1"

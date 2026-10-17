@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),  
 and this project ~adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.2610.18] - 2026-10-18
+
+## Added
+- virtio 0.1.302 windows
+- Automated migration for Windows Server 2016, 2019, 2022, and 2025 guests.
+- Overview of migration queue and status of each queued VM.
+- Reporting of migration results via email, including success/failure and any errors encountered.
+
+### Changed
+- Homescreen now displays datastores
+
+### Fixed
+- Security updates
+
+
 ## [1.0.2610.09] - 2026-10-09
 
 ## Added

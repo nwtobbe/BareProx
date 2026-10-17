@@ -1,0 +1,93 @@
+@model BareProx.Controllers.MigrationReportsIndexViewModel
+@{
+    ViewData["Title"] = "Migration reports";
+}
+<style>
+    .bp-report-hero {background:linear-gradient(115deg,#153e73,#2563a9); color:white; border-radius:14px}
+    .bp-report-stat {border:1px solid #e5e9f0;border-radius:12px;padding:1rem 1.1rem;background:var(--bs-body-bg,#fff);height:100%}
+    .bp-report-stat .number {font-size:1.8rem;font-weight:750;letter-spacing:-.04em}
+    .bp-report-table tbody tr:hover {background:rgba(36,99,169,.05)}
+    .bp-pill {display:inline-block;padding:.18rem .55rem;border-radius:100px;font-size:.76rem;font-weight:600}
+    .bp-pill-muted {background:#eef1f5;color:#526075}
+    .bp-pill-warning {background:#fff3cd;color:#664d03}
+    .bp-pill-danger {background:#f8d7da;color:#842029}
+    .bp-pill-success {background:#d1e7dd;color:#0f5132}
+</style>
+<div class="container mt-4 mb-5">
+    <div class="bp-report-hero p-4 mb-4 shadow-sm d-flex flex-wrap align-items-center justify-content-between gap-3">
+        <div>
+            <div class="text-uppercase small opacity-75 mb-1" style="letter-spacing:.12em">BareProx / Migration</div>
+            <h1 class="h2 mb-2">Migration reports</h1>
+            <div class="opacity-75">Audit trail and execution history from persisted migration logs.</div>
+        </div>
+        <div class="d-flex gap-2">
+            @if (Model.EmailConfigured) { <a asp-controller="MigrationReportEmail" asp-action="Index" class="btn btn-light btn-sm">✉ Email…</a> }
+            <a asp-controller="Migration" asp-action="Migrate" class="btn btn-light btn-sm">Migration queue</a>
+            <a asp-controller="MigrationReports" asp-action="Index" class="btn btn-outline-light btn-sm">Refresh</a>
+        </div>
+    </div>
+    @if (TempData["MigrationReportEmailInfo"] is string info) { <div class="alert alert-info">@info</div> }
+    <div class="row g-3 mb-4">
+        <div class="col-6 col-lg-3"><div class="bp-report-stat"><div class="small text-muted">Migration histories</div><div class="number">@Model.TotalReports</div><div class="small text-muted">Unique queue item IDs</div></div></div>
+        <div class="col-6 col-lg-3"><div class="bp-report-stat"><div class="small text-muted">Log entries</div><div class="number">@Model.TotalEntries</div><div class="small text-muted">Preserved activity records</div></div></div>
+        <div class="col-6 col-lg-3"><div class="bp-report-stat"><div class="small text-muted">Histories with errors</div><div class="number text-danger">@Model.ErrorReports</div><div class="small text-muted">Not necessarily final failures</div></div></div>
+        <div class="col-6 col-lg-3"><div class="bp-report-stat"><div class="small text-muted">Histories with warnings</div><div class="number text-warning">@Model.WarningReports</div><div class="small text-muted">Review recommended</div></div></div>
+    </div>
+    <div class="card shadow-sm border-0">
+        <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center gap-2 flex-wrap py-3">
+            <strong>Migration history</strong>
+            <div class="d-flex gap-2 align-items-center">
+                <input type="search" id="reportSearch" class="form-control form-control-sm" placeholder="Filter this page…" aria-label="Filter migration reports" style="max-width:210px" />
+                <select id="reportSeverity" class="form-select form-select-sm" aria-label="Filter severity" style="max-width:170px"><option value="">All severities</option><option value="errors">With errors</option><option value="warnings">With warnings</option><option value="clean">No errors/warnings</option></select>
+            </div>
+        </div>
+        <div class="table-responsive">
+            <table class="table align-middle mb-0 bp-report-table" id="reportTable">
+                <thead class="table-light"><tr><th>Server name</th><th>Migration ID</th><th>Time taken</th><th class="text-center">Events</th><th>Health signals</th><th>Queue status</th><th class="text-end">Report</th></tr></thead>
+                <tbody>
+                @foreach (var r in Model.Reports)
+                {
+                    var health = r.Errors > 0 ? "errors" : r.Warnings > 0 ? "warnings" : "clean";
+                    <tr data-health="@health" data-warnings="@(r.Warnings > 0 ? "true" : "false")" data-search="@(r.ItemId + " " + r.Name + " " + r.VmId + " " + r.Status)">
+                        <td><div class="fw-semibold">@(string.IsNullOrWhiteSpace(r.Name) ? "Unknown server" : r.Name)</div>@if (r.VmId.HasValue) { <div class="small text-muted">VMID @r.VmId</div> }</td>
+                        <td class="text-nowrap"><span class="fw-semibold">#@r.ItemId</span></td>
+                        <td class="text-nowrap fw-semibold" title="Processing duration excluding queue waiting">@r.RecordedDurationText</td>
+                        <td class="text-center"><span class="badge bg-secondary">@r.Entries</span></td>
+                        <td>@if(r.Errors > 0) { <span class="bp-pill bp-pill-danger">@r.Errors errors</span> } @if(r.Warnings > 0) { <span class="bp-pill bp-pill-warning">@r.Warnings warnings</span> } @if(r.Errors == 0 && r.Warnings == 0) { <span class="bp-pill bp-pill-success">No errors recorded</span> }</td>
+                        <td>@if(r.Archived) { <span class="bp-pill bp-pill-muted" title="Queue entry deleted; history retained">Archived / queue cleared</span> } else { <span class="bp-pill bp-pill-muted">@r.Status</span> }</td>
+                        <td class="text-end"><a class="btn btn-sm btn-outline-primary" asp-controller="MigrationReports" asp-action="Detail" asp-route-id="@r.ItemId">View report →</a></td>
+                    </tr>
+                }
+                @if (!Model.Reports.Any()) { <tr><td colspan="7" class="text-center text-muted p-5">No migration logs have been recorded yet.</td></tr> }
+                </tbody>
+            </table>
+        </div>
+        <div class="card-footer d-flex flex-wrap align-items-center justify-content-between gap-2 bg-transparent">
+            <span class="small text-muted">Page @Model.Page of @Model.TotalPages · Newest activity first · Duration excludes queue waiting</span>
+            <div class="btn-group btn-group-sm">
+                @if (Model.Page > 1) { <a class="btn btn-outline-secondary" asp-action="Index" asp-route-page="@(Model.Page-1)">← Previous</a> }
+                @if (Model.Page < Model.TotalPages) { <a class="btn btn-outline-secondary" asp-action="Index" asp-route-page="@(Model.Page+1)">Next →</a> }
+            </div>
+        </div>
+    </div>
+    <div class="small text-muted mt-3">Time taken excludes time waiting in the queue; new automated runs also exclude idle time between staging and cutover. Historical logs without precise timing markers use the first identifiable work event. Reports are reconstructed from queue logs. Server names are preserved in new logs even after queue cleanup. Older histories can still lack a server name if their queue entry was removed before names were recorded; VMID and final queue status may be unavailable. An error in the timeline does not necessarily mean the migration ultimately failed.</div>
+</div>
+@section Scripts {
+<script>
+(() => {
+    const search = document.getElementById('reportSearch');
+    const severity = document.getElementById('reportSeverity');
+    const rows = [...document.querySelectorAll('#reportTable tbody tr[data-health]')];
+    function filter() {
+        const term = (search.value || '').toLocaleLowerCase();
+        const level = severity.value;
+        for (const row of rows) {
+            const h = row.dataset.health;
+            const matchesLevel = !level || (level === 'clean' ? h === 'clean' : level === 'errors' ? h === 'errors' : row.dataset.warnings === 'true');
+            row.hidden = !matchesLevel || !String(row.dataset.search || '').toLocaleLowerCase().includes(term);
+        }
+    }
+    search.addEventListener('input', filter); severity.addEventListener('change', filter);
+})();
+</script>
+}

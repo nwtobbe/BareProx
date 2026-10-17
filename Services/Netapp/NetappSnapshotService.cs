@@ -1,4 +1,4 @@
-﻿/*
+/*
  * BareProx - Backup and Restore Automation for Proxmox using NetApp
  *
  * Copyright (C) 2025 Tobias Modig
@@ -62,7 +62,8 @@ namespace BareProx.Services
        string? lockRetentionUnit = null,
        string? volumeUuid = null,            // optional input UUID (preferred)
        string? svmName = null,               // optional SVM hint (used only if UUID is missing)
-       CancellationToken ct = default)
+       CancellationToken ct = default,
+       int? migrationVmId = null)
         {
             using var scope = _logger.BeginScope(new Dictionary<string, object?>
             {
@@ -113,7 +114,14 @@ namespace BareProx.Services
                 // 1) Build snapshot name (App TZ)
                 var creationTimeLocal = _tz.ConvertUtcToApp(DateTime.UtcNow);
                 var timestamp = creationTimeLocal.ToString("yyyy-MM-dd-HH_mm-ss");
-                var snapshotName = $"BP_{snapmirrorLabel}-{timestamp}";
+                if (migrationVmId.HasValue &&
+                    (migrationVmId.Value < 100 ||
+                     !string.Equals(snapmirrorLabel, "Migration", StringComparison.Ordinal)))
+                    throw new ArgumentException("A migration VMID >= 100 requires the Migration SnapMirror label.", nameof(migrationVmId));
+
+                var snapshotName = migrationVmId.HasValue
+                    ? $"BareProx.Migration.VMID.{migrationVmId.Value}.{creationTimeLocal.ToString("yyyyMMdd.HHmmss", CultureInfo.InvariantCulture)}"
+                    : $"BP_{snapmirrorLabel}-{timestamp}";
 
                 var body = new SnapshotCreateBody
                 {

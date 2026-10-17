@@ -1,85 +1,211 @@
-﻿@model BareProx.Models.MigratePageViewModel
+@model BareProx.Models.MigratePageViewModel
 @{
-    ViewData["Title"] = "Migration – Run";
+    ViewData["Title"] = "Migration";
 }
 
-<h2 class="mb-3">The Great Exit Strategy (Migration)</h2>
-<p class="lead text-muted mb-2">
-    Migrate from VMware to open source
-</p>
-<div class="d-flex flex-wrap gap-2 mb-3">
-    <button id="btn-scan" class="btn btn-outline-primary">Scan datastore</button>
-    <a asp-action="Settings" class="btn btn-outline-secondary">Settings</a>
-    <button id="btn-run-queue" class="btn btn-success">Run Queue</button>
-    <a asp-action="Help" class="btn btn-outline-info">Help</a>
-</div>
+<style>
+    .migration-status-dot {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        vertical-align: middle;
+        border: 1px solid rgba(0,0,0,.12);
+    }
 
-<!-- Loading banner -->
-<div id="migrate-loading"
-     class="alert alert-info d-flex align-items-center py-2 px-3 mb-3 d-none">
-    <div class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></div>
-    <div>
-        <strong>Working…</strong>
-        <span class="migrate-loading-text">Talking to Proxmox, please wait.</span>
-    </div>
-</div>
+        .migration-status-dot.is-green {
+            background-color: #16a34a;
+        }
 
-<div class="card mb-3">
-    <div class="card-body py-2">
-        <div class="row g-2">
-            <div class="col-auto">
-                <span class="badge bg-light text-dark">Cluster: <strong>@(Model.ClusterName ?? "—")</strong></span>
-            </div>
-            <div class="col-auto">
-                <span class="badge bg-light text-dark">Host: <strong>@(Model.HostName ?? "—")</strong></span>
-            </div>
-            <div class="col-auto">
-                <span class="badge bg-light text-dark">Datastore: <strong>@(Model.StorageName ?? "—")</strong></span>
-            </div>
+        .migration-status-dot.is-red {
+            background-color: #dc2626;
+        }
+
+        .migration-status-dot.is-gray {
+            background-color: #9ca3af;
+        }
+
+    .migration-choice-note {
+        font-size: .9rem;
+    }
+
+    .migration-shell {
+        max-width: 1700px;
+        margin-inline: auto;
+    }
+
+    .migration-toolbar {
+        display: flex;
+        gap: .65rem;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+    }
+
+    .migration-context {
+        display: flex;
+        gap: .5rem;
+        flex-wrap: wrap;
+    }
+
+        .migration-context span {
+            border: 1px solid var(--bs-border-color);
+            border-radius: .5rem;
+            padding: .35rem .65rem;
+            font-size: .85rem;
+        }
+
+        .migration-context strong {
+            margin-left: .25rem;
+        }
+
+    .migration-section-title {
+        font-size: 1.08rem;
+        font-weight: 650;
+        margin: 0;
+    }
+
+    .migration-table {
+        --bs-table-bg: transparent;
+    }
+
+        .migration-table thead th {
+            font-size: .76rem;
+            text-transform: uppercase;
+            letter-spacing: .035em;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .migration-table tbody td {
+            padding-block: .7rem;
+        }
+
+        .migration-table .migration-vm-name {
+            font-weight: 600;
+        }
+
+    .migration-state {
+        font-weight: 600;
+        font-size: .79rem;
+        border-radius: 99px;
+        display: inline-block;
+        padding: .25rem .55rem;
+        background: var(--bs-secondary-bg);
+        color: var(--bs-body-color);
+    }
+
+        .migration-state.is-success {
+            background: rgba(22,163,74,.12);
+            color: #15803d;
+        }
+
+        .migration-state.is-danger {
+            background: rgba(220,38,38,.12);
+            color: #dc2626;
+        }
+
+        .migration-state.is-active {
+            background: rgba(13,110,253,.11);
+            color: var(--bs-primary);
+        }
+
+        .migration-state.is-warning {
+            background: rgba(245,158,11,.14);
+            color: #b45309;
+        }
+
+    .migration-log-time {
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+    }
+
+    .migration-empty {
+        padding: 2rem;
+        text-align: center;
+        color: var(--bs-secondary-color);
+    }
+
+    @@media(max-width:767px) {
+        .migration-toolbar .btn {
+            flex: 1;
+        }
+    }
+</style>
+
+<div class="migration-shell">
+    <div class="migration-toolbar mb-3">
+        <div>
+            <h2 class="mb-1">Migration</h2>
+            <p class="text-muted mb-0">Move VMware workloads to Proxmox using NetApp storage.</p>
+        </div>
+        <div class="d-flex gap-2 flex-wrap">
+            <button id="btn-scan" type="button" class="btn btn-outline-primary">Refresh datastore</button>
+            <a asp-action="Settings" class="btn btn-outline-secondary">Settings</a>
+            <a asp-action="Help" class="btn btn-outline-secondary">Help</a>
+            <button id="btn-run-queue" class="btn btn-success" disabled title="Checking migration status…">Checking queue…</button>
         </div>
     </div>
-</div>
 
-<div class="table-responsive">
-    <table class="table table-sm align-middle" id="vmx-table">
-        <thead class="table-light">
-            <tr>
-                <th style="min-width:180px">Name</th>
-                <th>VMX Path</th>
-                <th>OS</th>
-                <th class="text-end">vCPU</th>
-                <th class="text-end">RAM (MiB)</th>
-                <th class="text-end">Disk (GiB)</th>
-                <th>NIC</th>
-            </tr>
-        </thead>
-        <tbody><!-- rows injected by JS --></tbody>
-    </table>
-</div>
-
-<!-- ============ Queued imports ============ -->
-<div class="card mt-4">
-    <div class="card-header py-2">
-        <strong>Queued imports</strong>
+    <div class="migration-context mb-4" aria-label="Migration environment">
+        <span>Cluster <strong>@(Model.ClusterName ?? "—")</strong></span>
+        <span>Host <strong>@(Model.HostName ?? "—")</strong></span>
+        <span>Datastore <strong>@(Model.StorageName ?? "—")</strong></span>
     </div>
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table table-sm align-middle mb-0" id="queued-table">
-                <thead class="table-light">
-                    <tr>
-                        <th class="text-nowrap">VM ID</th>
-                        <th>Name</th>
-                        <th class="text-nowrap">UEFI</th>
-                        <th class="text-end text-nowrap">Disks</th>
-                        <th class="text-end text-nowrap">NICs</th>
-                        <th class="text-nowrap">Status</th>
-                        <th style="width:220px">Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="queued-body"><!-- queued rows --></tbody>
-            </table>
+
+    <section class="card mb-4" aria-labelledby="sourceVmsTitle">
+        <div class="card-header d-flex align-items-center justify-content-between gap-2">
+            <h3 id="sourceVmsTitle" class="migration-section-title">Source virtual machines</h3>
+            <span id="datastoreScanStatus" class="small text-muted" role="status" aria-live="polite">Loading datastore…</span>
         </div>
-    </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover table-sm align-middle migration-table mb-0" id="vmx-table">
+                    <thead class="table-light">
+                        <tr>
+                            <th style="min-width:180px">Name</th>
+                            <th>OS</th>
+                            <th class="text-end">vCPU</th>
+                            <th class="text-end">RAM (MiB)</th>
+                            <th class="text-end">Disk (GiB)</th>
+                            <th>NIC</th>
+                            <th>Power</th>
+                            <th>VMware Tools</th>
+                            <th>Snapshots</th>
+                        </tr>
+                    </thead>
+                    <tbody><!-- rows injected by JS --></tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section class="card mb-3" aria-labelledby="queueTitle">
+        <div class="card-header d-flex align-items-center justify-content-between gap-2">
+            <h3 id="queueTitle" class="migration-section-title">Migration queue <span id="migrationQueueCount" class="text-muted small fw-normal"></span></h3>
+            <span class="small text-muted">Live stages · detailed history in Logs</span>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover table-sm align-middle migration-table mb-0" id="queued-table">
+                    <thead class="table-light">
+                        <tr>
+                            <th>VM ID</th>
+                            <th>Name</th>
+                            <th>Firmware</th>
+                            <th class="text-end">Disks</th>
+                            <th class="text-end">NICs</th>
+                            <th>Status</th>
+
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="queued-body"><!-- queued rows --></tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+    <div id="migrationRunFeedback" class="alert alert-info d-none mt-2" role="status" aria-live="polite"></div>
 </div>
 
 <!-- Run Queue Confirm -->
@@ -87,16 +213,16 @@
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title" id="runQueueConfirmLabel">Are you absolutely sure?</h5>
+                <h5 class="modal-title" id="runQueueConfirmLabel">Start queued migrations?</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                <p class="mb-2">Please make sure you have a backup of each vm and that they are shut down.</p>
-                <p class="mb-0">This will take a storage snapshot of the datastore.</p>
+                <p class="mb-2">Manual migrations require the VMware source VM to be powered off before starting.</p>
+                <p class="mb-0"><strong>Automated migrations are disruptive:</strong> BareProx takes one NetApp snapshot before staging, prepares Windows, shuts down the VMware source, imports the VM into Proxmox, starts it and verifies the guest. Confirm your recovery plan before continuing.</p>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" id="btn-run-away" class="btn btn-danger">Run away</button>
+                <button type="button" id="btn-run-away" class="btn btn-danger">Start migrations</button>
             </div>
         </div>
     </div>
@@ -107,7 +233,7 @@
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title">Queued item</h5>
+                <h5 class="modal-title">Migration details</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body" id="queueDetailsBody">
@@ -123,7 +249,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title">
-                    Logs for item <span id="logsItemId" class="text-muted"></span>
+                    Migration logs · item <span id="logsItemId" class="text-muted"></span>
                 </h5>
                 <div class="ms-auto d-flex gap-2">
                     <button type="button" id="btn-refresh-logs" class="btn btn-outline-secondary btn-sm">Refresh</button>
@@ -132,6 +258,65 @@
             </div>
             <div class="modal-body p-0">
                 <div id="queueLogsBody" class="p-3 small text-muted">No logs yet.</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Migration choice shown only for eligible, powered-on Windows Server guests with running VMware Tools. -->
+<div class="modal fade" id="migrationModeModal" tabindex="-1" aria-labelledby="migrationModeTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="migrationModeTitle">Choose migration mode</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2">Automatic migration supports Windows Server 2016, 2019, 2022 and 2025 (64-bit), powered on with VMware Tools running. Windows Server 2012 R2 and older are manual-only.</p>
+                <div class="d-grid gap-2">
+                    <button type="button" class="btn btn-outline-primary text-start" id="btn-manual-migration">
+                        <strong>Manual migration</strong>
+                        <span class="d-block small">Open the existing wizard with all migration options.</span>
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary text-start" id="btn-automated-migration">
+                        <strong>Automated migration</strong>
+                        <span class="d-block small">Review guest configuration and naming before enabling automation.</span>
+                    </button>
+                </div>
+                <div id="automation-not-ready" class="alert alert-info mt-3 mb-0 d-none migration-choice-note" role="status">
+                    Automated migration is unavailable for this VM. Check OS, power, VMware Tools and snapshots.
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Automated migration: non-destructive first-test configuration review -->
+<div class="modal fade" id="automatedReviewModal" tabindex="-1" aria-labelledby="automatedReviewTitle" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title" id="automatedReviewTitle">Automated migration — Verify source and target</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+                <div class="alert alert-info small">Review the target configuration before queueing. Adding an item does not modify VMware; running the queue will prepare the guest and perform the cutover.</div>
+                <div id="automatedReviewBody"></div>
+                <div id="automationApprovedPlan"></div>
+                <hr />
+                <h6>Windows Guest Operations — credential verification</h6>
+                <p class="small text-muted">Uses vCenter and VMware Tools to validate access. Verified credentials are stored encrypted for the automated migration and cleared after guest startup.</p>
+                <form id="guestVerifyForm" autocomplete="off">
+                    @Html.AntiForgeryToken()
+                    <div class="row g-2">
+                        <div class="col-md-5"><label class="form-label" for="guestVerifyUser">Windows username</label><input id="guestVerifyUser" class="form-control" autocomplete="off" placeholder="DOMAIN\Administrator" required></div>
+                        <div class="col-md-5"><label class="form-label" for="guestVerifyPassword">Windows password</label><input id="guestVerifyPassword" class="form-control" type="password" autocomplete="new-password" required></div>
+                        <div class="col-md-2 d-flex align-items-end"><button id="btn-guest-verify" class="btn btn-outline-primary w-100" type="submit">Verify</button></div>
+                    </div>
+                </form>
+                <div id="guestVerifyResult" class="small mt-2" role="status" aria-live="polite"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" id="btn-review-edit">Review/edit in existing wizard</button>
+                <button type="button" class="btn btn-primary" id="btn-auto-add-queue" disabled title="Verify Windows guest credentials first">Add to queue</button>
             </div>
         </div>
     </div>
@@ -167,24 +352,11 @@
                             <div class="row g-3">
                                 <div class="col-md-3">
                                     <label class="form-label">VM ID</label>
-                                    <input class="form-control" name="VmId" type="number" value="118" />
+                                    <input class="form-control" name="VmId" type="number" min="100" placeholder="Loading next available VMID…" />
                                 </div>
                                 <div class="col-md-9">
-                                    <label class="form-label" for="vmNameInput">Name</label>
-                                    <input class="form-control"
-                                           id="vmNameInput"
-                                           name="Name"
-                                           required
-                                           maxlength="63"
-                                           pattern="^[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?$"
-                                           placeholder="my-vm-name" />
-                                    <div class="invalid-feedback">
-                                        Name must be 1–63 characters, letters/digits and “-” only,
-                                        and cannot start or end with “-”.
-                                    </div>
-                                    <div class="form-text">
-                                        Must be a valid Proxmox VM name.
-                                    </div>
+                                    <label class="form-label">Name</label>
+                                    <input class="form-control" name="Name" />
                                 </div>
 
                                 <div class="col-md-6">
@@ -194,6 +366,7 @@
                                 <div class="col-md-6">
                                     <label class="form-label">OS Type</label>
                                     <select class="form-select" name="OsType" id="osTypeSelect"><!-- filled by JS --></select>
+                                    <div class="form-text" id="sourceOsDescription"></div>
                                 </div>
 
                                 <!-- Memory (MiB) -->
@@ -251,26 +424,21 @@
 
                         <!-- Disks -->
                         <div class="tab-pane fade" id="tab-disks" role="tabpanel">
-                            <div id="diskValidationAlert" class="alert alert-danger py-2 mb-2 d-none"></div>
                             <div class="table-responsive">
                                 <table class="table table-sm align-middle" id="disks-table">
                                     <thead class="table-light">
                                         <tr>
-                                            <th>Source VMDK</th>
+                                            <th>Disk</th>
                                             <th class="text-end">Size (GiB)</th>
                                             <th>Target Storage</th>
                                             <th>Bus</th>
-                                            <th>Index</th>
-                                            <th class="text-nowrap">Disk ID</th>
+                                            <th>Target index / order</th>
                                         </tr>
                                     </thead>
                                     <tbody><!-- disk rows --></tbody>
                                 </table>
                             </div>
-                            <small class="text-muted">
-                                Disks are discovered from the VMX. Source, size, and target are fixed here; adjust bus/index only.
-                                The final Proxmox disk ID is checked as <code>bus + index</code>, for example <code>scsi0</code>.
-                            </small>
+                            <small class="text-muted">Disk paths remain internal. For manual migrations, choose each disk's bus and index. Prepare for VirtIO forces SATA disks and VirtIO NICs. SATA supports 0–5, IDE 0–3, VirtIO 0–15 and SCSI 0–30.</small>
                         </div>
 
                         <!-- Network -->
@@ -280,6 +448,7 @@
                                     <thead class="table-light">
                                         <tr>
                                             <th>Model</th>
+                                            <th>VMware network</th>
                                             <th>MAC (optional)</th>
                                             <th>Bridge</th>
                                             <th class="text-end">VLAN</th>
@@ -297,7 +466,7 @@
 
             <div class="modal-footer">
                 <div class="text-muted me-auto small">
-                    These settings will be applied when you queue the import.
+                    <span id="wizardFooterNote">These settings will be applied when you queue the import.</span>
                 </div>
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
                 <button id="btn-add" type="button" class="btn btn-primary">Add</button>
@@ -310,1148 +479,1470 @@
 @section Scripts {
     <script>
         window.addEventListener('DOMContentLoaded', () => {
-          // ---- URLs ----
-          const URLS = {
-            scan: '@Url.Action("Scan", "Migration")',
-            caps: '@Url.Action("Capabilities", "Migration")',
-            queue:'@Url.Action("Queue", "Migration")',
-            run:  '@Url.Action("RunQueue", "Migration")',
-            logs: '@Url.Action("QueueLogs", "Migration")',
-            nextVmId: '@Url.Action("NextVmId", "Migration")' // NEW: suggests next free VMID (not in queue)
-          };
-
-          // ---- Tiny helpers ----
-          const $  = s => document.querySelector(s);
-          const $$ = s => Array.from(document.querySelectorAll(s));
-          const on = (el, ev, fn) => { if (el) el.addEventListener(ev, fn); };
-          function readVal(o){ return (o && (o.value ?? o.Value ?? o.val ?? o.Val ?? o.id ?? o.Id)) || ""; }
-          function readLabel(o){ return (o && (o.label ?? o.Label ?? o.text ?? o.Text ?? o.name ?? o.Name)) || readVal(o); }
-          function first(obj){ for (let i=1;i<arguments.length;i++){ const k=arguments[i]; const v=obj && obj[k]; if (v!==undefined && v!==null) return v; } return undefined; }
-          function pick(){ for (let i=0;i<arguments.length;i++){ const v=arguments[i]; if (v!==undefined && v!==null) return v; } return undefined; }
-          function escapeHtml(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-
-          // ---- Proxmox disk ID validation ----
-          // Valid IDs are built as bus + index, e.g. scsi0, sata1, virtio2.
-          // Keep this client-side check mirrored on the server-side Queue action as well.
-          const DISK_BUS_LIMITS = {
-            scsi:   { min: 0, max: 30 },
-            sata:   { min: 0, max: 5  },
-            virtio: { min: 0, max: 15 },
-            ide:    { min: 0, max: 3  }
-          };
-
-          function normalizeDiskBus(bus) {
-            return String(bus || '').trim().toLowerCase();
-          }
-
-          function normalizeDiskIndex(idx) {
-            return String(idx ?? '').trim();
-          }
-
-          function makeDiskId(bus, idx) {
-            const b = normalizeDiskBus(bus);
-            const i = normalizeDiskIndex(idx);
-            return (b && i !== '') ? `${b}${i}` : '';
-          }
-
-          function getDiskIdFromObject(d) {
-            const diskId = d?.diskId ?? d?.DiskId;
-            if (diskId) return String(diskId);
-
-            const bus = d?.bus ?? d?.Bus ?? '';
-            const idx = d?.index ?? d?.Index ?? '';
-            return makeDiskId(bus, idx);
-          }
-
-          function updateDiskIdPreviewForRow(tr) {
-            if (!tr) return;
-            const busEl = tr.querySelector('.disk-bus');
-            const idxEl = tr.querySelector('.disk-index');
-            const preview = tr.querySelector('.disk-id-preview');
-            if (!preview) return;
-
-            const diskId = makeDiskId(busEl?.value, idxEl?.value);
-            preview.textContent = diskId || '—';
-          }
-
-          function updateAllDiskIdPreviews() {
-            $$('#disks-table tbody tr').forEach(updateDiskIdPreviewForRow);
-          }
-
-        const vmNameRegex = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
-
-        // ---- Proxmox VM name validation (dns-name) ----
-        function validateVmName() {
-          if (!wizardForm) return true; // nothing to validate
-
-          const nameInput = wizardForm.elements['Name'];
-          if (!nameInput) return true;
-
-          // clear any previous error state
-          nameInput.classList.remove('is-invalid');
-
-          // Trim spaces at ends (Proxmox UI also won’t accept them)
-          const value = nameInput.value.trim();
-          nameInput.value = value;
-
-          // Empty? Block – it's required.
-          if (!value) {
-            nameInput.classList.add('is-invalid');
-            nameInput.focus();
-            return false;
-          }
-
-          // Hard check with our own regex
-          if (!vmNameRegex.test(value)) {
-            nameInput.classList.add('is-invalid');
-            nameInput.focus();
-            return false;
-          }
-
-          // Optional: also ask the browser, in case other fields are constrained
-          if (wizardForm.checkValidity && !wizardForm.checkValidity()) {
-            // this will also trigger built-in Bootstrap validation UI
-            if (wizardForm.reportValidity) wizardForm.reportValidity();
-            return false;
-          }
-
-          // valid
-          nameInput.classList.remove('is-invalid');
-          return true;
-        }
-
-
-          // ---- State ----
-          let CAPS = { cpus:[], nics:[], scsi:[], osTypes:[], bridges:[], vlans:[], virtioIsos:[] };
-          let currentList = [];
-          let currentVm   = null;
-          let capsReady   = false;
-          let capsError   = null;    // optional, for debugging
-
-          // Logs state
-          let currentLogsItemId = null;
-          let logsPollTimer = null;
-
-          // ---- DOM ----
-          const tableBody       = $('#vmx-table tbody');
-          const btnScan         = $('#btn-scan');
-          const btnRunQueue     = $('#btn-run-queue');
-          const queuedBody      = $('#queued-body');
-
-          const wizardModalEl   = $('#wizardModal');
-          const wizardForm      = $('#wizardForm');
-          const disksTbody      = $('#disks-table tbody');
-          const diskValidationAlert = $('#diskValidationAlert');
-          const nicsTbody       = $('#nics-table tbody');
-          const cpuTypeSelect   = $('#cpuTypeSelect');
-          const osTypeSelect    = $('#osTypeSelect');
-          const scsiController  = $('#scsiController');
-          const prepVirtio      = $('#prepVirtio');
-          const mountIso        = $('#mountIso');
-          const virtioIsoSelect = $('#virtioIsoSelect');
-
-          const queueDetailsBody= $('#queueDetailsBody');
-
-          const vmNameInputEl = document.getElementById('vmNameInput');
-
-        // live feedback: clear red when user types something that looks ok
-        on(vmNameInputEl, 'input', () => {
-          if (!vmNameInputEl) return;
-          const v = vmNameInputEl.value.trim();
-          if (v && vmNameRegex.test(v)) {
-            vmNameInputEl.classList.remove('is-invalid');
-          }
-        });
-
-          function clearDiskValidation() {
-            if (diskValidationAlert) {
-              diskValidationAlert.classList.add('d-none');
-              diskValidationAlert.textContent = '';
-            }
-
-            $$('#disks-table tbody tr').forEach(tr => tr.classList.remove('table-danger'));
-            $$('#disks-table .disk-bus, #disks-table .disk-index').forEach(el => el.classList.remove('is-invalid'));
-          }
-
-          function showDiskValidationError(message, tr, input, showInlineMessage) {
-            if (showInlineMessage !== false && diskValidationAlert) {
-              diskValidationAlert.textContent = message;
-              diskValidationAlert.classList.remove('d-none');
-            }
-
-            if (tr) tr.classList.add('table-danger');
-            if (input) input.classList.add('is-invalid');
-          }
-
-          function validateDisks(showInlineMessage) {
-            clearDiskValidation();
-            updateAllDiskIdPreviews();
-
-            const rows = $$('#disks-table tbody tr');
-            if (!rows.length) {
-              showDiskValidationError('No disks were discovered for this VM. Cannot queue an import without disks.', null, null, showInlineMessage);
-              return false;
-            }
-
-            const seen = new Map();
-
-            for (const tr of rows) {
-              const busEl = tr.querySelector('.disk-bus');
-              const idxEl = tr.querySelector('.disk-index');
-              const bus = normalizeDiskBus(busEl?.value);
-              const idxRaw = normalizeDiskIndex(idxEl?.value);
-              const limits = DISK_BUS_LIMITS[bus];
-
-              if (!bus) {
-                showDiskValidationError('Each disk must have a bus.', tr, busEl, showInlineMessage);
-                return false;
-              }
-
-              if (!limits) {
-                showDiskValidationError(`Unsupported disk bus "${bus}". Allowed buses are: scsi, sata, virtio, ide.`, tr, busEl, showInlineMessage);
-                return false;
-              }
-
-              if (idxRaw === '') {
-                showDiskValidationError(`Disk index is required for ${bus}.`, tr, idxEl, showInlineMessage);
-                return false;
-              }
-
-              if (!/^\d+$/.test(idxRaw)) {
-                showDiskValidationError(`Disk index must be a whole number starting at ${limits.min}.`, tr, idxEl, showInlineMessage);
-                return false;
-              }
-
-              const idx = Number(idxRaw);
-              if (idx < limits.min || idx > limits.max) {
-                showDiskValidationError(`${bus}${idx} is outside the valid range. Use ${bus}${limits.min}–${bus}${limits.max}.`, tr, idxEl, showInlineMessage);
-                return false;
-              }
-
-              const diskId = `${bus}${idx}`;
-              if (seen.has(diskId)) {
-                const firstRow = seen.get(diskId);
-                if (firstRow) firstRow.classList.add('table-danger');
-                showDiskValidationError(`Duplicate disk ID "${diskId}". Each disk must have a unique bus/index combination.`, tr, idxEl, showInlineMessage);
-                return false;
-              }
-
-              seen.set(diskId, tr);
-            }
-
-            return true;
-          }
-
-          // Logs modal elements
-          const logsModalEl     = document.getElementById('queueLogsModal');
-          const btnRefreshLogs  = document.getElementById('btn-refresh-logs');
-          const logsBodyEl      = document.getElementById('queueLogsBody');
-          const logsItemIdEl    = document.getElementById('logsItemId');
-
-          // ---- Loading banner ----
-          const loadingBanner = document.getElementById('migrate-loading');
-          const loadingTextEl = loadingBanner?.querySelector('.migrate-loading-text');
-
-          function showLoading(message) {
-            if (!loadingBanner) return;
-            if (loadingTextEl && message) {
-              loadingTextEl.textContent = message;
-            }
-            loadingBanner.classList.remove('d-none');
-          }
-
-          function hideLoading() {
-            if (!loadingBanner) return;
-            loadingBanner.classList.add('d-none');
-          }
-
-          // quick getters for new inputs
-          const socketsInput = () => wizardForm?.elements['Sockets'];
-          const coresInput   = () => wizardForm?.elements['Cores'];
-          const memInput     = () => wizardForm?.elements['MemoryMiB'];
-
-          // ---- ISO helpers ----
-          function populateIsoSelect(){
-            if (!virtioIsoSelect) return;
-            const list = CAPS.virtioIsos || [];
-            virtioIsoSelect.innerHTML = list.length
-              ? list.map(i => {
-                  const v = (i?.value ?? i?.Value ?? i)?.toString() || '';
-                  const l = (i?.label ?? i?.Label ?? v)?.toString() || v;
-                  return `<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`;
-                }).join('')
-              : '<option value="">— No virtio ISOs found —</option>';
-          }
-          function refreshIsoEnabled(){
-            if (!virtioIsoSelect || !mountIso) return;
-            virtioIsoSelect.disabled = !mountIso.checked;
-            if (!virtioIsoSelect.options.length) {
-              virtioIsoSelect.innerHTML = '<option value="">— No virtio ISOs found —</option>';
-            }
-            if (mountIso.checked && !virtioIsoSelect.value && virtioIsoSelect.options.length > 0) {
-              virtioIsoSelect.selectedIndex = 0;
-            }
-          }
-          on(mountIso, 'change', refreshIsoEnabled);
-
-          // ---- Queue polling (status) ----
-          let queuePollTimer = null;
-          function isActiveStatus(s){
-            const t = String(s || '').toLowerCase();
-            return t === 'queued' || t === 'processing' || t === 'running';
-          }
-          function anyActive(items){
-            return (items || []).some(it => isActiveStatus(it.status || it.Status));
-          }
-          async function pollQueueOnce(){
-            const items = await loadQueueSafe();
-            if (!anyActive(items)) { if (queuePollTimer) { clearInterval(queuePollTimer); queuePollTimer = null; } }
-          }
-          function startQueuePolling(){
-            if (queuePollTimer) return;
-            queuePollTimer = setInterval(pollQueueOnce, 3000);
-          }
-          function maybeStartPolling(items){ if (anyActive(items)) startQueuePolling(); }
-
-          // ---- OS / UEFI helpers ----
-          function pickOsValueFromGuestString(guestOs) {
-            const raw = String(guestOs || '');
-            const s = raw.toLowerCase();
-            // normalize to make 'windows2019srv_64Guest', windows2019srv-64, etc. comparable
-            const norm = s.replace(/[\s_\-]/g, '');
-
-            // ---------- Windows 11 / "new" server family (2019-next, 2022, 2025, 11/12) ----------
-
-            // Desktop IDs like windows11_64Guest, windows11-64, plain "Windows 11"
-            if (norm.includes('windows11') || s.includes('windows 11'))
-              return 'win11';
-
-            // VMware already has windows12_64Guest, Proxmox currently maps that to win11
-            if (norm.includes('windows12') || s.includes('windows 12'))
-              return 'win11';
-
-            // Server 2022 / 2025 style IDs
-            // windows2019srvNext_64Guest and windows2022srvNext_64Guest are treated as win11
-            if (
-              norm.includes('windows2019srvnext') ||
-              norm.includes('windows2022srvnext') ||
-              s.includes('server 2025') ||
-              s.includes('server 2022')
-            ) {
-              return 'win11';
-            }
-
-            // ---------- Windows 10 + Server 2016/2019 ----------
-
-            // ESXi guestOS IDs: windows9_64Guest, windows9Server64Guest, windows9srv-64, windows2019srv_64Guest, ...
-            if (
-              norm.startsWith('windows9_64guest') || // Win10 desktop
-              norm.startsWith('windows9guest')    ||
-              norm.startsWith('windows9server')   || // Windows Server 2016: windows9Server-64 / windows9Server64Guest
-              norm.startsWith('windows9srv')      || // alternative 2016 IDs like windows9srv-64
-              norm.startsWith('windows2019srv')      // Windows Server 2019
-            ) {
-              return 'win10';
-            }
-
-            // Generic strings like "Microsoft Windows 10 (64-bit)" / "Windows Server 2019"
-            if (
-              s.includes('windows 10') ||
-              s.includes('win10') ||
-              s.includes('server 2019') ||
-              s.includes('server 2016')
-            ) {
-              return 'win10';
-            }
-
-            // ---------- Older Windows (7 / 2008 generation) ----------
-
-            if (
-              s.includes('windows 7') ||
-              s.includes('win7') ||
-              s.includes('2008') ||      // many ESXi server 2008 IDs contain 2008
-              norm.includes('winnet') || // 2003/2008 family
-              norm.includes('longhorn')  // early 2008 name
-            ) {
-              return 'win7';
-            }
-
-            // ---------- Linux family ----------
-
-            if (/(linux|ubuntu|debian|centos|rhel|suse|rocky|alma|oraclelinux|fedora)/.test(s)) {
-              return 'l26';
-            }
-
-            // ---------- Fallback ----------
-
-            return 'other';
-          }
-
-          const deriveUuid = vm =>
-            (vm && (vm.uuid || vm.Uuid || vm.vmUuid || vm.hwUuid || vm.hardwareUuid || vm.biosUuid || vm.vmxUuid || vm.uuidBios)) || '';
-          function deriveUefi(vm) {
-            const f = String((vm && (vm.firmware || vm.bootFirmware || vm.bios)) || '').toLowerCase();
-            return f.includes('efi') || !!(vm && (vm.uefiEnabled || vm.nvram || vm.efi || vm.efidisk));
-          }
-
-          // ---- Scan table row html ----
-          function rowHtml(vm) {
-            const name        = first(vm,'name','Name') ?? '';
-            const vmxPath     = first(vm,'vmxPath','VmxPath','path','Path') ?? '';
-            const guestOs     = first(vm,'guestOs','GuestOs','os','Os') ?? '';
-            const cpuCores    = first(vm,'cpuCores','CpuCores','vcpu','vCpu','Vcpu','VCPU') ?? '';
-            const memoryMiB   = first(vm,'memoryMiB','MemoryMiB','memMiB','MemMiB','ramMiB','RamMiB','memory','Memory') ?? '';
-            const diskSizeGiB = first(vm,'diskSizeGiB','DiskSizeGiB','diskGiB','DiskGiB','disk','Disk') ?? '';
-            const nicsArr     = first(vm,'nics','Nics') || [];
-            const nic0Model   = (nicsArr[0] && (nicsArr[0].model ?? nicsArr[0].Model)) || '';
-            const nic0Mac     = (nicsArr[0] && (nicsArr[0].mac   ?? nicsArr[0].Mac))   || '';
-            const nic0MacTxt  = nic0Mac ? `(${nic0Mac})` : '';
-
-            return `
-              <tr data-vmx="${escapeHtml(String(vmxPath))}">
-                <td class="text-primary fw-semibold vm-link" style="cursor:pointer">${escapeHtml(String(name))}</td>
-                <td class="small text-nowrap">${escapeHtml(String(vmxPath))}</td>
-                <td>${escapeHtml(String(guestOs))}</td>
-                <td class="text-end">${String(cpuCores)}</td>
-                <td class="text-end">${String(memoryMiB)}</td>
-                <td class="text-end">${String(diskSizeGiB)}</td>
-                <td>${escapeHtml(String(nic0Model))} ${escapeHtml(String(nic0MacTxt))}</td>
-              </tr>`;
-          }
-          function renderTable(list){ if (tableBody) tableBody.innerHTML = (list || []).map(rowHtml).join(''); }
-
-          // ---- Wizard rows (disks/nics) ----
-          function diskRow(d) {
-            const src   = d?.source ?? d?.Source ?? '';
-            const size  = d?.sizeGiB ?? d?.SizeGiB ?? d?.size ?? d?.Size ?? '';
-            const store = d?.storage ?? d?.Storage ?? '';
-            const bus   = normalizeDiskBus(d?.bus ?? d?.Bus ?? 'scsi') || 'scsi';
-            const idx   = (d && d.index!=='' && d.index!=null) ? d.index : (d?.Index ?? '');
-            const diskId = makeDiskId(bus, idx);
-            return `
-              <tr>
-                <td><input class="form-control form-control-sm" value="${escapeHtml(String(src))}" readonly></td>
-                <td class="text-end" style="width:110px">
-                  <input class="form-control form-control-sm text-end" type="number" value="${String(size)}" readonly>
-                </td>
-                <td style="width:200px"><input class="form-control form-control-sm" value="${escapeHtml(String(store))}" readonly></td>
-                <td style="width:120px">
-                  <select class="form-select form-select-sm disk-bus">
-                    <option value="scsi" ${bus==='scsi'?'selected':''}>scsi</option>
-                    <option value="sata" ${bus==='sata'?'selected':''}>sata</option>
-                    <option value="virtio" ${bus==='virtio'?'selected':''}>virtio</option>
-                    <option value="ide" ${bus==='ide'?'selected':''}>ide</option>
-                  </select>
-                </td>
-                <td style="width:90px">
-                  <input class="form-control form-control-sm disk-index" type="number" min="0" step="1" placeholder="0" value="${String(idx)}">
-                </td>
-                <td class="text-nowrap" style="width:90px"><code class="disk-id-preview">${escapeHtml(diskId || '—')}</code></td>
-              </tr>`;
-          }
-          function nicRow(n) {
-            const nicModelOptions = (CAPS.nics||[]).map(p=>{
-              const v = readVal(p), l=readLabel(p);
-              const sel = String(v)===String(n?.model ?? n?.Model) ? 'selected':'';
-              return `<option value="${escapeHtml(v)}" ${sel}>${escapeHtml(l)}</option>`;
-            }).join('');
-            const firstBridge = (CAPS.bridges && CAPS.bridges.length)
-              ? ((CAPS.bridges[0] && (CAPS.bridges[0].name || CAPS.bridges[0].Name)) || CAPS.bridges[0]) : '';
-            const bridgeVal = (n && n.bridge!=null && n.bridge!=='') ? n.bridge : (n?.Bridge ?? firstBridge);
-            const vlanVal   = (n && n.vlan  !=null && n.vlan  !=='') ? String(n.vlan) : (n?.Vlan ?? '');
-            const macVal    = (n && n.mac   !=null) ? String(n.mac) : (n?.Mac ?? '');
-
-            const bridgesHtml = (CAPS.bridges && CAPS.bridges.length)
-              ? `<select class="form-select form-select-sm nic-bridge">${(CAPS.bridges||[]).map(b=>{
-                    const v=(b?.name??b?.Name??b)||''; const sel=(String(v)===String(bridgeVal))?'selected':'';
-                    return `<option value="${escapeHtml(v)}" ${sel}>${escapeHtml(v||'—')}</option>`;
-                  }).join('')}
-                 </select>`
-              : `<input class="form-control form-control-sm nic-bridge" value="${escapeHtml(bridgeVal||'')}" placeholder="bridge (e.g., vmbr0)">`;
-
-            return `
-              <tr>
-                <td style="width:200px"><select class="form-select form-select-sm nic-model">${nicModelOptions}</select></td>
-                <td><input class="form-control form-control-sm nic-mac" value="${escapeHtml(macVal)}"></td>
-                <td style="width:220px">${bridgesHtml}</td>
-                <td class="text-end" style="width:180px">
-                  <input class="form-control form-control-sm nic-vlan text-end" type="number" min="1" max="4094" step="1" value="${escapeHtml(vlanVal)}" placeholder="VLAN (1–4094)">
-                </td>
-              </tr>`;
-          }
-
-          // ---- vCPU display helper ----
-          function toIntOrNull(x){ const n=Number(x); return Number.isFinite(n) && n>0 ? Math.trunc(n) : null; }
-          function scanTotalVcpu(vm){
-            const v = first(vm,'vCpu','Vcpu','VCPU','cpuCores','CpuCores','cores','Cores');
-            const n = Number(v);
-            return Number.isFinite(n) && n>0 ? Math.trunc(n) : null;
-          }
-          function updateVcpuDisplay(){
-            const s = toIntOrNull(wizardForm?.elements['Sockets']?.value);
-            const c = toIntOrNull(wizardForm?.elements['Cores']?.value);
-            const el = document.getElementById('vcpuDisplay');
-            const total = (s&&c) ? (s*c) : scanTotalVcpu(currentVm);
-            if (el) el.textContent = total ? String(total) : '—';
-          }
-
-          // ---- Wizard helpers ----
-          function setVal(name, val){ if (wizardForm?.elements[name]) wizardForm.elements[name].value = (val == null ? '' : val); }
-          function getVal(name){ const el = wizardForm?.elements[name]; return el ? el.value : ''; }
-          function setSelectToValueOrAppend(selectEl, value, labelIfNew) {
-            if (!selectEl || value == null || value === '') return;
-            const v = String(value);
-            const hit = Array.from(selectEl.options).find(o => o.value === v);
-            if (hit) { selectEl.value = v; return; }
-            const o = document.createElement('option'); o.value = v; o.text = labelIfNew || v; selectEl.add(o); selectEl.value = v;
-          }
-
-          // UPDATED: allow passing a suggested VMID from server (NextVmId)
-          function fillWizardFromVM(vm, suggestedVmId) {
-            if (!wizardForm) return;
-            currentVm = vm;
-
-            const vmxPath  = first(vm,'vmxPath','VmxPath','path','Path') || '';
-            const name     = first(vm,'name','Name') || '';
-            const vmIdFromVm = Number(first(vm,'vmId','VmId')) || 118;
-
-            let vmId = vmIdFromVm;
-            if (suggestedVmId != null && !Number.isNaN(Number(suggestedVmId))) {
-              vmId = Number(suggestedVmId);
-            }
-
-            const vmxOs    = first(vm,'vmxGuestId','VmxGuestId','vmxOsType','VmxOsType','guestOs','GuestOs','os','Os');
-            const scsiCtrl = first(vm,'scsiController','ScsiController','SCSIController');
-
-            setVal('VmxPath', vmxPath);
-            setVal('VmId', vmId);
-            setVal('Name', name);
-
-            const memScan = first(vm,'memoryMiB','MemoryMiB','memMiB','MemMiB','ramMiB','RamMiB','memory','Memory');
-            setVal('MemoryMiB', memScan || '');
-
-            const total = scanTotalVcpu(vm);
-            setVal('Sockets', total ? 1 : '');
-            setVal('Cores',   total || '');
-
-            const capCpuAes1 = (CAPS.cpus||[]).find(c=>readVal(c)==='x86-64-v2-AES');
-            const capCpuAes2 = (CAPS.cpus||[]).find(c=>/aes/i.test(readLabel(c)||''));
-            const capCpu0    = (CAPS.cpus||[])[0];
-            const defaultAes = readVal(capCpuAes1) || readVal(capCpuAes2) || readVal(capCpu0) || '';
-            const cpuValue   = first(vm,'cpuType','CpuType') || defaultAes;
-            if (cpuTypeSelect) setSelectToValueOrAppend(cpuTypeSelect, cpuValue, cpuValue);
-
-            const guess = pickOsValueFromGuestString(vmxOs);
-            if (osTypeSelect) {
-              const osHit = (CAPS.osTypes || []).find(o=>{
-                const rv = readVal(o), rl = String(readLabel(o)||'').toLowerCase();
-                const vmo= String(vmxOs||'').toLowerCase();
-                return rv===vmxOs || rv===guess || rl===vmo;
-              });
-              if (osHit) setSelectToValueOrAppend(osTypeSelect, readVal(osHit), readLabel(osHit));
-              else if (vmxOs) setSelectToValueOrAppend(osTypeSelect, vmxOs, vmxOs);
-            }
-
-            if (scsiController && scsiCtrl) {
-              const hit = (CAPS.scsi || []).find(s=>readVal(s)===scsiCtrl || readLabel(s)===scsiCtrl);
-              setSelectToValueOrAppend(scsiController, (readVal(hit)||scsiCtrl), scsiCtrl);
-            }
-
-            if (prepVirtio) prepVirtio.checked = false;
-            if (scsiController) scsiController.disabled = false;
-            if (mountIso) mountIso.checked = !!first(vm,'mountVirtioIso','MountVirtioIso');
-            populateIsoSelect(); refreshIsoEnabled();
-            if (virtioIsoSelect) {
-              const isoName = first(vm,'virtioIsoName','VirtioIsoName') || '';
-              if (isoName) setSelectToValueOrAppend(virtioIsoSelect, isoName, isoName);
-            }
-
-            setVal('Uuid', deriveUuid(vm));
-            setVal('Uefi', deriveUefi(vm) ? 'true' : 'false');
-
-            if (disksTbody) {
-              const disks = first(vm,'disks','Disks') || [];
-              disksTbody.innerHTML = '';
-              disks.forEach(d => {
-                const wrap = document.createElement('tbody'); wrap.innerHTML = diskRow(d);
-                disksTbody.appendChild(wrap.firstElementChild);
-              });
-              updateAllDiskIdPreviews();
-              clearDiskValidation();
-            }
-
-            if (nicsTbody) {
-              const nics = first(vm,'nics','Nics') || [];
-              nicsTbody.innerHTML = '';
-              nics.forEach(n => {
-                const wrap = document.createElement('tbody'); wrap.innerHTML = nicRow(n);
-                const tr = wrap.firstElementChild;
-                nicsTbody.appendChild(tr);
-              });
-            }
-
-            updateVcpuDisplay();
-          }
-
-          // VirtIO preset
-          on(prepVirtio, 'change', function(){
-            if (!prepVirtio) return;
-            if (prepVirtio.checked) {
-              const scsiA = (CAPS.scsi||[]).find(s=>readVal(s)==='virtio-scsi-single');
-              const scsiB = (CAPS.scsi||[])[0];
-              const virtScsi = readVal(scsiA) || readVal(scsiB) || '';
-              if (scsiController && virtScsi) scsiController.value = virtScsi;
-              if (scsiController) scsiController.disabled = true;
-              if (disksTbody) $$('#disks-table .disk-bus').forEach(sel => sel.value='sata');
-              updateAllDiskIdPreviews();
-              validateDisks(false);
-              const virtNic = readVal((CAPS.nics||[]).find(n=>readVal(n)==='virtio')) || 'virtio';
-              if (nicsTbody) $$('#nics-table .nic-model').forEach(sel => sel.value = virtNic);
-            } else {
-              if (scsiController) scsiController.disabled = false;
-              updateAllDiskIdPreviews();
-              validateDisks(false);
-            }
-          });
-
-          // Live disk ID preview and validation while editing bus/index
-          on(disksTbody, 'input', function(e){
-            if (!e.target?.matches?.('.disk-index')) return;
-            updateDiskIdPreviewForRow(e.target.closest('tr'));
-            validateDisks(false);
-          });
-          on(disksTbody, 'change', function(e){
-            if (!e.target?.matches?.('.disk-bus, .disk-index')) return;
-            updateDiskIdPreviewForRow(e.target.closest('tr'));
-            validateDisks(false);
-          });
-
-          // Recompute vCPU on topology edits
-          on(wizardForm?.elements['Sockets'], 'input', updateVcpuDisplay);
-          on(wizardForm?.elements['Cores'],   'input', updateVcpuDisplay);
-
-          // UPDATED: Click VM → wizard (async), fetch NextVmId and prefer it for VMID
-          on(tableBody, 'click', async function(e){
-            const link = e.target.closest?.('.vm-link');
-            if (!link || !wizardModalEl) return;
-
-            if (!capsReady) {
-              alert('Still loading capabilities from Proxmox. Please wait a moment and click again.');
-              return;
-            }
-
-            const tr  = link.closest('tr');
-            const vmx = tr?.getAttribute('data-vmx') || '';
-            const vm = (currentList || []).find(x => String(first(x,'vmxPath','VmxPath','path','Path')||'') === String(vmx));
-            if (!vm) return;
-
-            let suggestedId = null;
-            try {
-              const res = await fetch(URLS.nextVmId, { cache: 'no-store' });
-              if (res.ok) {
-                const j = await res.json();
-                suggestedId = j.vmId ?? j.VmId ?? null;
-              }
-            } catch {
-              // fail-soft: just fallback to VM's own/default ID
-            }
-
-            fillWizardFromVM(vm, suggestedId);
-            new bootstrap.Modal(wizardModalEl).show();
-          });
-
-          // ---- Scan datastore ----
-          async function realScan() {
-            if (!btnScan) return;
-            btnScan.disabled = true;
-            const original = btnScan.textContent;
-            btnScan.textContent = 'Scanning…';
-            showLoading('Scanning datastore for VMX files…');
-            try {
-              const res = await fetch(URLS.scan);
-              if (!res.ok) throw new Error('Scan HTTP ' + res.status);
-              currentList = await res.json();
-              renderTable(currentList);
-              if (!currentList?.length) alert('No .vmx files found on the selected datastore (or selection is missing).');
-            } catch (e) {
-              console.error(e); alert('Scan failed. Check logs.');
-            } finally {
-              btnScan.disabled = false;
-              btnScan.textContent = original;
-              hideLoading();
-            }
-          }
-          on(btnScan, 'click', realScan);
-
-          // ===== Build payload from wizard =====
-          function collectDisks() {
-            if (!disksTbody) return [];
-            const out = [];
-            $$('#disks-table tbody tr').forEach(tr=>{
-              const inputs = tr.querySelectorAll('input.form-control-sm');
-              const srcEl = inputs[0], sizeEl = inputs[1], storageEl = inputs[2];
-              const busEl = tr.querySelector('.disk-bus');
-              const idxEl = tr.querySelector('.disk-index');
-              const bus = normalizeDiskBus(busEl?.value);
-              const idxRaw = normalizeDiskIndex(idxEl?.value);
-              const index = idxRaw !== '' ? Number(idxRaw) : null;
-              out.push({
-                source: srcEl ? srcEl.value : '',
-                sizeGiB: (sizeEl && sizeEl.value) ? Number(sizeEl.value) : null,
-                storage: storageEl ? storageEl.value : '',
-                bus: bus,
-                index: index,
-                diskId: (bus && index !== null) ? `${bus}${index}` : ''
-              });
-            });
-            return out;
-          }
-          function collectNics() {
-            if (!nicsTbody) return [];
-            const out = [];
-            $$('#nics-table tbody tr').forEach(tr=>{
-              const modelEl = tr.querySelector('.nic-model');
-              const macEl   = tr.querySelector('.nic-mac');
-              const brEl    = tr.querySelector('.nic-bridge');
-              const vlanEl  = tr.querySelector('.nic-vlan');
-              const vlanVal = vlanEl && vlanEl.value ? vlanEl.value.trim() : '';
-              out.push({
-                model: modelEl ? modelEl.value : '',
-                mac: macEl ? macEl.value : '',
-                bridge: brEl ? brEl.value : '',
-                vlan: vlanVal ? Number(vlanVal) : null
-              });
-            });
-            return out;
-          }
-          function buildPayloadFromWizard() {
-            const s = toIntOrNull(getVal('Sockets'));
-            const c = toIntOrNull(getVal('Cores'));
-            const derivedVcpu = (s && c) ? (s*c) : scanTotalVcpu(currentVm);
-            return {
-              vmId: Number(getVal('VmId')) || null,
-              name: getVal('Name'),
-              cpuType: cpuTypeSelect?.value || '',
-              osType:  osTypeSelect?.value  || '',
-              memoryMiB: (function(){
-                const raw = Number(getVal('MemoryMiB'));
-                if (!Number.isNaN(raw) && raw > 0) return raw;
-                const fromScan = first(currentVm,'memoryMiB','MemoryMiB','memMiB','MemMiB','ramMiB','RamMiB','memory','Memory');
-                return fromScan ? Number(fromScan) : null;
-              })(),
-              sockets: s ?? null,
-              cores:   c ?? null,
-              vcpu:    derivedVcpu ?? null,
-              prepareVirtio: !!(prepVirtio && prepVirtio.checked),
-              mountVirtioIso: !!(mountIso && mountIso.checked),
-              virtioIsoName: (mountIso && mountIso.checked) ? (virtioIsoSelect?.value || '') : '',
-              scsiController: scsiController?.value || '',
-              vmxPath: getVal('VmxPath'),
-              uuid: getVal('Uuid') || deriveUuid(currentVm||{}),
-              uefi: (getVal('Uefi') === 'true') || deriveUefi(currentVm||{}),
-              disks: collectDisks(),
-              nics:  collectNics()
+            // ---- URLs ----
+            const URLS = {
+                scan: '@Url.Action("Scan", "Migration")',
+                caps: '@Url.Action("Capabilities", "Migration")',
+                queue: '@Url.Action("Queue", "Migration")',
+                run: '@Url.Action("RunQueue", "Migration")',
+                logs: '@Url.Action("QueueLogs", "Migration")',
+                nextVmId: '@Url.Action("NextVmId", "Migration")',
+                queueControl: '@Url.Content("~/Migration/QueueState")'
             };
-          }
 
-          // ===== Queue API & rendering =====
-          async function queueList(){
-            const res = await fetch(URLS.queue);
-            if (!res.ok) throw new Error('Queue list failed: HTTP '+res.status);
-            return await res.json();
-          }
-          async function queueAdd(payload){
-            const res = await fetch(URLS.queue, { method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify(payload) });
-            const json = await res.json().catch(()=>({}));
-            if (!res.ok || json.ok === false) throw new Error(json.error || ('Queue add failed: HTTP '+res.status));
-            return json;
-          }
-          async function queueRemove(id){
-            const res = await fetch(URLS.queue + '/' + encodeURIComponent(id), { method:'DELETE' });
-            const json = await res.json().catch(()=>({}));
-            if (!res.ok || json.ok === false) throw new Error(json.error || 'Remove failed');
-            return true;
-          }
-          function parseArrayMaybe(x){
-            if (Array.isArray(x)) return x;
-            if (!x) return [];
-            try { return JSON.parse(x); } catch { return []; }
-          }
+            // ---- Tiny helpers ----
+            const $ = s => document.querySelector(s);
+            const $$ = s => Array.from(document.querySelectorAll(s));
+            const on = (el, ev, fn) => { if (el) el.addEventListener(ev, fn); };
+            function readVal(o) { return (o && (o.value ?? o.Value ?? o.val ?? o.Val ?? o.id ?? o.Id)) || ""; }
+            function readLabel(o) { return (o && (o.label ?? o.Label ?? o.text ?? o.Text ?? o.name ?? o.Name)) || readVal(o); }
+            function first(obj) { for (let i = 1; i < arguments.length; i++) { const k = arguments[i]; const v = obj && obj[k]; if (v !== undefined && v !== null) return v; } return undefined; }
+            function pick() { for (let i = 0; i < arguments.length; i++) { const v = arguments[i]; if (v !== undefined && v !== null) return v; } return undefined; }
+            function escapeHtml(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
-          function renderQueue(items){
-            if (!queuedBody) return;
-            const rows = (items || []).map(it=>{
-              const id    = first(it,'id','Id');
-              const vmId  = first(it,'vmId','VmId');
-              const name  = first(it,'name','Name') ?? '—';
-              const uefi  = !!first(it,'uefi','Uefi');
-              const disks = parseArrayMaybe(first(it,'disks','Disks') || first(it,'disksJson','DisksJson'));
-              const nics  = parseArrayMaybe(first(it,'nics','Nics')   || first(it,'nicsJson','NicsJson'));
-              const status= first(it,'status','Status','state','State','queueStatus','QueueStatus') || 'Queued';
-              const uefiBadge = uefi ? '<span class="badge bg-success">UEFI</span>' : '<span class="badge bg-secondary">BIOS</span>';
-              const full = { id, vmId, name, uefi, status, disks, nics, raw: it };
-              const encoded = encodeURIComponent(JSON.stringify(full));
-              return `
-                <tr data-id="${String(id)}">
-                  <td class="text-nowrap">${escapeHtml(vmId==null?'—':String(vmId))}</td>
-                  <td>${escapeHtml(String(name))}</td>
-                  <td class="text-nowrap">${uefiBadge}</td>
-                  <td class="text-end">${String(disks.length)}</td>
-                  <td class="text-end">${String(nics.length)}</td>
-                  <td class="text-nowrap">${escapeHtml(String(status))}</td>
-                  <td class="text-end">
-                    <div class="btn-group btn-group-sm">
-                      <button class="btn btn-outline-secondary btn-q-details" data-json="${encoded}">Details</button>
-                      <button class="btn btn-outline-primary btn-q-logs">Logs</button>
-                      <button class="btn btn-outline-danger btn-q-remove">Remove</button>
-                    </div>
-                  </td>
-                </tr>`;
-            });
-            queuedBody.innerHTML = rows.join('') || '<tr><td colspan="7" class="text-center text-muted py-3">No items queued.</td></tr>';
-          }
+            // ---- State ----
+            let CAPS = { cpus: [], nics: [], scsi: [], osTypes: [], bridges: [], vlans: [], virtioIsos: [] };
+            let currentList = [];
+            let currentVm = null;
+            let automatedWizard = false;
+            let approvedAutomationPlan = null;
 
-          async function loadQueueSafe(){
-            try {
-              const items = await queueList();
-              renderQueue(items);
-              return items;
-            } catch(e){
-              console.warn(e);
-              if (queuedBody) queuedBody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-3">Failed to load queue.</td></tr>';
-              return [];
+            // Logs state
+            let currentLogsItemId = null;
+            let logsPollTimer = null;
+
+            // ---- DOM ----
+            const tableBody = $('#vmx-table tbody');
+            const btnScan = $('#btn-scan');
+            const btnRunQueue = $('#btn-run-queue');
+            // null = status unavailable/unknown. Do not display "Queue running" for HTTP errors.
+            let runnerBusy = null;
+            let submittingQueue = false;
+            function setRunQueueButton() {
+                if (!btnRunQueue) return;
+                btnRunQueue.disabled = runnerBusy !== false || submittingQueue;
+                btnRunQueue.textContent = submittingQueue ? 'Starting…' :
+                    runnerBusy === true ? 'Queue running…' :
+                        runnerBusy === false ? 'Run queue' : 'Status unavailable';
+                btnRunQueue.title = runnerBusy === null
+                    ? 'Unable to verify migration runner status. Check /Migration/QueueState and retry.'
+                    : runnerBusy === true ? 'Migration workers are still running.' : '';
             }
-          }
-
-          // ---- Details (readable) ----
-          function renderReadableDetails(json) {
-            if (!queueDetailsBody) return;
-            let data; try { data = JSON.parse(decodeURIComponent(json)); } catch { data = null; }
-            if (!data) { queueDetailsBody.innerHTML = '<div class="text-muted">Unable to parse details.</div>'; return; }
-
-            const raw    = data.raw || {};
-            const osType = raw.osType || raw.OsType || '';
-            const cpuType= raw.cpuType || raw.CpuType || '';
-            const vmxPath= raw.vmxPath || raw.VmxPath || '';
-            const virtio = (raw.mountVirtioIso || raw.MountVirtioIso) ? (raw.virtioIsoName || raw.VirtioIsoName || '(mounted)') : null;
-            const memMiB = raw.memoryMiB ?? raw.MemoryMiB ?? '';
-
-            const sockets = raw.sockets ?? raw.Sockets ?? null;
-            const cores   = raw.cores   ?? raw.Cores   ?? null;
-            const vcpu    = raw.vcpu    ?? raw.Vcpu    ?? raw.VCPU ?? null;
-            const topoTxt = (sockets && cores) ? `${sockets} × ${cores} = ${Number(sockets)*Number(cores)}`
-                                               : (vcpu ? `${vcpu} vCPU` : '');
-
-            const disks = Array.isArray(data.disks) ? data.disks : [];
-            const nics  = Array.isArray(data.nics)  ? data.nics  : [];
-
-            queueDetailsBody.innerHTML = `
-              <div class="mb-2">
-                <div class="d-flex align-items-center gap-2 flex-wrap">
-                  <h5 class="mb-0">${escapeHtml(data.name || '—')} ${data.vmId ? '('+escapeHtml(String(data.vmId))+')' : ''}</h5>
-                  ${data.uefi ? '<span class="badge bg-success">UEFI</span>' : '<span class="badge bg-secondary">BIOS</span>'}
-                  ${data.status ? '<span class="badge bg-info text-dark">'+escapeHtml(String(data.status))+'</span>' : ''}
-                </div>
-              </div>
-
-              <div class="mb-3">
-                <div class="row g-2">
-                  ${osType ? `<div class="col-auto"><span class="badge bg-light text-dark">OS: <strong>${escapeHtml(osType)}</strong></span></div>`:''}
-                  ${cpuType ? `<div class="col-auto"><span class="badge bg-light text-dark">CPU: <strong>${escapeHtml(cpuType)}</strong></span></div>`:''}
-                  ${topoTxt ? `<div class="col-auto"><span class="badge bg-light text-dark">Topology: <strong>${escapeHtml(topoTxt)}</strong></span></div>`:''}
-                  ${memMiB ? `<div class="col-auto"><span class="badge bg-light text-dark">RAM: <strong>${escapeHtml(String(memMiB))} MiB</strong></span></div>`:''}
-                  ${vmxPath ? `<div class="col-12 small text-muted">VMX: ${escapeHtml(vmxPath)}</div>`:''}
-                  ${virtio ? `<div class="col-12 small">VirtIO ISO: <code>${escapeHtml(virtio)}</code></div>`:''}
-                </div>
-              </div>
-
-              <h6>Disks (${disks.length})</h6>
-              <div class="table-responsive mb-3">
-                <table class="table table-sm">
-                  <thead class="table-light"><tr><th>Source</th><th class="text-end">Size (GiB)</th><th>Storage</th><th>Bus</th><th>Index</th><th>Disk ID</th></tr></thead>
-                  <tbody>
-                    ${disks.map(d => `
-                      <tr>
-                        <td class="small">${escapeHtml(d?.source ?? d?.Source ?? '')}</td>
-                        <td class="text-end">${escapeHtml(d?.sizeGiB ?? d?.SizeGiB ?? d?.size ?? d?.Size ?? '')}</td>
-                        <td>${escapeHtml(d?.storage ?? d?.Storage ?? '')}</td>
-                        <td>${escapeHtml(d?.bus ?? d?.Bus ?? '')}</td>
-                        <td>${escapeHtml(d?.index ?? d?.Index ?? '')}</td>
-                        <td><code>${escapeHtml(getDiskIdFromObject(d) || '—')}</code></td>
-                      </tr>
-                    `).join('')}
-                  </tbody>
-                </table>
-              </div>
-
-              <h6>Network (${nics.length})</h6>
-              <div class="table-responsive">
-                <table class="table table-sm">
-                  <thead class="table-light"><tr><th>Model</th><th>MAC</th><th>Bridge</th><th class="text-end">VLAN</th></tr></thead>
-                  <tbody>
-                    ${nics.map(n => `
-                      <tr>
-                        <td>${escapeHtml(n?.model ?? n?.Model ?? '')}</td>
-                        <td class="small">${escapeHtml(n?.mac ?? n?.Mac ?? '')}</td>
-                        <td>${escapeHtml(n?.bridge ?? n?.Bridge ?? '')}</td>
-                        <td class="text-end">${escapeHtml(n?.vlan ?? n?.Vlan ?? '')}</td>
-                      </tr>
-                    `).join('')}
-                  </tbody>
-                </table>
-              </div>
-            `;
-          }
-
-          // ---- Logs helpers ----
-          function levelBadge(level) {
-            const l = String(level || '').toLowerCase();
-            if (l === 'error')   return '<span class="badge bg-danger">Error</span>';
-            if (l === 'warning') return '<span class="badge bg-warning text-dark">Warning</span>';
-            return '<span class="badge bg-secondary">Info</span>';
-          }
-          function renderLogsTable(logs) {
-            if (!logs?.length) return '<div class="p-3 text-muted">No logs yet for this item.</div>';
-            const rows = logs.map(x => `
-              <tr>
-                <td class="text-nowrap">${(x.utc || '').toString()}</td>
-                <td class="text-nowrap">${levelBadge(x.level)}</td>
-                <td class="text-nowrap">${escapeHtml(x.step || '')}</td>
-                <td class="small">${escapeHtml(x.message || '')}</td>
-              </tr>`).join('');
-            return `
-              <div class="table-responsive">
-                <table class="table table-sm align-middle mb-0">
-                  <thead class="table-light">
-                    <tr>
-                      <th class="text-nowrap">UTC</th>
-                      <th class="text-nowrap">Level</th>
-                      <th class="text-nowrap">Step</th>
-                      <th>Message</th>
-                    </tr>
-                  </thead>
-                  <tbody>${rows}</tbody>
-                </table>
-              </div>`;
-          }
-          async function loadLogsFor(itemId) {
-            if (logsItemIdEl) logsItemIdEl.textContent = `#${itemId}`;
-            if (logsBodyEl) logsBodyEl.innerHTML = '<div class="p-3">Loading…</div>';
-            try {
-              const res = await fetch(URLS.logs + '?id=' + encodeURIComponent(itemId));
-              if (!res.ok) throw new Error('HTTP ' + res.status);
-              const data = await res.json();
-              if (logsBodyEl) logsBodyEl.innerHTML = renderLogsTable(data);
-            } catch (e) {
-              if (logsBodyEl) logsBodyEl.innerHTML = `<div class="p-3 text-danger">Failed to load logs. ${e?.message || ''}</div>`;
-            }
-          }
-          function startLogsPolling(){
-            if (logsPollTimer) return;
-            logsPollTimer = setInterval(()=>{ if (currentLogsItemId) loadLogsFor(currentLogsItemId); }, 4000);
-          }
-          function stopLogsPolling(){ if (logsPollTimer) { clearInterval(logsPollTimer); logsPollTimer = null; } }
-
-          // Queue table click handler
-          on($('#queued-table'), 'click', async function(e){
-            const tr = e.target.closest?.('tr[data-id]');
-            if (!tr) return;
-
-            if (e.target.classList.contains('btn-q-details')) {
-              renderReadableDetails(e.target.getAttribute('data-json') || '');
-              new bootstrap.Modal(document.getElementById('queueDetailsModal')).show();
-              return;
-            }
-            if (e.target.classList.contains('btn-q-logs')) {
-              const id = tr.getAttribute('data-id');
-              currentLogsItemId = id;
-              await loadLogsFor(id);
-              new bootstrap.Modal(document.getElementById('queueLogsModal')).show();
-              return;
-            }
-            if (e.target.classList.contains('btn-q-remove')) {
-              const id = tr.getAttribute('data-id'); if (!id) return;
-              if (!confirm('Remove this queued item?')) return;
-              try { await queueRemove(id); await loadQueueSafe(); }
-              catch(err){ alert(err.message || 'Remove failed'); }
-            }
-          });
-
-          // Logs modal refresh & lifecycle
-          on(btnRefreshLogs, 'click', () => { if (currentLogsItemId) loadLogsFor(currentLogsItemId); });
-          logsModalEl?.addEventListener('shown.bs.modal', () => startLogsPolling());
-          logsModalEl?.addEventListener('hidden.bs.modal', () => { stopLogsPolling(); currentLogsItemId = null; });
-
-          // Add → validate name, then POST queue
-          on(document.getElementById('btn-add'), 'click', async function () {
-            // hard block invalid Proxmox VM names
-            if (!validateVmName()) {
-              return;
-            }
-
-            // hard block invalid/duplicate Proxmox disk IDs, e.g. duplicate scsi0
-            if (!validateDisks(true)) {
-              return;
-            }
-
-            try {
-              const payload = buildPayloadFromWizard();
-              await queueAdd(payload);
-              startQueuePolling();
-              await loadQueueSafe();
-              if (wizardModalEl) {
-                const modal = bootstrap.Modal.getInstance(wizardModalEl);
-                if (modal) modal.hide();
-              }
-            } catch (err) {
-              console.error(err);
-              alert(err.message || 'Failed to queue import.');
-            }
-          });
-
-          // Run Queue (with confirmation)
-          on(btnRunQueue, 'click', function(){
-            const m = new bootstrap.Modal(document.getElementById('runQueueConfirmModal'));
-            m.show();
-          });
-          on(document.getElementById('btn-run-away'), 'click', async function(){
-            const btn = this;
-            btn.disabled = true;
-            btn.textContent = 'Starting…';
-            try {
-              const res = await fetch(URLS.run, { method: 'POST' });
-              if (!res.ok) throw new Error('Failed to trigger queue');
-              startQueuePolling?.();
-              await loadQueueSafe();
-            } catch (err) {
-              alert(err.message || 'Could not start queue.');
-            } finally {
-              btn.disabled = false;
-              btn.textContent = 'Run away';
-              bootstrap.Modal.getInstance(document.getElementById('runQueueConfirmModal'))?.hide();
-            }
-          });
-
-          // ---- Init ----
-          (async function init() {
-            let data = null;
-            showLoading('Loading capabilities from Proxmox cluster…');
-
-            try {
-              try {
-                const t0 = performance.now();
-                const res = await fetch(URLS.caps, { cache: 'no-store' });
-
-                if (!res.ok) {
-                  capsError = 'HTTP ' + res.status;
-                  console.error('Capabilities HTTP error', res.status);
-                } else {
-                  const text = await res.text();
-                  // console.log('Capabilities raw response:', text);
-
-                  try {
-                    data = JSON.parse(text);
-                    console.log('Capabilities parsed JSON:', data);
-                  } catch (jsonErr) {
-                    capsError = 'JSON parse error';
-                    console.error('Capabilities JSON parse failed:', jsonErr);
-                  }
+            async function refreshRunQueueState() {
+                try {
+                    const response = await fetch(URLS.queueControl, {
+                        cache: 'no-store', credentials: 'same-origin', redirect: 'manual',
+                        headers: { Accept: 'application/json' }
+                    });
+                    if (!response.ok || response.type === 'opaqueredirect')
+                        throw new Error('HTTP ' + response.status + (response.type === 'opaqueredirect' ? ' (redirect)' : ''));
+                    const state = await response.json();
+                    if (typeof state.running !== 'boolean') throw new Error('Invalid runner-status response');
+                    runnerBusy = state.running;
+                } catch (error) {
+                    // Keep queue start blocked, but do NOT claim a worker is running.
+                    runnerBusy = null;
+                    console.warn('Could not read migration runner status', error);
                 }
-                const t1 = performance.now();
-                console.log('Capabilities fetch+parse took ~', Math.round(t1 - t0), 'ms');
-              } catch (e) {
-                capsError = String(e);
-                console.error('Capabilities fetch failed:', e);
-              }
-
-              // Map JSON → CAPS (support both camelCase and PascalCase just in case)
-              if (data) {
-                CAPS.cpus       = data.cpus            || data.Cpus            || [];
-                CAPS.nics       = data.nics            || data.Nics            || [];
-                CAPS.scsi       = data.scsiControllers || data.ScsiControllers || [];
-                CAPS.osTypes    = data.osTypes         || data.OsTypes         || [];
-                CAPS.bridges    = data.bridges         || data.Bridges         || [];
-                CAPS.vlans      = data.vlans           || data.Vlans           || [];
-                CAPS.virtioIsos = data.virtioIsos      || data.VirtioIsos      || [];
-              }
-
-              // ---- FALLBACK DEFAULTS so the wizard is never completely empty ----
-              if (!CAPS.cpus || CAPS.cpus.length === 0) {
-                console.warn('Capabilities: CPUs empty, using fallback list.');
-                CAPS.cpus = [
-                  { value: 'x86-64-v2-AES', label: 'x86-64-v2-AES' },
-                  { value: 'kvm64',         label: 'kvm64' }
-                ];
-              }
-
-              if (!CAPS.scsi || CAPS.scsi.length === 0) {
-                console.warn('Capabilities: SCSI controllers empty, using fallback list.');
-                CAPS.scsi = [
-                  { value: 'virtio-scsi-single', label: 'VirtIO SCSI single' },
-                  { value: 'virtio-scsi-pci',    label: 'VirtIO SCSI PCI' }
-                ];
-              }
-
-              if (!CAPS.nics || CAPS.nics.length === 0) {
-                console.warn('Capabilities: NIC models empty, using fallback list.');
-                CAPS.nics = [
-                  { value: 'virtio', label: 'VirtIO' },
-                  { value: 'e1000',  label: 'Intel E1000' }
-                ];
-              }
-
-              if (!CAPS.bridges || CAPS.bridges.length === 0) {
-                console.warn('Capabilities: bridges empty, using fallback list.');
-                CAPS.bridges = [
-                  { name: 'vmbr0' }
-                ];
-              }
-
-              // ---- Render selects ----
-              if (cpuTypeSelect) {
-                const d1 = (CAPS.cpus || []).find(c => readVal(c) === 'x86-64-v2-AES');
-                const d2 = (CAPS.cpus || []).find(c => /aes/i.test(readLabel(c) || ''));
-                const d3 = (CAPS.cpus || [])[0];
-                const DEFAULT_CPU = readVal(d1) || readVal(d2) || readVal(d3) || '';
-
-                cpuTypeSelect.innerHTML = (CAPS.cpus || []).map(p => {
-                  const v = readVal(p);
-                  const l = readLabel(p);
-                  const sel = (String(v) === String(DEFAULT_CPU)) ? 'selected' : '';
-                  return `<option value="${escapeHtml(v)}" ${sel}>${escapeHtml(l)}</option>`;
-                }).join('');
-              }
-
-              if (scsiController) {
-                scsiController.innerHTML = (CAPS.scsi || []).map(p => {
-                  const v = readVal(p), l = readLabel(p);
-                  return `<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`;
-                }).join('');
-              }
-
-              if (osTypeSelect) {
-                osTypeSelect.innerHTML = (CAPS.osTypes || []).map(p => {
-                  const v = readVal(p), l = readLabel(p);
-                  return `<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`;
-                }).join('');
-              }
-
-              populateIsoSelect();
-              refreshIsoEnabled();
-
-              // Mark capabilities as ready so wizard can be opened
-              capsReady = true;
-
-              if (tableBody) tableBody.innerHTML = '';
-              const items = await loadQueueSafe();
-              maybeStartPolling(items);
-            } finally {
-              hideLoading();
+                setRunQueueButton();
             }
-          })();
+            setInterval(refreshRunQueueState, 3000);
+            document.addEventListener('visibilitychange', () => { if (!document.hidden) void refreshRunQueueState(); });
+            void refreshRunQueueState();
+            const queuedBody = $('#queued-body');
 
+            const wizardModalEl = $('#wizardModal');
+            const wizardForm = $('#wizardForm');
+            const disksTbody = $('#disks-table tbody');
+            const nicsTbody = $('#nics-table tbody');
+            const cpuTypeSelect = $('#cpuTypeSelect');
+            const osTypeSelect = $('#osTypeSelect');
+            const scsiController = $('#scsiController');
+            const prepVirtio = $('#prepVirtio');
+            const mountIso = $('#mountIso');
+            const virtioIsoSelect = $('#virtioIsoSelect');
 
+            const queueDetailsBody = $('#queueDetailsBody');
+
+            // Logs modal elements
+            const logsModalEl = document.getElementById('queueLogsModal');
+            const btnRefreshLogs = document.getElementById('btn-refresh-logs');
+            const logsBodyEl = document.getElementById('queueLogsBody');
+            const logsItemIdEl = document.getElementById('logsItemId');
+
+            // quick getters for new inputs
+            const socketsInput = () => wizardForm?.elements['Sockets'];
+            const coresInput = () => wizardForm?.elements['Cores'];
+            const memInput = () => wizardForm?.elements['MemoryMiB'];
+
+            // ---- ISO helpers ----
+            function populateIsoSelect() {
+                if (!virtioIsoSelect) return;
+                const list = CAPS.virtioIsos || [];
+                virtioIsoSelect.innerHTML = list.length
+                    ? list.map(i => {
+                        const v = (i?.value ?? i?.Value ?? i)?.toString() || '';
+                        const l = (i?.label ?? i?.Label ?? v)?.toString() || v;
+                        return `<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`;
+                    }).join('')
+                    : '<option value="">— No virtio ISOs found —</option>';
+            }
+            function refreshIsoEnabled() {
+                if (!virtioIsoSelect || !mountIso) return;
+                virtioIsoSelect.disabled = !mountIso.checked;
+                if (!virtioIsoSelect.options.length) {
+                    virtioIsoSelect.innerHTML = '<option value="">— No virtio ISOs found —</option>';
+                }
+                if (mountIso.checked && !virtioIsoSelect.value && virtioIsoSelect.options.length > 0) {
+                    virtioIsoSelect.selectedIndex = 0;
+                }
+            }
+            on(mountIso, 'change', refreshIsoEnabled);
+
+            // ---- Queue polling (status) ----
+            let queuePollTimer = null;
+            function isActiveStatus(s) {
+                const t = String(s || '').toLowerCase();
+                return t === 'queued' || t === 'processing' || t === 'running' || t === 'automationpending' || t === 'automationstaging' || t === 'automationstaged' || t === 'automationguestprep' || t === 'automationpreparing' || t === 'automationprepared' || t === 'automationcutover' || t === 'automationwaitingforshutdown' || t === 'automationshutdownresuming' || t === 'automationpoweredoff' || t === 'automationsnapshot' || t === 'automationimporting' || t === 'automationstarting' || t === 'automationverifyingboot' || t === 'automationverifyingguest';
+            }
+            // Only untouched queue items and terminal results may be removed.
+            // All other states are protected, including unknown future states.
+            function canRemoveQueueItem(status) {
+                const key = String(status || '').trim().toLowerCase();
+                return key === 'queued' || key === 'automationpending' ||
+                    key === 'done' || key === 'completed' ||
+                    key === 'canceled' || key === 'cancelled' ||
+                    key === 'automationcanceled' || key === 'automationcancelled' ||
+                    key.endsWith('failed');
+            }
+            function anyActive(items) {
+                return (items || []).some(it => isActiveStatus(it.status || it.Status));
+            }
+            async function pollQueueOnce() {
+                const items = await loadQueueSafe();
+                if (!anyActive(items)) { if (queuePollTimer) { clearInterval(queuePollTimer); queuePollTimer = null; } }
+            }
+            function startQueuePolling() {
+                if (queuePollTimer) return;
+                queuePollTimer = setInterval(pollQueueOnce, 3000);
+            }
+            function maybeStartPolling(items) { if (anyActive(items)) startQueuePolling(); }
+
+            // ---- OS / UEFI helpers ----
+            function pickOsValueFromGuestString(guestOs) {
+                const s = String(guestOs || '').toLowerCase();
+                const normalized = s.replace(/[\s_.-]+/g, '');
+                // Proxmox does not have a separate Windows Server 2025 OS type.
+                // Server 2022 and 2025 use its Windows 11/2022 family (win11).
+                if (/(windows server 2025|windows server 2022|server[- ]?2025|server[- ]?2022)/.test(s) ||
+                    /windows(?:2022|2019)srvnext64guest/.test(normalized) ||
+                    s.includes('windows11') || s.includes('win11')) return 'win11';
+                if (/(windows server 2016|windows server 2019|server[- ]?2016|server[- ]?2019)/.test(s) ||
+                    /windows(?:9server|9srv|2019srv)64guest/.test(normalized) ||
+                    s.includes('win10') || s.includes('windows 10')) return 'win10';
+                // Windows Server 2012 and 2012 R2 use Proxmox's Windows 8 family.
+                // This also covers the ambiguous VMware windows8srv-64 identifier.
+                if (/(windows\s+server\s+2012|server[- ]?2012)/.test(s) ||
+                    /windows8(?:srv|server)64(?:guest)?/.test(normalized) ||
+                    s.includes('win8') || s.includes('windows 8')) return 'win8';
+                if (s.includes('win7') || s.includes('windows 7') || s.includes('2008')) return 'win7';
+                if (/(linux|ubuntu|centos|debian|rhel|suse)/.test(s)) return 'l26';
+                return 'other';
+            }
+            const deriveUuid = vm =>
+                (vm && (vm.uuid || vm.Uuid || vm.vmUuid || vm.hwUuid || vm.hardwareUuid || vm.biosUuid || vm.vmxUuid || vm.uuidBios)) || '';
+            function deriveUefi(vm) {
+                const f = String((vm && (vm.firmware || vm.bootFirmware || vm.bios)) || '').toLowerCase();
+                return f.includes('efi') || !!(vm && (vm.uefiEnabled || vm.nvram || vm.efi || vm.efidisk));
+            }
+
+            // vCenter status indicators. Unknown/missing data is always gray, never green.
+            function statusDot(raw, kind) {
+                const value = String(raw ?? 'Unknown').trim();
+                const normalized = value.toLowerCase().replace(/[\s_-]+/g, '');
+                let color = 'is-gray';
+
+                if (kind === 'power') {
+                    if (normalized === 'poweredon' || normalized === 'on') color = 'is-green';
+                    else if (normalized === 'poweredoff' || normalized === 'off') color = 'is-red';
+                } else if (kind === 'tools') {
+                    if (normalized === 'running' || normalized === 'toolsok' ||
+                        normalized === 'guesttoolsrunning' || normalized === 'guesttoolsrunningtrue') color = 'is-green';
+                    else if (normalized === 'notrunning' || normalized === 'stopped' ||
+                        normalized === 'notinstalled' || normalized === 'toolsnotrunning' ||
+                        normalized === 'toolsnotinstalled' || normalized === 'guesttoolsnotrunning') color = 'is-red';
+                }
+
+                const safe = escapeHtml(value || 'Unknown');
+                return `<span class="migration-status-dot ${color}" title="${safe}" role="img" aria-label="${safe}"></span>`;
+            }
+
+            // Only offer automation when both live vCenter statuses are explicitly green.
+            // Do not infer a 64-bit guest from an ambiguous OS name.
+            function eligibleWindowsServer(vm) {
+                const os = String(first(vm, 'guestOs', 'GuestOs') ?? '').toLowerCase();
+                const raw = String(first(vm, 'guestOsRaw', 'GuestOsRaw') ?? '').toLowerCase();
+                const norm = raw.replace(/[\s_.-]+/g, '');
+                // Explicitly reject older guests, even if VMware's raw ID or a stale
+                // scan result suggests a supported operating system.
+                if (/\bwindows\s+server\s+(?:2003|2008|2012)(?:\s*r2)?\b/.test(os) ||
+                    /^(?:windows8srv64|windows8server64|windows8srv64guest|windows8server64guest)$/.test(norm))
+                    return false;
+                // VMware guest IDs identify 64-bit Windows Server versions directly.
+                const supportedRaw = [
+                    'windows9server64guest',     // Windows Server 2016
+                    'windows9srv64guest',        // Windows Server 2016
+                    'windows2019srv64guest',     // Windows Server 2019
+                    'windows2019srvnext64guest', // Windows Server 2022
+                    'windows2022srvnext64guest'  // Windows Server 2025
+                ].includes(norm);
+                if (supportedRaw) return true;
+                // Only Server 2016/2019/2022/2025 have automatic migration enabled.
+                // The scanner's friendly label (e.g. "Windows Server 2025") is
+                // therefore sufficient even when GuestOsRaw was not returned.
+                return /\bwindows\s+server\s+(?:2016|2019|2022|2025)\b/.test(os);
+            }
+            function normalizedVmStatus(raw) {
+                return String(raw ?? '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+            }
+            function isGreenStatus(raw, kind) {
+                const normalized = normalizedVmStatus(raw);
+                return kind === 'power'
+                    ? ['poweredon', 'on'].includes(normalized)
+                    : ['running', 'toolsok', 'guesttoolsrunning', 'guesttoolsrunningtrue'].includes(normalized);
+            }
+            function canOfferAutomation(vm) {
+                if (first(vm, 'snapshotCheckPassed', 'SnapshotCheckPassed') !== true ||
+                    first(vm, 'hasVmwareSnapshots', 'HasVmwareSnapshots') === true) return false;
+                return eligibleWindowsServer(vm) &&
+                    isGreenStatus(first(vm, 'powerStatus', 'PowerStatus'), 'power') &&
+                    isGreenStatus(first(vm, 'vmwareToolsStatus', 'VmwareToolsStatus'), 'tools');
+            }
+
+            // ---- Scan table row html ----
+            function rowHtml(vm) {
+                const name = first(vm, 'name', 'Name') ?? '';
+                const vmxPath = first(vm, 'vmxPath', 'VmxPath', 'path', 'Path') ?? '';
+                const guestOs = first(vm, 'guestOs', 'GuestOs', 'os', 'Os') ?? '';
+                const cpuCores = first(vm, 'cpuCores', 'CpuCores', 'vcpu', 'vCpu', 'Vcpu', 'VCPU') ?? '';
+                const memoryMiB = first(vm, 'memoryMiB', 'MemoryMiB', 'memMiB', 'MemMiB', 'ramMiB', 'RamMiB', 'memory', 'Memory') ?? '';
+                const diskSizeGiB = first(vm, 'diskSizeGiB', 'DiskSizeGiB', 'diskGiB', 'DiskGiB', 'disk', 'Disk') ?? '';
+                const nicsArr = first(vm, 'nics', 'Nics') || [];
+                const nic0Model = (nicsArr[0] && (nicsArr[0].model ?? nicsArr[0].Model)) || '';
+                const nic0Mac = (nicsArr[0] && (nicsArr[0].mac ?? nicsArr[0].Mac)) || '';
+                const nic0MacTxt = nic0Mac ? `(${nic0Mac})` : '';
+                const powerStatus = first(vm, 'powerStatus', 'PowerStatus') ?? 'Unknown';
+                const vmwareToolsStatus = first(vm, 'vmwareToolsStatus', 'VmwareToolsStatus') ?? 'Unknown';
+                const checkPassed = first(vm, 'snapshotCheckPassed', 'SnapshotCheckPassed') === true;
+                const hasSnapshots = first(vm, 'hasVmwareSnapshots', 'HasVmwareSnapshots') === true;
+                const warning = String(first(vm, 'snapshotWarning', 'SnapshotWarning') ||
+                    (checkPassed ? '' : 'Snapshot check unavailable. Queueing blocked.'));
+                const snapshotStatus = (!checkPassed || hasSnapshots)
+                    ? `<span class="text-danger fw-semibold" title="${escapeHtml(warning)}">⚠ Blocked</span>`
+                    : '<span class="text-success" title="No VMware snapshots detected">✓ Clear</span>';
+
+                return `
+                              <tr data-vmx="${escapeHtml(String(vmxPath))}">
+                                <td class="text-primary fw-semibold vm-link" style="cursor:pointer">${escapeHtml(String(name))}</td>
+                                <td>${escapeHtml(String(guestOs))}</td>
+                                <td class="text-end">${String(cpuCores)}</td>
+                                <td class="text-end">${String(memoryMiB)}</td>
+                                <td class="text-end">${String(diskSizeGiB)}</td>
+                                <td>${escapeHtml(String(nic0Model))} ${escapeHtml(String(nic0MacTxt))}</td>
+                                <td class="text-center">${statusDot(powerStatus, 'power')}</td>
+                                <td class="text-center">${statusDot(vmwareToolsStatus, 'tools')}</td>
+                                <td class="text-center">${snapshotStatus}</td>
+                              </tr>`;
+            }
+            function renderTable(list) { if (tableBody) tableBody.innerHTML = (list || []).map(rowHtml).join(''); }
+
+            // ---- Wizard rows (disks/nics) ----
+            function diskRow(d, position) {
+                const src = String(d?.source ?? d?.Source ?? '');
+                const size = d?.sizeGiB ?? d?.SizeGiB ?? d?.size ?? d?.Size ?? '';
+                const store = String(d?.storage ?? d?.Storage ?? '');
+                const bus = 'scsi'; // Existing default; selectable for manual migrations.
+                const idx = position;
+                const sourceFileName = src.split(/[\\/]/).filter(Boolean).pop() || `Disk ${position + 1}`;
+                const busOptions = ['scsi', 'sata', 'virtio', 'ide'].map(type =>
+                    `<option value="${type}" ${type === bus ? 'selected' : ''}>${type}</option>`).join('');
+                return `
+                              <tr data-disk-source="${escapeHtml(src)}" data-disk-storage="${escapeHtml(store)}" data-disk-size="${escapeHtml(String(size))}">
+                                <td title="${escapeHtml(src)}">${escapeHtml(sourceFileName)}</td>
+                                <td class="text-end">${escapeHtml(String(size))}</td>
+                                <td>${escapeHtml(store)}</td>
+                                <td><select class="form-select form-select-sm disk-bus" aria-label="Target disk bus" ${automatedWizard ? 'disabled' : ''}>${busOptions}</select></td>
+                                <td><input class="form-control form-control-sm disk-index" type="number" min="0" max="30" step="1" value="${idx}" aria-label="Target disk index"></td>
+                              </tr>`;
+            }
+            function nicRow(n) {
+                // Always default target NIC type to VirtIO, regardless of VMware model.
+                const targetModel = 'virtio';
+                const nicModelOptions = (CAPS.nics || []).map(p => {
+                    const v = String(readVal(p)), l = readLabel(p);
+                    const sel = v.toLowerCase() === targetModel ? 'selected' : '';
+                    return `<option value="${escapeHtml(v)}" ${sel}>${escapeHtml(l)}</option>`;
+                }).join('');
+                const virtioOption = (CAPS.nics || []).some(p => String(readVal(p)).toLowerCase() === 'virtio')
+                    ? '' : '<option value="virtio" selected>VirtIO</option>';
+                const targetNicOptions = nicModelOptions + virtioOption;
+                const sourceNetwork = first(n, 'sourceNetwork', 'SourceNetwork');
+                const sourceNetworkText = sourceNetwork ? String(sourceNetwork) : 'Not specified in VMX';
+                const firstBridge = (CAPS.bridges && CAPS.bridges.length)
+                    ? ((CAPS.bridges[0] && (CAPS.bridges[0].name || CAPS.bridges[0].Name)) || CAPS.bridges[0]) : '';
+                const bridgeVal = (n && n.bridge != null && n.bridge !== '') ? n.bridge : (n?.Bridge ?? firstBridge);
+                const vlanVal = (n && n.vlan != null && n.vlan !== '') ? String(n.vlan) : (n?.Vlan ?? '');
+                const macVal = (n && n.mac != null) ? String(n.mac) : (n?.Mac ?? '');
+
+                const bridgesHtml = (CAPS.bridges && CAPS.bridges.length)
+                    ? `<select class="form-select form-select-sm nic-bridge">${(CAPS.bridges || []).map(b => {
+                        const v = (b?.name ?? b?.Name ?? b) || ''; const sel = (String(v) === String(bridgeVal)) ? 'selected' : '';
+                        return `<option value="${escapeHtml(v)}" ${sel}>${escapeHtml(v || '—')}</option>`;
+                    }).join('')}
+                                 </select>`
+                    : `<input class="form-control form-control-sm nic-bridge" value="${escapeHtml(bridgeVal || '')}" placeholder="bridge (e.g., vmbr0)">`;
+
+                return `
+                              <tr>
+                                <td style="width:200px"><select class="form-select form-select-sm nic-model" ${automatedWizard ? 'disabled' : ''}>${targetNicOptions}</select></td>
+                                <td class="small text-nowrap" title="${escapeHtml(sourceNetworkText)}">${escapeHtml(sourceNetworkText)}</td>
+                                <td><input class="form-control form-control-sm nic-mac" value="${escapeHtml(macVal)}"></td>
+                                <td style="width:220px">${bridgesHtml}</td>
+                                <td class="text-end" style="width:180px">
+                                  <input class="form-control form-control-sm nic-vlan text-end" type="number" min="1" max="4094" step="1" value="${escapeHtml(vlanVal)}" placeholder="VLAN (1–4094)">
+                                </td>
+                              </tr>`;
+            }
+
+            // ---- vCPU display helper ----
+            function toIntOrNull(x) { const n = Number(x); return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null; }
+            function scanTotalVcpu(vm) {
+                const v = first(vm, 'vCpu', 'Vcpu', 'VCPU', 'cpuCores', 'CpuCores', 'cores', 'Cores');
+                const n = Number(v);
+                return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
+            }
+            function updateVcpuDisplay() {
+                const s = toIntOrNull(wizardForm?.elements['Sockets']?.value);
+                const c = toIntOrNull(wizardForm?.elements['Cores']?.value);
+                const el = document.getElementById('vcpuDisplay');
+                const total = (s && c) ? (s * c) : scanTotalVcpu(currentVm);
+                if (el) el.textContent = total ? String(total) : '—';
+            }
+
+            let previousManualHardware = null;
+
+            // ---- Wizard helpers ----
+            function setVal(name, val) { if (wizardForm?.elements[name]) wizardForm.elements[name].value = (val == null ? '' : val); }
+            function getVal(name) { const el = wizardForm?.elements[name]; return el ? el.value : ''; }
+            function setSelectToValueOrAppend(selectEl, value, labelIfNew) {
+                if (!selectEl || value == null || value === '') return;
+                const v = String(value);
+                const hit = Array.from(selectEl.options).find(o => o.value === v);
+                if (hit) { selectEl.value = v; return; }
+                const o = document.createElement('option'); o.value = v; o.text = labelIfNew || v; selectEl.add(o); selectEl.value = v;
+            }
+
+            // Reuse the existing cluster-aware backend, never a hard-coded VMID.
+            async function loadNextAvailableVmId() {
+                const field = wizardForm?.elements['VmId'];
+                if (!field) return;
+                field.value = '';
+                field.placeholder = 'Checking Proxmox cluster…';
+                try {
+                    const response = await fetch(URLS.nextVmId, { cache: 'no-store' });
+                    if (!response.ok) throw new Error('HTTP ' + response.status);
+                    const data = await response.json();
+                    const id = Number(data.vmId ?? data.VmId);
+                    if (!Number.isSafeInteger(id) || id < 100) throw new Error('Invalid VMID');
+                    field.value = String(id);
+                    field.placeholder = '';
+                    // Do not represent the queue-only fallback as cluster-verified.
+                    if (data.source === 'queue-only') {
+                        field.setCustomValidity('Cluster could not be queried. Verify a free VMID manually before saving.');
+                        field.title = 'Cluster unavailable: VMID was calculated from the queue only.';
+                    } else {
+                        field.setCustomValidity('');
+                        field.title = 'Suggested by Proxmox and BareProx migration queue';
+                    }
+                } catch (error) {
+                    console.warn('Could not determine next Proxmox VMID', error);
+                    field.placeholder = 'Enter a verified free VMID';
+                    field.title = 'Automatic VMID lookup failed';
+                    field.setCustomValidity('Unable to fetch a free VMID from Proxmox.');
+                }
+            }
+            on(wizardForm?.elements['VmId'], 'input', function () {
+                this.setCustomValidity('');
+            });
+            function displayDetectedOsInAutomatedWizard(vm) {
+                if (!automatedWizard || !osTypeSelect) return;
+                const detected = String(first(vm, 'guestOs', 'GuestOs') || '').trim();
+                const osType = pickOsValueFromGuestString(detected);
+                if (osType !== 'win11') return;
+                // Proxmox expects win11 even for Server 2025; display the actual guest OS.
+                setSelectToValueOrAppend(osTypeSelect, 'win11', detected || 'Windows Server 2022/2025');
+                const selected = Array.from(osTypeSelect.options).find(o => o.value === 'win11');
+                if (selected) selected.textContent = detected ? detected + ' (Proxmox: win11)' : 'Windows Server 2022/2025 (Proxmox: win11)';
+                osTypeSelect.value = 'win11';
+            }
+
+            function fillWizardFromVM(vm) {
+                if (!wizardForm) return;
+                currentVm = vm;
+                previousManualHardware = null;
+                const sourceOs = String(first(vm, 'guestOs', 'GuestOs') || 'Unknown');
+                const sourceOsEl = document.getElementById('sourceOsDescription');
+                if (sourceOsEl) {
+                    const targetType = pickOsValueFromGuestString(sourceOs);
+                    const mappingNote = targetType === 'win8' ? 'Proxmox OS type: win8 (2012/2012 R2).' :
+                        targetType === 'win11' ? 'Proxmox OS type: win11 (Server 2022/2025).' :
+                            targetType === 'win10' ? 'Proxmox OS type: win10 (Server 2016/2019).' : '';
+                    sourceOsEl.textContent = 'Detected guest: ' + sourceOs + (mappingNote ? ' — ' + mappingNote : '');
+                }
+
+                const vmxPath = first(vm, 'vmxPath', 'VmxPath', 'path', 'Path') || '';
+                const name = first(vm, 'name', 'Name') || '';
+                const vmId = ''; // VMware inventory IDs are not valid Proxmox VMIDs.
+                const vmxOs = first(vm, 'guestOs', 'GuestOs', 'guestOsRaw', 'GuestOsRaw', 'vmxGuestId', 'VmxGuestId', 'vmxOsType', 'VmxOsType', 'os', 'Os');
+                const scsiCtrl = first(vm, 'scsiController', 'ScsiController', 'SCSIController');
+
+                setVal('VmxPath', vmxPath);
+                setVal('VmId', vmId);
+                if (!vmId && !(automatedWizard && approvedAutomationPlan && approvedAutomationPlan.vmxPath === vmxPath)) void loadNextAvailableVmId();
+                setVal('Name', name);
+
+                const memScan = first(vm, 'memoryMiB', 'MemoryMiB', 'memMiB', 'MemMiB', 'ramMiB', 'RamMiB', 'memory', 'Memory');
+                setVal('MemoryMiB', memScan || '');
+
+                const total = scanTotalVcpu(vm);
+                setVal('Sockets', total ? 1 : '');
+                setVal('Cores', total || '');
+
+                const capCpuAes1 = (CAPS.cpus || []).find(c => readVal(c) === 'x86-64-v2-AES');
+                const capCpuAes2 = (CAPS.cpus || []).find(c => /aes/i.test(readLabel(c) || ''));
+                const capCpu0 = (CAPS.cpus || [])[0];
+                const defaultAes = readVal(capCpuAes1) || readVal(capCpuAes2) || readVal(capCpu0) || '';
+                const cpuValue = first(vm, 'cpuType', 'CpuType') || defaultAes;
+                if (cpuTypeSelect) setSelectToValueOrAppend(cpuTypeSelect, cpuValue, cpuValue);
+
+                const guess = pickOsValueFromGuestString(vmxOs);
+                if (osTypeSelect) {
+                    const osHit = (CAPS.osTypes || []).find(o => {
+                        const rv = readVal(o), rl = String(readLabel(o) || '').toLowerCase();
+                        const vmo = String(vmxOs || '').toLowerCase();
+                        return rv === vmxOs || rv === guess || rl === vmo;
+                    });
+                    if (osHit) setSelectToValueOrAppend(osTypeSelect, readVal(osHit), readLabel(osHit));
+                    else if (vmxOs) setSelectToValueOrAppend(osTypeSelect, vmxOs, vmxOs);
+                }
+                displayDetectedOsInAutomatedWizard(vm);
+
+                if (!automatedWizard && scsiController && scsiCtrl) {
+                    const hit = (CAPS.scsi || []).find(s => readVal(s) === scsiCtrl || readLabel(s) === scsiCtrl);
+                    setSelectToValueOrAppend(scsiController, (readVal(hit) || scsiCtrl), scsiCtrl);
+                }
+
+                if (prepVirtio) { prepVirtio.checked = false; prepVirtio.disabled = automatedWizard; }
+                if (scsiController && automatedWizard)
+                    setSelectToValueOrAppend(scsiController, 'virtio-scsi-single', 'VirtIO SCSI single');
+                if (mountIso) mountIso.checked = !!first(vm, 'mountVirtioIso', 'MountVirtioIso');
+                populateIsoSelect(); refreshIsoEnabled();
+                if (virtioIsoSelect) {
+                    const isoName = first(vm, 'virtioIsoName', 'VirtioIsoName') || '';
+                    if (isoName) setSelectToValueOrAppend(virtioIsoSelect, isoName, isoName);
+                }
+
+                setVal('Uuid', deriveUuid(vm));
+                setVal('Uefi', deriveUefi(vm) ? 'true' : 'false');
+
+                if (disksTbody) {
+                    const disks = first(vm, 'disks', 'Disks') || [];
+                    disksTbody.innerHTML = '';
+                    disks.forEach((d, position) => {
+                        const wrap = document.createElement('tbody'); wrap.innerHTML = diskRow(d, position);
+                        disksTbody.appendChild(wrap.firstElementChild);
+                    });
+                }
+
+                if (nicsTbody) {
+                    const nics = first(vm, 'nics', 'Nics') || [];
+                    nicsTbody.innerHTML = '';
+                    nics.forEach(n => {
+                        const wrap = document.createElement('tbody'); wrap.innerHTML = nicRow(n);
+                        const tr = wrap.firstElementChild;
+                        nicsTbody.appendChild(tr);
+                    });
+                }
+
+                applyHardwarePolicy();
+                updateVcpuDisplay();
+            }
+
+            // Lock only the hardware required by the selected migration mode.
+            // Preserve manual choices when Prepare for VirtIO is toggled off again.
+            function applyHardwarePolicy() {
+                const forceVirtio = !automatedWizard && !!prepVirtio?.checked;
+                const diskBuses = $$('#disks-table .disk-bus');
+                const nicModels = $$('#nics-table .nic-model');
+
+                if (forceVirtio && !previousManualHardware) {
+                    previousManualHardware = {
+                        controller: scsiController?.value || '',
+                        buses: diskBuses.map(el => el.value),
+                        nics: nicModels.map(el => el.value)
+                    };
+                } else if (!forceVirtio && previousManualHardware) {
+                    if (scsiController && previousManualHardware.controller)
+                        setSelectToValueOrAppend(scsiController, previousManualHardware.controller, previousManualHardware.controller);
+                    diskBuses.forEach((el, i) => {
+                        if (previousManualHardware.buses[i]) el.value = previousManualHardware.buses[i];
+                    });
+                    nicModels.forEach((el, i) => {
+                        if (previousManualHardware.nics[i]) el.value = previousManualHardware.nics[i];
+                    });
+                    previousManualHardware = null;
+                }
+
+                if (prepVirtio) prepVirtio.disabled = automatedWizard;
+                if (automatedWizard || forceVirtio) {
+                    if (scsiController)
+                        setSelectToValueOrAppend(scsiController, 'virtio-scsi-single', 'VirtIO SCSI single');
+                    diskBuses.forEach(el => { el.value = forceVirtio ? 'sata' : 'scsi'; });
+                    nicModels.forEach(el => {
+                        if (!Array.from(el.options).some(opt => opt.value === 'virtio'))
+                            el.add(new Option('VirtIO', 'virtio'));
+                        el.value = 'virtio';
+                    });
+                }
+
+                if (scsiController) scsiController.disabled = automatedWizard || forceVirtio;
+                diskBuses.forEach(el => { el.disabled = automatedWizard || forceVirtio; });
+                nicModels.forEach(el => { el.disabled = automatedWizard || forceVirtio; });
+                updateDiskIndexLimits();
+            }
+
+            function updateDiskIndexLimits() {
+                const limits = { ide: 3, sata: 5, virtio: 15, scsi: 30 };
+                $$('#disks-table tbody tr').forEach(tr => {
+                    const bus = tr.querySelector('.disk-bus')?.value || 'scsi';
+                    const index = tr.querySelector('.disk-index');
+                    if (!index) return;
+                    index.max = String(limits[bus] ?? 30);
+                    index.setAttribute('aria-label', 'Target ' + bus.toUpperCase() + ' index');
+                });
+            }
+            on(prepVirtio, 'change', applyHardwarePolicy);
+            on(disksTbody, 'change', function (event) {
+                if (event.target?.classList.contains('disk-bus')) updateDiskIndexLimits();
+            });
+
+            // Recompute vCPU on topology edits
+            on(wizardForm?.elements['Sockets'], 'input', updateVcpuDisplay);
+            on(wizardForm?.elements['Cores'], 'input', updateVcpuDisplay);
+
+            // Display-only preflight: real validation must also run on the server before queue/start.
+            function automatedReviewHtml(vm) {
+                const name = String(first(vm, 'name', 'Name') ?? '').trim();
+                const os = String(first(vm, 'guestOs', 'GuestOs') ?? 'Unknown');
+                const cpu = first(vm, 'cpuCores', 'CpuCores', 'vCpu', 'Vcpu') ?? 'Unknown';
+                const memory = first(vm, 'memoryMiB', 'MemoryMiB') ?? 'Unknown';
+                const firmware = first(vm, 'firmware', 'Firmware', 'bootFirmware', 'BootFirmware') ?? (deriveUefi(vm) ? 'UEFI' : 'BIOS / Unknown');
+                const disks = first(vm, 'disks', 'Disks') || [];
+                const nics = first(vm, 'nics', 'Nics') || [];
+                const nameOk = /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) && name.length <= 63;
+                const diskKeys = disks.map((d, i) => 'scsi' + i);
+                const diskUnique = new Set(diskKeys).size === diskKeys.length;
+                const macs = nics.map(n => String(first(n, 'mac', 'Mac') || '').replace(/[^a-f0-9]/gi, '').toLowerCase()).filter(Boolean);
+                const macUnique = new Set(macs).size === macs.length;
+                const show = v => escapeHtml(String(v ?? '—'));
+                const rows = (columns, values) => '<tr>' + values.map(v => '<td>' + show(v) + '</td>').join('') + '</tr>';
+                return `
+                              <div class="mb-3"><h6>Source VM and destination identity</h6><div class="table-responsive"><table class="table table-sm"><tbody>
+                                ${rows([], ['Proxmox VM name', name || '(missing)'])}
+                                ${rows([], ['Name syntax (initial check)', nameOk ? 'PASS' : 'REVIEW — use A–Z, 0–9, dot, underscore, hyphen; up to 63 chars'])}
+                                ${rows([], ['Guest operating system', os])}
+                                ${rows([], ['vCPU', cpu])}${rows([], ['Memory (MiB)', memory])}${rows([], ['Firmware', firmware])}
+                                ${rows([], ['Proxmox OS type', pickOsValueFromGuestString(os)])}
+                              </tbody></table></div></div>
+                              <h6>Disks (verify order and boot disk)</h6>
+                              <div class="table-responsive"><table class="table table-sm"><thead><tr><th>VMware disk</th><th>Size (GiB)</th><th>Proposed target position</th></tr></thead><tbody>
+                                ${disks.map((d, i) => rows([], [i + 1, first(d, 'sizeGiB', 'SizeGiB') ?? '—', diskKeys[i]])).join('') || '<tr><td colspan="3" class="text-danger">No disks found</td></tr>'}
+                              </tbody></table></div>
+                              <div class="small mb-3 ${diskUnique ? 'text-muted' : 'text-danger'}">${diskUnique ? 'Target disk positions appear unique. Boot order must still be confirmed.' : 'Duplicate proposed disk positions — manual correction required.'}</div>
+                              <h6>NICs (destination model defaults to VirtIO)</h6>
+                              <div class="table-responsive"><table class="table table-sm"><thead><tr><th>#</th><th>VMware network</th><th>Source MAC</th><th>Target model</th></tr></thead><tbody>
+                                ${nics.map((n, i) => rows([], [i, first(n, 'vmwareNetwork', 'VmwareNetwork', 'networkName', 'NetworkName', 'sourceNetwork', 'SourceNetwork') || 'DVS / Not available', first(n, 'mac', 'Mac') || '—', 'virtio'])).join('') || '<tr><td colspan="4">No NICs found</td></tr>'}
+                              </tbody></table></div>
+                              <div class="small ${macUnique ? 'text-muted' : 'text-danger'}">${macUnique ? 'No duplicate non-empty source MAC addresses.' : 'Duplicate source MAC addresses — review before migration.'}</div>
+                              <p class="small mt-3 mb-0">Open the existing wizard to edit name, disk positions, NIC MAC addresses, target bridges and VLANs. MAC mapping is generated during automated staging.</p>`;
+            }
+            function showApprovedPlan() {
+                const area = document.getElementById('automationApprovedPlan');
+                if (!area) return;
+                const p = approvedAutomationPlan;
+                if (!p) { area.innerHTML = ''; return; }
+                const safe = value => escapeHtml(String(value ?? '—'));
+                area.innerHTML = `<div class="alert alert-success small" role="status">Configuration saved for this session. No migration has been queued or started.</div>
+                              <h6>Approved destination configuration</h6>
+                              <div class="table-responsive"><table class="table table-sm"><tbody>
+                              <tr><th>VM name</th><td>${safe(p.name)}</td></tr>
+                              <tr><th>Proxmox VM ID</th><td>${safe(p.vmId)}</td></tr>
+                              <tr><th>Detected operating system</th><td>${safe(first(pendingModeVm, 'guestOs', 'GuestOs'))}</td></tr>
+                              <tr><th>Proxmox OS code</th><td>${safe(p.osType)}</td></tr>
+                              <tr><th>CPU</th><td>${safe(p.sockets)} sockets × ${safe(p.cores)} cores</td></tr>
+                              <tr><th>RAM</th><td>${safe(p.memoryMiB)} MiB</td></tr>
+                              <tr><th>SCSI controller</th><td>VirtIO SCSI single</td></tr>
+                              </tbody></table></div>
+                              <h6>Disk order</h6><div class="table-responsive"><table class="table table-sm"><thead><tr><th>Disk</th><th>Position</th><th>Size (GiB)</th></tr></thead><tbody>
+                              ${p.disks.map((d, i) => `<tr><td>Disk ${i + 1}</td><td>scsi${safe(d.index)}</td><td>${safe(d.sizeGiB)}</td></tr>`).join('')}
+                              </tbody></table></div>
+                              <h6>Destination network</h6><div class="table-responsive"><table class="table table-sm"><thead><tr><th>NIC</th><th>Model</th><th>MAC</th><th>Bridge</th><th>VLAN</th></tr></thead><tbody>
+                              ${p.nics.map((n, i) => `<tr><td>${i}</td><td>VirtIO</td><td>${safe(n.mac)}</td><td>${safe(n.bridge)}</td><td>${safe(n.vlan)}</td></tr>`).join('')}
+                              </tbody></table></div>`;
+            }
+
+            function applyAutomationPlanToWizard(plan) {
+                for (const name of ['VmId', 'Name', 'MemoryMiB', 'Sockets', 'Cores']) {
+                    const key = { VmId: 'vmId', Name: 'name', MemoryMiB: 'memoryMiB', Sockets: 'sockets', Cores: 'cores' }[name];
+                    setVal(name, plan[key]);
+                }
+                if (cpuTypeSelect) setSelectToValueOrAppend(cpuTypeSelect, plan.cpuType, plan.cpuType);
+                if (osTypeSelect) setSelectToValueOrAppend(osTypeSelect, plan.osType, plan.osType);
+                $$('#disks-table tbody tr').forEach((tr, i) => {
+                    const index = tr.querySelector('.disk-index');
+                    if (index && plan.disks[i]) index.value = plan.disks[i].index;
+                });
+                $$('#nics-table tbody tr').forEach((tr, i) => {
+                    const n = plan.nics[i]; if (!n) return;
+                    const mac = tr.querySelector('.nic-mac'); if (mac) mac.value = n.mac || '';
+                    const bridge = tr.querySelector('.nic-bridge'); if (bridge) bridge.value = n.bridge || '';
+                    const vlan = tr.querySelector('.nic-vlan'); if (vlan) vlan.value = n.vlan ?? '';
+                });
+                updateVcpuDisplay();
+            }
+
+            on(document.getElementById('btn-review-edit'), 'click', function () {
+                if (!pendingModeVm) return;
+                automatedWizard = true;
+                fillWizardFromVM(pendingModeVm);
+                const saveButton = document.getElementById('btn-add');
+                saveButton.disabled = false;
+                saveButton.textContent = 'Save changes';
+                saveButton.title = 'Save the reviewed configuration for this session (does not start migration)';
+                document.getElementById('wizardFooterNote').textContent = 'Saves this automated migration plan for review; nothing is queued or executed.';
+                if (approvedAutomationPlan && approvedAutomationPlan.vmxPath === getVal('VmxPath')) {
+                    applyAutomationPlanToWizard(approvedAutomationPlan);
+                }
+                const review = document.getElementById('automatedReviewModal');
+                review.addEventListener('hidden.bs.modal', function once() {
+                    review.removeEventListener('hidden.bs.modal', once);
+                    bootstrap.Modal.getOrCreateInstance(wizardModalEl).show();
+                });
+                bootstrap.Modal.getOrCreateInstance(review).hide();
+            });
+            let pendingModeVm = null;
+            on(document.getElementById('btn-manual-migration'), 'click', function () {
+                if (!pendingModeVm) return;
+                automatedWizard = false;
+                fillWizardFromVM(pendingModeVm);
+                document.getElementById('btn-add').disabled = false;
+                document.getElementById('btn-add').removeAttribute('title');
+                document.getElementById('btn-add').textContent = 'Add';
+                document.getElementById('wizardFooterNote').textContent = 'These settings will be applied when you queue the import.';
+                const choiceModal = document.getElementById('migrationModeModal');
+                const wizardToOpen = wizardModalEl;
+                choiceModal.addEventListener('hidden.bs.modal', function openWizardOnce() {
+                    choiceModal.removeEventListener('hidden.bs.modal', openWizardOnce);
+                    bootstrap.Modal.getOrCreateInstance(wizardToOpen).show();
+                });
+                bootstrap.Modal.getOrCreateInstance(choiceModal).hide();
+                pendingModeVm = null;
+            });
+            let guestVerificationToken = null;
+            let guestVerifiedUuid = null;
+            let guestVerifiedUser = null;
+            function resetGuestVerification(clearResult = true) {
+                guestVerificationToken = null;
+                guestVerifiedUuid = null;
+                guestVerifiedUser = null;
+                const addButton = document.getElementById('btn-auto-add-queue');
+                if (addButton) { addButton.disabled = true; addButton.title = 'Verify Windows guest credentials first'; }
+                if (clearResult) {
+                    const result = document.getElementById('guestVerifyResult');
+                    if (result) { result.textContent = ''; result.className = 'small mt-2'; }
+                }
+            }
+            on(document.getElementById('guestVerifyUser'), 'input', () => resetGuestVerification());
+            on(document.getElementById('guestVerifyPassword'), 'input', () => resetGuestVerification());
+
+            on(document.getElementById('btn-auto-add-queue'), 'click', async function () {
+                const vm = pendingModeVm;
+                const uuid = String(first(vm, 'uuidBios', 'UuidBios', 'uuid', 'Uuid') ?? '');
+                const payload = approvedAutomationPlan;
+                if (!vm || !payload || !guestVerificationToken || !guestVerifiedUser ||
+                    guestVerifiedUuid !== uuid || this.disabled) return;
+                if (!canOfferAutomation(vm))
+                    return alert('Automatic migration requires Windows Server 2016, 2019, 2022 or 2025. Windows Server 2012 R2 and older must use manual migration.');
+                if (payload.vmxPath !== String(first(vm, 'vmxPath', 'VmxPath') || ''))
+                    return alert('Reviewed plan no longer matches the selected VM. Review again.');
+                this.disabled = true;
+                try {
+                    const result = await queueAdd({
+                        ...payload, automated: true,
+                        guestVerificationToken
+                    });
+                    resetGuestVerification(false);
+                    approvedAutomationPlan = null;
+                    await loadQueueSafe();
+                    bootstrap.Modal.getOrCreateInstance(document.getElementById('automatedReviewModal')).hide();
+                    alert('Automated migration queued (#' + result.id + '). It will start when you run the queue.');
+                } catch (err) {
+                    resetGuestVerification(false);
+                    alert(err.message || 'Could not queue automated migration. Please verify credentials again.');
+                }
+            });
+
+            // Real read-only vCenter Guest Operations test. A successful check issues a short-lived proof.
+            on(document.getElementById('guestVerifyForm'), 'submit', async function (e) {
+                e.preventDefault();
+                const result = document.getElementById('guestVerifyResult');
+                const button = document.getElementById('btn-guest-verify');
+                const vm = pendingModeVm;
+                if (!vm) { result.textContent = 'No VM is selected.'; return; }
+                const name = String(first(vm, 'name', 'Name') ?? '');
+                const uuid = String(first(vm, 'uuidBios', 'UuidBios', 'uuid', 'Uuid') ?? '');
+                if (!uuid) { result.textContent = 'VM BIOS UUID missing from scan; cannot safely verify.'; return; }
+                button.disabled = true;
+                result.className = 'small mt-2 text-muted';
+                result.textContent = 'Verifying credentials through vCenter…';
+                try {
+                    const response = await fetch('@Url.Content("~/Migration/Guest/Verify")', {
+                        method: 'POST', credentials: 'same-origin',
+                        headers: {
+                            'Content-Type': 'application/json', 'RequestVerificationToken':
+                                document.querySelector('#guestVerifyForm input[name="__RequestVerificationToken"]')?.value ?? ''
+                        },
+                        body: JSON.stringify({
+                            name, biosUuid: uuid,
+                            username: document.getElementById('guestVerifyUser').value,
+                            password: document.getElementById('guestVerifyPassword').value
+                        })
+                    });
+                    const data = await response.json();
+                    result.className = 'small mt-2 ' + (data.ok ? 'text-success' : 'text-danger');
+                    result.textContent = data.message || ('HTTP ' + response.status);
+                    if (response.ok && data.ok && typeof data.verificationToken === 'string') {
+                        guestVerificationToken = data.verificationToken;
+                        guestVerifiedUuid = uuid;
+                        guestVerifiedUser = document.getElementById('guestVerifyUser').value;
+                        const addButton = document.getElementById('btn-auto-add-queue');
+                        addButton.disabled = !approvedAutomationPlan;
+                        addButton.title = approvedAutomationPlan ? '' : 'Review and save the migration configuration first';
+                    } else resetGuestVerification(false);
+                } catch (err) {
+                    result.className = 'small mt-2 text-danger';
+                    result.textContent = 'Guest verification request failed.';
+                    resetGuestVerification(false);
+                } finally {
+                    button.disabled = false;
+                    document.getElementById('guestVerifyPassword').value = '';
+                }
+            });
+            on(document.getElementById('automatedReviewModal'), 'hidden.bs.modal', function () {
+                document.getElementById('guestVerifyPassword').value = '';
+                document.getElementById('guestVerifyResult').textContent = '';
+            });
+
+            on(document.getElementById('btn-automated-migration'), 'click', function () {
+                if (!pendingModeVm) return;
+                if (!canOfferAutomation(pendingModeVm)) {
+                    const note = document.getElementById('automation-not-ready');
+                    if (note) { note.textContent = 'Automatic migration is supported only for Windows Server 2016, 2019, 2022 and 2025. For older Windows versions, use manual migration.'; note.classList.remove('d-none'); }
+                    return;
+                }
+                resetGuestVerification();
+                document.getElementById('guestVerifyPassword').value = '';
+                document.getElementById('automatedReviewBody').innerHTML = approvedAutomationPlan?.vmxPath === String(first(pendingModeVm, 'vmxPath', 'VmxPath') || '') ? '' : automatedReviewHtml(pendingModeVm);
+                showApprovedPlan();
+                const choice = document.getElementById('migrationModeModal');
+                choice.addEventListener('hidden.bs.modal', function once() {
+                    choice.removeEventListener('hidden.bs.modal', once);
+                    bootstrap.Modal.getOrCreateInstance(document.getElementById('automatedReviewModal')).show();
+                });
+                bootstrap.Modal.getOrCreateInstance(choice).hide();
+            });
+
+            // Click VM → wizard
+            on(tableBody, 'click', function (e) {
+                const link = e.target.closest?.('.vm-link');
+                if (!link || !wizardModalEl) return;
+                const tr = link.closest('tr');
+                const vmx = tr?.getAttribute('data-vmx') || '';
+                const vm = (currentList || []).find(x => String(first(x, 'vmxPath', 'VmxPath', 'path', 'Path') || '') === String(vmx));
+                if (!vm) return;
+                if (canOfferAutomation(vm)) {
+                    if (approvedAutomationPlan?.vmxPath !== String(first(vm, 'vmxPath', 'VmxPath') || '')) approvedAutomationPlan = null;
+                    pendingModeVm = vm;
+                    const note = document.getElementById('automation-not-ready');
+                    if (note) note.classList.add('d-none');
+                    bootstrap.Modal.getOrCreateInstance(document.getElementById('migrationModeModal')).show();
+                } else {
+                    if (isGreenStatus(first(vm, 'powerStatus', 'PowerStatus'), 'power') &&
+                        isGreenStatus(first(vm, 'vmwareToolsStatus', 'VmwareToolsStatus'), 'tools')) {
+                        console.info('BareProx: automated migration not offered: Supported Windows Server guest could not be verified from scan metadata.', {
+                            name: first(vm, 'name', 'Name'), guestOs: first(vm, 'guestOs', 'GuestOs'),
+                            guestOsRaw: first(vm, 'guestOsRaw', 'GuestOsRaw')
+                        });
+                    }
+                    automatedWizard = false;
+                    fillWizardFromVM(vm);
+                    document.getElementById('btn-add').disabled = false;
+                    document.getElementById('btn-add').removeAttribute('title');
+                    document.getElementById('btn-add').textContent = 'Add';
+                    document.getElementById('wizardFooterNote').textContent = 'These settings will be applied when you queue the import.';
+                    bootstrap.Modal.getOrCreateInstance(wizardModalEl).show();
+                }
+            });
+
+            // ---- Live datastore scan ----
+            // The endpoint scans VMware over SSH. Limit polling to avoid concurrent
+            // expensive scans and avoid interrupting a user who is editing a wizard.
+            const scanStatusEl = document.getElementById('datastoreScanStatus');
+            let scanInProgress = false;
+            let lastScanSucceeded = false;
+            function setScanStatus(message, failed = false) {
+                if (!scanStatusEl) return;
+                scanStatusEl.textContent = message;
+                scanStatusEl.className = 'small ' + (failed ? 'text-danger' : 'text-muted');
+            }
+            async function realScan(manual = false) {
+                if (scanInProgress || (!manual && document.hidden)) return;
+                scanInProgress = true;
+                if (btnScan) { btnScan.disabled = true; btnScan.textContent = 'Scanning…'; }
+                setScanStatus('Scanning datastore…');
+                try {
+                    const res = await fetch(URLS.scan, { cache: 'no-store', credentials: 'same-origin' });
+                    if (!res.ok) throw new Error('Scan HTTP ' + res.status);
+                    const scanned = await res.json();
+                    if (!Array.isArray(scanned)) throw new Error('Invalid datastore scan response');
+                    currentList = scanned;
+                    lastScanSucceeded = true;
+                    renderTable(currentList);
+                    const time = new Date().toLocaleTimeString();
+                    setScanStatus(`${currentList.length} VM(s) · Updated ${time} · Auto-refresh every 60s`);
+                } catch (e) {
+                    console.error('Datastore scan failed', e);
+                    setScanStatus(lastScanSucceeded
+                        ? 'Datastore refresh failed; showing previous results. Retry with Refresh datastore.'
+                        : 'Datastore scan failed. Check connectivity and retry.', true);
+                } finally {
+                    scanInProgress = false;
+                    if (btnScan) { btnScan.disabled = false; btnScan.textContent = 'Refresh datastore'; }
+                }
+            }
+            on(btnScan, 'click', () => void realScan(true));
+            setInterval(() => { if (!document.hidden) void realScan(); }, 60000);
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden) void realScan();
+            });
+
+            // ===== Build payload from wizard =====
+            function collectDisks() {
+                if (!disksTbody) return [];
+                return $$('#disks-table tbody tr').map(tr => ({
+                    source: tr.dataset.diskSource || '',
+                    sizeGiB: tr.dataset.diskSize ? Number(tr.dataset.diskSize) : null,
+                    storage: tr.dataset.diskStorage || '',
+                    bus: automatedWizard ? 'scsi' : (prepVirtio?.checked ? 'sata' : (tr.querySelector('.disk-bus')?.value || 'scsi')),
+                    index: tr.querySelector('.disk-index')?.value === '' ? null : Number(tr.querySelector('.disk-index')?.value)
+                }));
+            }
+            function collectNics() {
+                if (!nicsTbody) return [];
+                const out = [];
+                $$('#nics-table tbody tr').forEach(tr => {
+                    const modelEl = tr.querySelector('.nic-model');
+                    const macEl = tr.querySelector('.nic-mac');
+                    const brEl = tr.querySelector('.nic-bridge');
+                    const vlanEl = tr.querySelector('.nic-vlan');
+                    const vlanVal = vlanEl && vlanEl.value ? vlanEl.value.trim() : '';
+                    out.push({
+                        model: (automatedWizard || prepVirtio?.checked) ? 'virtio' : (modelEl ? modelEl.value : ''),
+                        mac: macEl ? macEl.value : '',
+                        bridge: brEl ? brEl.value : '',
+                        vlan: vlanVal ? Number(vlanVal) : null
+                    });
+                });
+                return out;
+            }
+            function buildPayloadFromWizard() {
+                const s = toIntOrNull(getVal('Sockets'));
+                const c = toIntOrNull(getVal('Cores'));
+                const derivedVcpu = (s && c) ? (s * c) : scanTotalVcpu(currentVm);
+                return {
+                    vmId: Number(getVal('VmId')) || null,
+                    name: getVal('Name'),
+                    cpuType: cpuTypeSelect?.value || '',
+                    osType: osTypeSelect?.value || '',
+                    memoryMiB: (function () {
+                        const raw = Number(getVal('MemoryMiB'));
+                        if (!Number.isNaN(raw) && raw > 0) return raw;
+                        const fromScan = first(currentVm, 'memoryMiB', 'MemoryMiB', 'memMiB', 'MemMiB', 'ramMiB', 'RamMiB', 'memory', 'Memory');
+                        return fromScan ? Number(fromScan) : null;
+                    })(),
+                    sockets: s ?? null,
+                    cores: c ?? null,
+                    vcpu: derivedVcpu ?? null,
+                    prepareVirtio: !automatedWizard && !!(prepVirtio && prepVirtio.checked),
+                    mountVirtioIso: !!(mountIso && mountIso.checked),
+                    virtioIsoName: (mountIso && mountIso.checked) ? (virtioIsoSelect?.value || '') : '',
+                    scsiController: automatedWizard ? 'virtio-scsi-single' : (scsiController?.value || ''),
+                    vmxPath: getVal('VmxPath'),
+                    uuid: getVal('Uuid') || deriveUuid(currentVm || {}),
+                    uefi: (getVal('Uefi') === 'true') || deriveUefi(currentVm || {}),
+                    disks: collectDisks(),
+                    nics: collectNics()
+                };
+            }
+
+            // ===== Queue API & rendering =====
+            async function queueList() {
+                const res = await fetch(URLS.queue);
+                if (!res.ok) throw new Error('Queue list failed: HTTP ' + res.status);
+                return await res.json();
+            }
+            async function queueAdd(payload) {
+                const sourceVm = (currentList || []).find(vm =>
+                    String(first(vm, 'vmxPath', 'VmxPath') || '') === String(payload.vmxPath || ''));
+                if (!sourceVm || first(sourceVm, 'snapshotCheckPassed', 'SnapshotCheckPassed') !== true ||
+                    first(sourceVm, 'hasVmwareSnapshots', 'HasVmwareSnapshots') === true)
+                    throw new Error(first(sourceVm, 'snapshotWarning', 'SnapshotWarning') ||
+                        'VMware snapshot status is unknown or snapshots are present. Queueing blocked.');
+                const res = await fetch(URLS.queue, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const json = await res.json().catch(() => ({}));
+                if (!res.ok || json.ok === false) throw new Error(json.error || ('Queue add failed: HTTP ' + res.status));
+                return json;
+            }
+            async function queueRemove(id) {
+                const res = await fetch(URLS.queue + '/' + encodeURIComponent(id), { method: 'DELETE' });
+                const json = await res.json().catch(() => ({}));
+                if (!res.ok || json.ok === false) throw new Error(json.error || 'Remove failed');
+                return true;
+            }
+            function parseArrayMaybe(x) {
+                if (Array.isArray(x)) return x;
+                if (!x) return [];
+                try { return JSON.parse(x); } catch { return []; }
+            }
+
+            function queueStatusView(raw) {
+                const key = String(raw || '').toLowerCase();
+                // Keep the initial queue status recognizable; omit the internal
+                // "Automation" prefix from all subsequent display labels only.
+                const labels = {
+                    queued: 'Queued', processing: 'Processing', running: 'Running', done: 'Done',
+                    automationpending: 'Queued for automation', automationstaging: 'Creating snapshot / uploading files',
+                    automationstaged: 'Files staged — waiting for cutover', automationguestprep: 'Starting Windows preparation',
+                    automationpreparing: 'Preparing Windows — waiting for completion', automationprepared: 'Windows prepared',
+                    automationcutover: 'Performing cutover', automationwaitingforshutdown: 'Waiting for VMware shutdown',
+                    automationshutdownpaused: 'Paused — needs attention',
+                    automationshutdownresuming: 'Waiting for shutdown',
+                    automationcanceled: 'Cancelled',
+                    automationpoweredoff: 'VMware powered off', automationsnapshot: 'Preparing Proxmox import',
+                    automationimporting: 'Importing VM into Proxmox', automationstarting: 'Starting VM in Proxmox',
+                    automationverifyingboot: 'Waiting for Windows / guest agent', automationbooted: 'Windows started',
+                    automationverifyingguest: 'Checking Windows guest status',
+                    automationverificationfailed: 'Verification failed',
+                    automationstagefailed: 'Staging failed', automationprepfailed: 'Preparation failed',
+                    automationimportfailed: 'Import failed', automationstartfailed: 'Start failed',
+                    automationbootverifyfailed: 'Boot verification failed',
+                    automationpostshutdownfailed: 'Post-shutdown failed',
+                    automationcutoverfailed: 'Cutover failed',
+                    automationfailed: 'Failed', failed: 'Failed'
+                };
+                const cls = key === 'done' ? 'is-success' :
+                    /failed|error/.test(key) ? 'is-danger' :
+                        (key === 'automationbooted' || key === 'automationshutdownpaused') ? 'is-warning' :
+                            isActiveStatus(raw) || key === 'automationverifyingguest' ? 'is-active' : '';
+                return `<span class="migration-state ${cls}" title="${escapeHtml(raw)}">${escapeHtml(labels[key] || String(raw || 'Unknown'))}</span>`;
+            }
+
+            function renderQueue(items) {
+                if (!queuedBody) return;
+                const countEl = document.getElementById('migrationQueueCount');
+                if (countEl) countEl.textContent = '(' + (items || []).length + ')';
+                const rows = (items || []).map(it => {
+                    const id = first(it, 'id', 'Id');
+                    const vmId = first(it, 'vmId', 'VmId');
+                    const name = first(it, 'name', 'Name') ?? '—';
+                    const uefi = !!first(it, 'uefi', 'Uefi');
+                    const disks = parseArrayMaybe(first(it, 'disks', 'Disks') || first(it, 'disksJson', 'DisksJson'));
+                    const nics = parseArrayMaybe(first(it, 'nics', 'Nics') || first(it, 'nicsJson', 'NicsJson'));
+                    const status = first(it, 'status', 'Status', 'state', 'State', 'queueStatus', 'QueueStatus') || 'Queued';
+                    const uefiBadge = uefi ? '<span class="badge bg-success">UEFI</span>' : '<span class="badge bg-secondary">BIOS</span>';
+                    const full = { id, vmId, name, uefi, status, disks, nics, raw: it };
+                    const encoded = encodeURIComponent(JSON.stringify(full));
+                    const isShutdownPaused = String(status).toLowerCase() === 'automationshutdownpaused';
+                    return `
+                                <tr data-id="${String(id)}" data-status="${escapeHtml(String(status))}">
+                                  <td class="text-nowrap">${escapeHtml(vmId == null ? '—' : String(vmId))}</td>
+                                  <td class="migration-vm-name">${escapeHtml(String(name))}</td>
+                                  <td class="text-nowrap">${uefiBadge}</td>
+                                  <td class="text-end">${String(disks.length)}</td>
+                                  <td class="text-end">${String(nics.length)}</td>
+                                  <td class="text-nowrap">${queueStatusView(status)}</td>
+                                  <td class="text-end">
+                                    <div class="btn-group btn-group-sm">
+                                      <button class="btn btn-outline-secondary btn-q-details" data-json="${encoded}">Details</button>
+                                      <button class="btn btn-outline-primary btn-q-logs">Logs</button> <!-- NEW -->
+                                      ${isShutdownPaused ? '<button class="btn btn-outline-success btn-q-continue">Continue</button><button class="btn btn-outline-warning btn-q-cancel">Cancel</button>' : ''}
+                                      <button class="btn btn-outline-danger btn-q-remove" ${canRemoveQueueItem(status) ? 'title="Remove queue record"' : 'disabled title="An active migration cannot be removed"'}>Remove</button>
+                                    </div>
+                                  </td>
+                                </tr>`;
+                });
+                queuedBody.innerHTML = rows.join('') || '<tr><td colspan="7" class="text-center text-muted py-3">No items queued.</td></tr>';
+            }
+
+            async function loadQueueSafe() {
+                try {
+                    const items = await queueList();
+                    renderQueue(items);
+                    return items;
+                } catch (e) {
+                    console.warn(e);
+                    if (queuedBody) queuedBody.innerHTML = '<tr><td colspan="7" class="text-center text-muted py-3">Failed to load queue.</td></tr>';
+                    return [];
+                }
+            }
+
+            // ---- Details (readable) ----
+            function renderReadableDetails(json) {
+                if (!queueDetailsBody) return;
+                let data; try { data = JSON.parse(decodeURIComponent(json)); } catch { data = null; }
+                if (!data) { queueDetailsBody.innerHTML = '<div class="text-muted">Unable to parse details.</div>'; return; }
+
+                const raw = data.raw || {};
+                const osType = raw.osType || raw.OsType || '';
+                const cpuType = raw.cpuType || raw.CpuType || '';
+
+                const virtio = (raw.mountVirtioIso || raw.MountVirtioIso) ? (raw.virtioIsoName || raw.VirtioIsoName || '(mounted)') : null;
+                const memMiB = raw.memoryMiB ?? raw.MemoryMiB ?? '';
+
+                const sockets = raw.sockets ?? raw.Sockets ?? null;
+                const cores = raw.cores ?? raw.Cores ?? null;
+                const vcpu = raw.vcpu ?? raw.Vcpu ?? raw.VCPU ?? null;
+                const topoTxt = (sockets && cores) ? `${sockets} × ${cores} = ${Number(sockets) * Number(cores)}`
+                    : (vcpu ? `${vcpu} vCPU` : '');
+
+                const disks = Array.isArray(data.disks) ? data.disks : [];
+                const nics = Array.isArray(data.nics) ? data.nics : [];
+
+                queueDetailsBody.innerHTML = `
+                              <div class="mb-2">
+                                <div class="d-flex align-items-center gap-2 flex-wrap">
+                                  <h5 class="mb-0">${escapeHtml(data.name || '—')} ${data.vmId ? '(' + escapeHtml(String(data.vmId)) + ')' : ''}</h5>
+                                  ${data.uefi ? '<span class="badge bg-success">UEFI</span>' : '<span class="badge bg-secondary">BIOS</span>'}
+                                  ${data.status ? '<span class="badge bg-info text-dark">' + escapeHtml(String(data.status)) + '</span>' : ''}
+                                </div>
+                              </div>
+
+                              <div class="mb-3">
+                                <div class="row g-2">
+                                  ${osType ? `<div class="col-auto"><span class="badge bg-light text-dark">OS: <strong>${escapeHtml(osType)}</strong></span></div>` : ''}
+                                  ${cpuType ? `<div class="col-auto"><span class="badge bg-light text-dark">CPU: <strong>${escapeHtml(cpuType)}</strong></span></div>` : ''}
+                                  ${topoTxt ? `<div class="col-auto"><span class="badge bg-light text-dark">Topology: <strong>${escapeHtml(topoTxt)}</strong></span></div>` : ''}
+                                  ${memMiB ? `<div class="col-auto"><span class="badge bg-light text-dark">RAM: <strong>${escapeHtml(String(memMiB))} MiB</strong></span></div>` : ''}
+
+                                  ${virtio ? `<div class="col-12 small">VirtIO ISO: <code>${escapeHtml(virtio)}</code></div>` : ''}
+                                </div>
+                              </div>
+
+                              <h6>Disks (${disks.length})</h6>
+                              <div class="table-responsive mb-3">
+                                <table class="table table-sm">
+                                  <thead class="table-light"><tr><th>Source</th><th class="text-end">Size (GiB)</th><th>Storage</th><th>Bus</th><th>Target SCSI index / order</th></tr></thead>
+                                  <tbody>
+                                    ${disks.map(d => `
+                                      <tr>
+                                        <td class="small">${escapeHtml(d?.source ?? d?.Source ?? '')}</td>
+                                        <td class="text-end">${escapeHtml(d?.sizeGiB ?? d?.SizeGiB ?? d?.size ?? d?.Size ?? '')}</td>
+                                        <td>${escapeHtml(d?.storage ?? d?.Storage ?? '')}</td>
+                                        <td>${escapeHtml(d?.bus ?? d?.Bus ?? '')}</td>
+                                        <td>${escapeHtml(d?.index ?? d?.Index ?? '')}</td>
+                                      </tr>
+                                    `).join('')}
+                                  </tbody>
+                                </table>
+                              </div>
+
+                              <h6>Network (${nics.length})</h6>
+                              <div class="table-responsive">
+                                <table class="table table-sm">
+                                  <thead class="table-light"><tr><th>Model</th><th>MAC</th><th>Bridge</th><th class="text-end">VLAN</th></tr></thead>
+                                  <tbody>
+                                    ${nics.map(n => `
+                                      <tr>
+                                        <td>${escapeHtml(n?.model ?? n?.Model ?? '')}</td>
+                                        <td class="small">${escapeHtml(n?.mac ?? n?.Mac ?? '')}</td>
+                                        <td>${escapeHtml(n?.bridge ?? n?.Bridge ?? '')}</td>
+                                        <td class="text-end">${escapeHtml(n?.vlan ?? n?.Vlan ?? '')}</td>
+                                      </tr>
+                                    `).join('')}
+                                  </tbody>
+                                </table>
+                              </div>
+                            `;
+            }
+
+            // ---- Logs helpers ----
+            function levelBadge(level) {
+                const l = String(level || '').toLowerCase();
+                if (l === 'error') return '<span class="badge bg-danger">Error</span>';
+                if (l === 'warning') return '<span class="badge bg-warning text-dark">Warning</span>';
+                return '<span class="badge bg-secondary">Info</span>';
+            }
+            function logRowHtml(x) {
+                return `<tr>
+                            <td class="text-nowrap">${escapeHtml(String(x.utc || '').replace('T', ' ').replace(/\.\d+/, '').replace('Z', ''))}</td>
+                            <td class="text-nowrap">${levelBadge(x.level)}</td>
+                            <td class="text-nowrap">${escapeHtml(x.step || '')}</td>
+                            <td class="small">${escapeHtml(x.message || '')}</td>
+                        </tr>`;
+            }
+            function renderLogsTable(logs) {
+                if (!logs?.length) return '<div class="p-3 text-muted">No logs yet for this item.</div>';
+                return `<div class="table-responsive">
+                            <table class="table table-sm align-middle mb-0">
+                                <thead class="table-light"><tr>
+                                    <th class="text-nowrap">UTC</th><th class="text-nowrap">Level</th>
+                                    <th class="text-nowrap">Step</th><th>Message</th>
+                                </tr></thead>
+                                <tbody>${logs.map(logRowHtml).join('')}</tbody>
+                            </table>
+                        </div>`;
+            }
+
+            // Keep the log display and its scrollbar stable while polling.
+            let renderedLogItemId = null;
+            let renderedLogKeys = [];
+            let logsRequestInFlight = false;
+            let logsGeneration = 0;
+
+            function displayLogs(itemId, logs) {
+                if (!logsBodyEl || String(itemId) !== String(currentLogsItemId)) return;
+                const scrollArea = logsModalEl?.querySelector('.modal-body');
+                const oldTop = scrollArea?.scrollTop ?? 0;
+                const nearBottom = !!scrollArea &&
+                    scrollArea.scrollHeight - scrollArea.clientHeight - oldTop <= 48;
+                const keys = logs.map(x => JSON.stringify([x.utc, x.level, x.step, x.message]));
+                const sameItem = renderedLogItemId === String(itemId);
+                const oldIsPrefix = sameItem && renderedLogKeys.length <= keys.length &&
+                    renderedLogKeys.every((key, i) => key === keys[i]);
+                if (sameItem && oldIsPrefix && keys.length === renderedLogKeys.length) return;
+
+                const tbody = logsBodyEl.querySelector('table tbody');
+                if (oldIsPrefix && tbody) {
+                    // Append only new rows. Do not replace the table or reset its scroll.
+                    tbody.insertAdjacentHTML('beforeend', logs.slice(renderedLogKeys.length).map(logRowHtml).join(''));
+                } else {
+                    // First display, changed history, or logs removed: rebuild once.
+                    logsBodyEl.innerHTML = renderLogsTable(logs);
+                }
+                renderedLogKeys = keys;
+                renderedLogItemId = String(itemId);
+                if (scrollArea) {
+                    scrollArea.scrollTop = nearBottom
+                        ? scrollArea.scrollHeight - scrollArea.clientHeight
+                        : oldTop;
+                }
+            }
+
+            async function loadLogsFor(itemId) {
+                if (!itemId || logsRequestInFlight) return;
+                logsRequestInFlight = true;
+                const generation = logsGeneration;
+                const id = String(itemId);
+                if (logsItemIdEl) logsItemIdEl.textContent = `#${id}`;
+                if (renderedLogItemId !== id && logsBodyEl) {
+                    renderedLogItemId = null;
+                    renderedLogKeys = [];
+                    logsBodyEl.innerHTML = '<div class="p-3">Loading…</div>';
+                }
+                try {
+                    const res = await fetch(URLS.logs + '?id=' + encodeURIComponent(id), { cache: 'no-store' });
+                    if (!res.ok) throw new Error('HTTP ' + res.status);
+                    const data = await res.json();
+                    if (!Array.isArray(data)) throw new Error('Invalid logs response');
+                    if (generation !== logsGeneration || String(currentLogsItemId) !== id) return;
+                    displayLogs(id, data);
+                } catch (e) {
+                    if (generation === logsGeneration && String(currentLogsItemId) === id && logsBodyEl && !renderedLogKeys.length)
+                        logsBodyEl.textContent = 'Failed to load logs: ' + (e?.message || 'Unknown error');
+                    else console.warn('Could not refresh migration logs:', e);
+                } finally {
+                    logsRequestInFlight = false;
+                }
+            }
+            function startLogsPolling() {
+                if (logsPollTimer) return;
+                logsPollTimer = setInterval(() => {
+                    if (currentLogsItemId && !document.hidden) void loadLogsFor(currentLogsItemId);
+                }, 4000);
+            }
+            function stopLogsPolling() {
+                if (logsPollTimer) { clearInterval(logsPollTimer); logsPollTimer = null; }
+                logsGeneration++;
+                renderedLogItemId = null;
+                renderedLogKeys = [];
+            }
+
+            // Resolve a paused shutdown without restarting guest preparation.
+            async function resolvePausedShutdown(id, action) {
+                const token = document.querySelector('#guestVerifyForm input[name="__RequestVerificationToken"]')?.value;
+                if (!token) throw new Error('Security token missing. Reload the page.');
+                const response = await fetch('/Migration/Automation/Queue/' + encodeURIComponent(id) + '/' + action, {
+                    method: 'POST', credentials: 'same-origin', headers: { 'RequestVerificationToken': token }
+                });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok || payload.ok === false)
+                    throw new Error(payload.error || 'Request failed (HTTP ' + response.status + ').');
+                return payload.message || 'Action accepted.';
+            }
+
+            // Queue table click handler
+            on($('#queued-table'), 'click', async function (e) {
+                const tr = e.target.closest?.('tr[data-id]');
+                if (!tr) return;
+
+                if (e.target.classList.contains('btn-q-details')) {
+                    renderReadableDetails(e.target.getAttribute('data-json') || '');
+                    new bootstrap.Modal(document.getElementById('queueDetailsModal')).show();
+                    return;
+                }
+                if (e.target.classList.contains('btn-q-logs')) { // NEW
+                    const id = tr.getAttribute('data-id');
+                    currentLogsItemId = id;
+                    logsGeneration++;
+                    renderedLogItemId = null;
+                    renderedLogKeys = [];
+                    new bootstrap.Modal(document.getElementById('queueLogsModal')).show();
+                    void loadLogsFor(id);
+                    return;
+                }
+                if (e.target.classList.contains('btn-q-continue') || e.target.classList.contains('btn-q-cancel')) {
+                    const id = tr.getAttribute('data-id');
+                    if (!id || e.target.disabled || (tr.getAttribute('data-status') || '').toLowerCase() !== 'automationshutdownpaused') return;
+                    const continued = e.target.classList.contains('btn-q-continue');
+                    const prompt = continued
+                        ? 'Continue waiting for VMware shutdown again? GuestPrep and VMware Tools removal will NOT run again. If the VM is powered off, import will proceed.'
+                        : 'Cancel the remaining BareProx cutover? Final GuestPrep has already requested Windows shutdown. Cancel will NOT restart VMware or undo VMware Tools removal.';
+                    if (!confirm(prompt)) return;
+                    // Disable both actions while the request is in flight.
+                    const buttons = tr.querySelectorAll('.btn-q-continue, .btn-q-cancel');
+                    buttons.forEach(button => button.disabled = true);
+                    try {
+                        const message = await resolvePausedShutdown(id, continued ? 'Continue' : 'Cancel');
+                        if (continued) startQueuePolling();
+                        await loadQueueSafe();
+                        const feedback = document.getElementById('migrationRunFeedback');
+                        if (feedback) { feedback.className = 'alert mt-2 alert-info'; feedback.textContent = message; }
+                    } catch (err) {
+                        buttons.forEach(button => button.disabled = false);
+                        alert(err.message || 'Could not update paused migration.');
+                    }
+                    return;
+                }
+                if (e.target.classList.contains('btn-q-remove')) {
+                    const id = tr.getAttribute('data-id'); if (!id) return;
+                    if (e.target.disabled) return;
+                    const status = tr.getAttribute('data-status') || '';
+                    if (!canRemoveQueueItem(status)) return;
+                    if (!confirm('Remove this queue item from BareProx? This does not delete any VM or undo a migration.')) return;
+                    try { await queueRemove(id); await loadQueueSafe(); }
+                    catch (err) { alert(err.message || 'Remove failed'); }
+                }
+            });
+
+            // Logs modal refresh & lifecycle
+            on(btnRefreshLogs, 'click', () => { if (currentLogsItemId) loadLogsFor(currentLogsItemId); });
+            logsModalEl?.addEventListener('shown.bs.modal', () => startLogsPolling());
+            logsModalEl?.addEventListener('hidden.bs.modal', () => { stopLogsPolling(); currentLogsItemId = null; });
+
+            // Add → POST queue
+            on(document.getElementById('btn-add'), 'click', async function () {
+                try {
+                    const payload = buildPayloadFromWizard();
+                    const vmForSnapshot = (currentList || []).find(vm =>
+                        String(first(vm, 'vmxPath', 'VmxPath') || '') === String(payload.vmxPath || ''));
+                    if (!vmForSnapshot || first(vmForSnapshot, 'snapshotCheckPassed', 'SnapshotCheckPassed') !== true ||
+                        first(vmForSnapshot, 'hasVmwareSnapshots', 'HasVmwareSnapshots') === true)
+                        throw new Error(first(vmForSnapshot, 'snapshotWarning', 'SnapshotWarning') ||
+                            'VMware snapshots are present or could not be verified. Remove/consolidate them before queueing.');
+                    const busLimits = { ide: 3, sata: 5, virtio: 15, scsi: 30 };
+                    const diskAddresses = new Set();
+                    for (const disk of payload.disks) {
+                        const bus = String(disk.bus || '').toLowerCase();
+                        const maxIndex = busLimits[bus];
+                        if (maxIndex === undefined)
+                            throw new Error('Unsupported target disk bus: ' + bus);
+                        if (!Number.isInteger(disk.index) || disk.index < 0 || disk.index > maxIndex)
+                            throw new Error(bus.toUpperCase() + ' disk index must be between 0 and ' + maxIndex + '.');
+                        const address = bus + disk.index;
+                        if (diskAddresses.has(address))
+                            throw new Error('Duplicate disk address ' + address + '. Use a unique index on each bus.');
+                        diskAddresses.add(address);
+                    }
+                    if (payload.prepareVirtio && payload.disks.length > 6)
+                        throw new Error('Prepare for VirtIO requires SATA disks; Proxmox supports at most 6 SATA disks (sata0–sata5).');
+                    if (automatedWizard) {
+                        if (!payload.name || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/.test(payload.name))
+                            throw new Error('Invalid Proxmox VM name. Use 1–63 letters, digits, dots, underscores or hyphens; begin with a letter or digit.');
+                        if (!Number.isInteger(payload.vmId) || payload.vmId < 100)
+                            throw new Error('Enter a valid Proxmox VM ID (100 or higher).');
+                        if (!payload.disks.length) throw new Error('At least one disk is required.');
+                        const macs = payload.nics.map(n => String(n.mac || '').toUpperCase());
+                        if (macs.some(mac => mac && !/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)))
+                            throw new Error('A MAC address must contain six colon-separated hexadecimal bytes.');
+                        if (new Set(macs.filter(Boolean)).size !== macs.filter(Boolean).length)
+                            throw new Error('Duplicate target MAC addresses are not allowed.');
+                        approvedAutomationPlan = structuredClone(payload);
+                        const addButton = document.getElementById('btn-auto-add-queue');
+                        if (addButton) addButton.disabled = !guestVerificationToken;
+                        document.getElementById('automatedReviewBody').innerHTML = '';
+                        showApprovedPlan();
+                        const wizard = bootstrap.Modal.getOrCreateInstance(wizardModalEl);
+                        wizardModalEl.addEventListener('hidden.bs.modal', function openReview() {
+                            wizardModalEl.removeEventListener('hidden.bs.modal', openReview);
+                            bootstrap.Modal.getOrCreateInstance(document.getElementById('automatedReviewModal')).show();
+                        });
+                        wizard.hide();
+                        return;
+                    }
+                    await queueAdd(payload);
+                    startQueuePolling();
+                    await loadQueueSafe();
+                    if (wizardModalEl) {
+                        const modal = bootstrap.Modal.getInstance(wizardModalEl);
+                        if (modal) modal.hide();
+                    }
+                } catch (err) {
+                    console.error(err); alert(err.message || 'Failed to queue import.');
+                }
+            });
+
+            // Run Queue (with confirmation)
+            on(btnRunQueue, 'click', function () {
+                if (runnerBusy !== false || submittingQueue) return;
+                const m = new bootstrap.Modal(document.getElementById('runQueueConfirmModal'));
+                m.show();
+            });
+            on(document.getElementById('btn-run-away'), 'click', async function () {
+                const btn = this;
+                const feedback = document.getElementById('migrationRunFeedback');
+                const report = (message, error = false) => {
+                    if (!feedback) return;
+                    feedback.className = 'alert mt-2 ' + (error ? 'alert-danger' : 'alert-info');
+                    feedback.textContent = message;
+                };
+                if (runnerBusy !== false || submittingQueue) return;
+                submittingQueue = true;
+                setRunQueueButton();
+                btn.disabled = true;
+                btn.textContent = 'Starting…';
+                report('Checking queued migrations…');
+                try {
+                    // Fail explicitly if the queue endpoint is unavailable; do not treat that as an empty queue.
+                    const pendingItems = await queueList();
+                    const manualCount = pendingItems.filter(item =>
+                        String(first(item, 'status', 'Status') || '').toLowerCase() === 'queued').length;
+                    const automatedCount = pendingItems.filter(item =>
+                        String(first(item, 'status', 'Status') || '').toLowerCase() === 'automationpending' || String(first(item, 'status', 'Status') || '').toLowerCase() === 'automationstaged').length;
+                    if (!manualCount && !automatedCount) {
+                        report('Nothing to run: no manual or pending/staged automated VMs.');
+                        return;
+                    }
+                    if (manualCount) {
+                        report('Starting ' + manualCount + ' manual migration(s)…');
+                        const manual = await fetch(URLS.run, { method: 'POST' });
+                        if (!manual.ok) throw new Error('Manual queue start failed (HTTP ' + manual.status + ').');
+                    }
+                    if (automatedCount) {
+                        report('Starting automated migration for ' + automatedCount + ' automated VM(s)…');
+                        const token = document.querySelector('#guestVerifyForm input[name="__RequestVerificationToken"]')?.value;
+                        if (!token) throw new Error('Anti-forgery token missing. Reload this page and try again.');
+                        const stage = await fetch('/Migration/Automation/Queue/StagePending', {
+                            method: 'POST',
+                            headers: { 'RequestVerificationToken': token },
+                            credentials: 'same-origin'
+                        });
+                        const payload = await stage.json().catch(() => null);
+                        if (!stage.ok || payload?.ok === false) {
+                            const details = payload?.error || payload?.message || ('HTTP ' + stage.status);
+                            throw new Error('Automated staging could not start: ' + details);
+                        }
+                        report('Automated migration accepted for ' + (payload?.count ?? automatedCount) +
+                            ' automated VM(s). Follow Current activity / Logs below. VMware will shut down after successful GuestPrep.');
+                    } else {
+                        report('Manual queue started. Follow Current activity / Logs below.');
+                    }
+                    startQueuePolling();
+                    await loadQueueSafe();
+                } catch (err) {
+                    console.error('Run Queue error', err);
+                    report(err?.message || String(err), true);
+                    alert('Run Queue: ' + (err?.message || 'Could not start queue.'));
+                } finally {
+                    submittingQueue = false;
+                    btn.disabled = false;
+                    btn.textContent = 'Start migrations';
+                    bootstrap.Modal.getInstance(document.getElementById('runQueueConfirmModal'))?.hide();
+                    await refreshRunQueueState();
+                }
+            });
+
+            // ---- Init ----
+            (async function init() {
+                try {
+                    const res = await fetch(URLS.caps);
+                    if (res.ok) {
+                        const data = await res.json();
+                        CAPS.cpus = data.cpus || [];
+                        CAPS.nics = data.nics || [];
+                        CAPS.scsi = data.scsiControllers || [];
+                        CAPS.osTypes = data.osTypes || [];
+                        CAPS.bridges = data.bridges || [];
+                        CAPS.vlans = data.vlans || [];
+                        CAPS.virtioIsos = data.virtioIsos || [];
+                    }
+                } catch {/* ignore */ }
+
+                if (cpuTypeSelect) {
+                    const d1 = (CAPS.cpus || []).find(c => readVal(c) === 'x86-64-v2-AES');
+                    const d2 = (CAPS.cpus || []).find(c => /aes/i.test(readLabel(c) || ''));
+                    const d3 = (CAPS.cpus || [])[0];
+                    const DEFAULT_CPU = readVal(d1) || readVal(d2) || readVal(d3) || '';
+                    cpuTypeSelect.innerHTML = (CAPS.cpus || []).map(p => {
+                        const v = readVal(p), l = readLabel(p), sel = (String(v) === String(DEFAULT_CPU)) ? 'selected' : '';
+                        return `<option value="${escapeHtml(v)}" ${sel}>${escapeHtml(l)}</option>`;
+                    }).join('');
+                }
+                if (scsiController) scsiController.innerHTML = (CAPS.scsi || []).map(p => {
+                    const v = readVal(p), l = readLabel(p);
+                    return `<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`;
+                }).join('');
+                if (osTypeSelect) osTypeSelect.innerHTML = (CAPS.osTypes || []).map(p => {
+                    const v = readVal(p), l = readLabel(p);
+                    return `<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`;
+                }).join('');
+                populateIsoSelect(); refreshIsoEnabled();
+
+                if (tableBody) tableBody.innerHTML = '';
+                // Scan immediately on page load; queue polling remains independent.
+                void realScan();
+                const items = await loadQueueSafe();
+                maybeStartPolling(items);
+            })();
         });
     </script>
 }
-

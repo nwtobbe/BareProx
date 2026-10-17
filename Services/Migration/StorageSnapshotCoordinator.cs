@@ -1,7 +1,7 @@
-﻿/*
+/*
  * BareProx - Backup and Restore Automation for Proxmox using NetApp
  *
- * Copyright (C) 2025 Tobias Modig
+ * Copyright (C) 2025-2026 Tobias Modig
  *
  * This file is part of BareProx.
  *
@@ -47,7 +47,11 @@ namespace BareProx.Services.Migration
             _log = log;
         }
 
-        public async Task EnsureSnapshotsByVolumeIdsAsync(IReadOnlyCollection<int> selectedNetappVolumeIds, CancellationToken ct)
+        public Task EnsureSnapshotsByVolumeIdsAsync(IReadOnlyCollection<int> selectedNetappVolumeIds, CancellationToken ct)
+            => EnsureSnapshotsByVolumeIdsAsync(selectedNetappVolumeIds, ct, migrationVmId: null);
+
+        // Automated migration only: associate the snapshot with this VMID.
+        public async Task EnsureSnapshotsByVolumeIdsAsync(IReadOnlyCollection<int> selectedNetappVolumeIds, CancellationToken ct, int? migrationVmId)
         {
             if (selectedNetappVolumeIds == null || selectedNetappVolumeIds.Count == 0)
             {
@@ -98,7 +102,8 @@ namespace BareProx.Services.Migration
                     lockRetentionUnit: null,
                     volumeUuid: v.Uuid,          // ✅ prefer UUID
                     svmName: v.Vserver,          // ✅ SVM hint if UUID missing
-                    ct: ct);
+                    ct: ct,
+                    migrationVmId: migrationVmId);
 
                 if (result == null || !result.Success)
                 {
@@ -114,7 +119,11 @@ namespace BareProx.Services.Migration
             _log.LogInformation("SnapshotCoordinator: ensured snapshots for {Count} NetApp volume(s).", vols.Count);
         }
 
-        public async Task EnsureSnapshotsAsync(IReadOnlyCollection<string> storages, CancellationToken ct)
+        public Task EnsureSnapshotsAsync(IReadOnlyCollection<string> storages, CancellationToken ct)
+            => EnsureSnapshotsAsync(storages, ct, migrationVmId: null);
+
+        // Automated migration only: retain shared/batch snapshot names for other callers.
+        public async Task EnsureSnapshotsAsync(IReadOnlyCollection<string> storages, CancellationToken ct, int? migrationVmId)
         {
             if (storages == null || storages.Count == 0)
             {
@@ -217,7 +226,8 @@ namespace BareProx.Services.Migration
                     lockRetentionUnit: null,
                     volumeUuid: chosen.uuid,               // ✅ prefer UUID when available
                     svmName: chosen.svm,                   // ✅ SVM hint only used when UUID is missing
-                    ct: ct);
+                    ct: ct,
+                    migrationVmId: migrationVmId);
 
                 if (result == null || !result.Success)
                 {

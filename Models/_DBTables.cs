@@ -6,18 +6,17 @@
  * This file is part of BareProx.
  *
  * BareProx is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as published by
+ * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, version 3.
  *
  * BareProx is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU Affero General Public License for more details.
+ * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
+ * You should have received a copy of the GNU General Public License
  * along with BareProx. If not, see <https://www.gnu.org/licenses/>.
  */
-
 
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
@@ -78,25 +77,18 @@ namespace BareProx.Models
     {
         public int Id { get; set; }
         public string Name { get; set; } = default!;
-        public string Username { get; set; } = default!;        // include realm, e.g. "root@pam"
-        public string PasswordHash { get; set; } = default!;    // encrypted
-        // Prefer token mode when present
-        public bool UseApiToken { get; set; }  // toggle in UI
-
-        // Example: "root@pam!bareprox"  (user@realm!tokenid)
+        public string Username { get; set; } = default!;
+        public string PasswordHash { get; set; } = default!;
+        public bool UseApiToken { get; set; }
         public string? ApiTokenId { get; set; }
-
-        // Encrypted secret (store with your IEncryptionService)
         public string? ApiTokenSecretEnc { get; set; }
-
         public bool HasApiToken() =>
             UseApiToken &&
             !string.IsNullOrWhiteSpace(ApiTokenId) &&
             !string.IsNullOrWhiteSpace(ApiTokenSecretEnc);
         public DateTime? ApiTokenExpiresUtc { get; set; }
-        public int? ApiTokenLifetimeDays { get; set; }       // default in code: 180
-        public int ApiTokenRenewBeforeMinutes { get; set; } = 59; // rotate 59m before expiry
-
+        public int? ApiTokenLifetimeDays { get; set; }
+        public int ApiTokenRenewBeforeMinutes { get; set; } = 59;
         public ICollection<ProxmoxHost> Hosts { get; set; } = new List<ProxmoxHost>();
     }
 
@@ -104,17 +96,12 @@ namespace BareProx.Models
     {
         public int Id { get; set; }
         public int ClusterId { get; set; }
-
-        // Existing property
         public string HostAddress { get; set; }
-
-        //  property for hostname
         public string? Hostname { get; set; }
         public DateTime? LastChecked { get; set; }
         public ProxmoxCluster Cluster { get; set; }
-        // NEW: Host-scoped auth
-        public string? TicketEnc { get; set; }     // encrypted PVEAuthCookie (ticket)
-        public string? CsrfEnc { get; set; }       // encrypted CSRF
+        public string? TicketEnc { get; set; }
+        public string? CsrfEnc { get; set; }
         public DateTime? TicketIssuedUtc { get; set; }
     }
     public class ProxSelectedStorage
@@ -139,6 +126,8 @@ namespace BareProx.Models
 
         public string PasswordHash { get; set; } = null!;  // Store hashed password, NOT plain text!
     }
+    // Selected NetApp volumes used by backup, restore and migration.
+    // Keep the existing plural model type and its schema mapping.
     public class SelectedNetappVolumes
     {
         public int Id { get; set; }
@@ -146,17 +135,15 @@ namespace BareProx.Models
         public string VolumeName { get; set; }
         public string Uuid { get; set; }
         public string MountIp { get; set; }
-        // public int ClusterId { get; set; }
+        // ClusterId was removed by an earlier migration; do not re-add it.
         public int NetappControllerId { get; set; }
-
-        public long? SpaceSize { get; set; }         // maps to "space.size"
-        public long? SpaceAvailable { get; set; }    // maps to "space.available"
-        public long? SpaceUsed { get; set; }         // maps to "space.used"
-        public string? ExportPolicyName { get; set; } // maps to "nas.export_policy.name"
-        public bool? SnapshotLockingEnabled { get; set; } // maps to "snapshot_locking_enabled"
-        public bool? Disabled { get; set; }              // Is this volume disabled for selection?
+        public long? SpaceSize { get; set; }
+        public long? SpaceAvailable { get; set; }
+        public long? SpaceUsed { get; set; }
+        public string? ExportPolicyName { get; set; }
+        public bool? SnapshotLockingEnabled { get; set; }
+        public bool? Disabled { get; set; }
     }
-
     public class SnapMirrorRelation
     {
         public int Id { get; set; }
@@ -204,7 +191,7 @@ namespace BareProx.Models
         public string Name { get; set; }
         public string StorageName { get; set; }
         public int? SelectedNetappVolumeId { get; set; }
-        public string? VolumeUuid { get; set; }          // ONTAP volume UUID (primary)
+        public string? VolumeUuid { get; set; }
         public string Schedule { get; set; }
         public string Frequency { get; set; }
         public TimeSpan? TimeOfDay { get; set; }
@@ -220,11 +207,10 @@ namespace BareProx.Models
         public bool EnableLocking { get; set; }
         public int? LockRetentionCount { get; set; }
         public string? LockRetentionUnit { get; set; }
-        // Notifications (new master switch)
         public bool NotificationsEnabled { get; set; } = true;
-        public bool NotifyOnSuccess { get; set; }          // default false
-        public bool NotifyOnError { get; set; }            // default false
-        public string? NotificationEmails { get; set; }    // optional CSV override; null => use global/default
+        public bool NotifyOnSuccess { get; set; }
+        public bool NotifyOnError { get; set; }
+        public string? NotificationEmails { get; set; }
     }
 
     public class BackupRecord
@@ -238,7 +224,7 @@ namespace BareProx.Models
         public string StorageName { get; set; }
         public string SnapshotName { get; set; }
         public int ControllerId { get; set; }
-        public string? VolumeUuid { get; set; }          // ONTAP volume UUID (primary)
+        public string? VolumeUuid { get; set; }
         public int? SelectedNetappVolumeId { get; set; }
         public string Label { get; set; }
         public string ConfigurationJson { get; set; }
@@ -364,6 +350,22 @@ namespace BareProx.Models
         public int? SelectedNetappVolumeId { get; set; }
         public string StorageIdentifier { get; set; } = string.Empty;
 
+        // Per-cluster migration concurrency settings.
+        [Range(1, 8)]
+        public int MaxParallelMigrations { get; set; } = 4;
+        [Range(1, 8)]
+        public int MaxParallelCutovers { get; set; } = 1;
+
+        // Per-cluster automatic migration timeouts, in minutes.
+        [Range(5, 120)]
+        public int GuestPrepTimeoutMinutes { get; set; } = 35;
+        [Range(1, 120)]
+        public int VmwareShutdownTimeoutMinutes { get; set; } = 15;
+        [Range(5, 180)]
+        public int GuestAgentStartupTimeoutMinutes { get; set; } = 90;
+        [Range(5, 180)]
+        public int GuestVerificationTimeoutMinutes { get; set; } = 90;
+
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
     }
 
@@ -390,6 +392,8 @@ namespace BareProx.Models
 
         [MaxLength(100)] public string? Uuid { get; set; }
         public bool Uefi { get; set; }
+        [MaxLength(512)] public string? GuestUsername { get; set; }
+        public string? EncryptedGuestPassword { get; set; }
 
         // JSON blobs for arrays
         public string DisksJson { get; set; } = "[]";
@@ -404,7 +408,8 @@ namespace BareProx.Models
     {
         public int Id { get; set; }
 
-        public int ItemId { get; set; }                 // FK to MigrationQueueItem
+        public int ItemId { get; set; }                 // Historical migration ID; logs survive item deletion
+        [MaxLength(200)] public string? ServerName { get; set; } // Persisted VM name independent of queue records
         public DateTime Utc { get; set; } = DateTime.UtcNow;
 
         [MaxLength(16)] public string Level { get; set; } = "Info";  // Info | Warning | Error

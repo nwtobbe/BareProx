@@ -1,0 +1,105 @@
+@model BareProx.Controllers.MigrationReportEmailPageModel
+@{
+    ViewData["Title"] = "Email migration reports";
+}
+<div class="container mt-4 mb-5">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+    <div>
+      <div class="text-muted text-uppercase small">BareProx / Migration</div>
+      <h1 class="h2 mb-1">Email migration reports</h1>
+      <div class="text-muted">Send a report now or create an automatic schedule. Time zone: <strong>@Model.ZoneName</strong></div>
+    </div>
+    <a class="btn btn-outline-secondary" asp-controller="MigrationReports" asp-action="Index">← Back to Reports</a>
+  </div>
+  @if (!string.IsNullOrWhiteSpace(Model.Message)) { <div class="alert alert-success" role="status">@Model.Message</div> }
+  @if (!string.IsNullOrWhiteSpace(Model.Error)) { <div class="alert alert-danger" role="alert">@Model.Error</div> }
+  <div class="row g-4">
+    <div class="col-lg-5">
+      <div class="card shadow-sm h-100">
+        <div class="card-header bg-primary text-white"><strong>Send report now</strong></div>
+        <div class="card-body">
+          <form asp-controller="MigrationReportEmail" asp-action="Send" method="post" id="sendNowForm">
+            @Html.AntiForgeryToken()
+            <div class="mb-3"><label class="form-label" for="sendRecipient">Recipient</label><input id="sendRecipient" name="Recipient" type="email" maxlength="254" class="form-control" required placeholder="reports@example.com" /></div>
+            <div class="mb-3"><label class="form-label" for="sendRange">Include migrations</label>
+              <select id="sendRange" name="Range" class="form-select">
+                <option value="All">All history</option>
+                <option value="LastDays">Last number of days</option>
+                <option value="Custom">Custom date range</option>
+              </select>
+            </div>
+            <div id="sendDaysGroup" class="mb-3" hidden><label class="form-label" for="sendDays">Days</label><input id="sendDays" name="LastDays" type="number" min="1" max="3650" value="1" class="form-control" /></div>
+            <div id="sendCustomGroup" hidden class="row g-2 mb-3">
+              <div class="col-6"><label class="form-label" for="sendFrom">From</label><input id="sendFrom" name="FromDate" type="date" class="form-control" /></div>
+              <div class="col-6"><label class="form-label" for="sendTo">To (inclusive)</label><input id="sendTo" name="ToDate" type="date" class="form-control" /></div>
+            </div>
+            <button class="btn btn-primary" type="submit"><i class="bi bi-envelope"></i> Send email</button>
+          </form>
+        </div>
+      </div>
+    </div>
+    <div class="col-lg-7">
+      <div class="card shadow-sm h-100">
+        <div class="card-header bg-primary text-white"><strong>Create recurring email schedule</strong></div>
+        <div class="card-body">
+          <form asp-controller="MigrationReportEmail" asp-action="Add" method="post">
+            @Html.AntiForgeryToken()
+            <div class="mb-3"><label class="form-label" for="scheduleRecipient">Recipient</label><input id="scheduleRecipient" name="Recipient" class="form-control" type="email" maxlength="254" required placeholder="reports@example.com" /></div>
+            <div class="row g-3 mb-3">
+              <div class="col-md-6"><label class="form-label" for="scheduleFrequency">Frequency</label><select name="Frequency" id="scheduleFrequency" class="form-select"><option value="Daily">Every day</option><option value="Weekly">Every week</option><option value="Monthly">Every month</option></select></div>
+              <div class="col-md-6"><label class="form-label" for="scheduleTime">Time (@Model.ZoneName)</label><input name="LocalTime" id="scheduleTime" type="time" class="form-control" value="08:00" required /></div>
+              <div class="col-md-6" id="weeklyDay" hidden><label class="form-label" for="weekday">Day of week</label><select name="DayOfWeek" id="weekday" class="form-select"><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="7">Sunday</option></select></div>
+              <div class="col-md-6" id="monthlyDay" hidden><label class="form-label" for="monthday">Day of month</label><input name="DayOfMonth" id="monthday" type="number" class="form-control" min="1" max="31" value="1" /><div class="form-text">31 becomes the last day in shorter months.</div></div>
+            </div>
+            <div class="mb-3"><label class="form-label" for="scheduleRange">Reporting period</label><select name="Range" id="scheduleRange" class="form-select"><option value="PreviousPeriod">Previous scheduled period (1 day / 7 days / 1 month)</option><option value="SinceLast">Since last successful report</option><option value="LastDays">Last number of days</option><option value="All">All history</option></select></div>
+            <div class="mb-3" id="scheduleDaysGroup" hidden><label class="form-label" for="scheduleDays">Days to include</label><input name="LastDays" id="scheduleDays" type="number" class="form-control" min="1" max="3650" value="1" /></div>
+            <button type="submit" class="btn btn-primary">Create schedule</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="card shadow-sm mt-4">
+    <div class="card-header bg-primary text-white"><strong>Scheduled reports</strong></div>
+    <div class="table-responsive">
+      <table class="table align-middle mb-0">
+        <thead class="table-light"><tr><th>Recipient</th><th>Frequency</th><th>Time</th><th>Range</th><th>Next run</th><th>Last sent</th><th>Status</th><th class="text-end">Actions</th></tr></thead>
+        <tbody>
+          @foreach (var schedule in Model.Schedules)
+          {
+            <tr>
+              <td class="fw-semibold">@schedule.Recipient</td>
+              <td>@schedule.Frequency @if (schedule.Frequency == "Weekly") { <span>(weekday @schedule.DayOfWeek)</span> } @if (schedule.Frequency == "Monthly") { <span>(day @schedule.DayOfMonth)</span> }</td>
+              <td>@schedule.LocalTime</td><td>@schedule.Range @if (schedule.Range == "LastDays") { <span>(@schedule.LastDays days)</span> }</td>
+              <td class="text-nowrap">@TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind((schedule.RetryAfterUtc ?? schedule.NextDueUtc), DateTimeKind.Utc), Model.Zone).ToString("yyyy-MM-dd HH:mm")</td>
+              <td>@(schedule.LastSuccessUtc?.ToString("yyyy-MM-dd HH:mm 'UTC'") ?? "Never")</td>
+              <td>@if (!schedule.Enabled) { <span class="badge bg-secondary">Paused</span> } else if (!string.IsNullOrEmpty(schedule.LastError)) { <span class="badge bg-danger" title="@schedule.LastError">Retrying</span> } else { <span class="badge bg-success">Active</span> }</td>
+              <td class="text-end text-nowrap">
+                <form asp-controller="MigrationReportEmail" asp-action="SetEnabled" method="post" class="d-inline">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@schedule.Id" /><input type="hidden" name="enabled" value="@(schedule.Enabled ? "false" : "true")" /><button type="submit" class="btn btn-sm btn-outline-secondary">@(schedule.Enabled ? "Pause" : "Resume")</button></form>
+                <form asp-controller="MigrationReportEmail" asp-action="Remove" method="post" class="d-inline" onsubmit="return confirm('Remove this email schedule?');">@Html.AntiForgeryToken()<input type="hidden" name="id" value="@schedule.Id" /><button type="submit" class="btn btn-sm btn-outline-danger">Remove</button></form>
+              </td>
+            </tr>
+          }
+          @if (!Model.Schedules.Any()) { <tr><td colspan="8" class="text-center text-muted py-4">No email schedules created.</td></tr> }
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <p class="text-muted small mt-3">Reports include histories with log activity inside the selected period. Time taken uses the complete recorded timeline for each migration. Schedules are saved under /config and survive restarts. Failed scheduled deliveries retry; the last-success checkpoint only advances after SMTP accepts the message.</p>
+</div>
+@section Scripts {
+<script>
+(() => {
+  const show = (id, yes) => document.getElementById(id).hidden = !yes;
+  const sendRange = document.getElementById('sendRange');
+  function updateSend() { show('sendDaysGroup', sendRange.value === 'LastDays'); show('sendCustomGroup', sendRange.value === 'Custom'); document.getElementById('sendFrom').required = sendRange.value === 'Custom'; document.getElementById('sendTo').required = sendRange.value === 'Custom'; }
+  sendRange.addEventListener('change', updateSend); updateSend();
+  const frequency = document.getElementById('scheduleFrequency');
+  function updateFrequency() { show('weeklyDay', frequency.value === 'Weekly'); show('monthlyDay', frequency.value === 'Monthly'); }
+  frequency.addEventListener('change', updateFrequency); updateFrequency();
+  const scheduleRange = document.getElementById('scheduleRange');
+  function updateRange() { show('scheduleDaysGroup', scheduleRange.value === 'LastDays'); }
+  scheduleRange.addEventListener('change', updateRange); updateRange();
+})();
+</script>
+}

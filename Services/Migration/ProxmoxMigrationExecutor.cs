@@ -381,7 +381,7 @@ namespace BareProx.Services.Migration
             if (!string.IsNullOrWhiteSpace(item.OsType))
                 sb.AppendLine($"ostype: {item.OsType}");
 
-            sb.AppendLine("agent: 1");
+            sb.AppendLine("agent: 1,fstrim_cloned_disks=1");
             sb.AppendLine("vga: std");
             sb.AppendLine("ide2: none,media=cdrom");
 

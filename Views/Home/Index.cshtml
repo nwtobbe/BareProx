@@ -1,10 +1,26 @@
-﻿@using System.Linq
+@using System.Linq
+@inject BareProx.Services.IAppTimeZoneService AppTimeZoneService
 
 @{
     // Toggle NetApp blocks when you actually wire them up
     var netappEnabled = false;
 
     ViewData["Title"] = "System Status";
+
+    // Respect the timezone configured in System > Settings, including Windows IDs.
+    var appTimeZoneId = AppTimeZoneService.AppTimeZone.Id;
+    try
+    {
+        appTimeZoneId = TimeZoneConverter.TZConvert.WindowsToIana(appTimeZoneId);
+    }
+    catch (System.TimeZoneNotFoundException)
+    {
+        // No Windows mapping for this timezone; keep the original timezone ID.
+    }
+    catch (System.InvalidTimeZoneException)
+    {
+        // Already an IANA zone on Linux, or a zone without a Windows mapping.
+    }
 
     var recentJobs = ViewBag.RecentJobs as IEnumerable<dynamic>;
     var proxmoxClusters = (ViewBag.ProxmoxClusters as IEnumerable<dynamic> ?? Enumerable.Empty<dynamic>())
@@ -66,7 +82,7 @@
                                 <td>@job.Type</td>
                                 <td>@job.RelatedVm</td>
                                 <td><span class="badge @badgeClass">@status</span></td>
-                                <td class="text-truncate" style="max-width:260px;" title="@(job.ErrorMessage ?? "")">@job.ErrorMessage</td>
+                                <td class="text-truncate" style="max-width:260px;">@job.ErrorMessage</td>
                             </tr>
                         }
                     }
@@ -111,10 +127,8 @@
                         var isRunning = (string)host.Status == "Running";
                         var hostBadge = isRunning ? "bg-success" : "bg-danger";
                         string lastMsg = (host.LastMessage as string) ?? string.Empty;
-
                         <li class="list-group-item d-flex justify-content-between align-items-center">
-                            <span>
-                                @host.Name
+                            <span>@host.Name
                                 @if (!string.IsNullOrWhiteSpace(lastMsg))
                                 {
                                     <small class="text-muted ms-2">— @lastMsg</small>
@@ -127,6 +141,29 @@
             </div>
         </div>
     }
+
+    <!-- Proxmox datastores: live figures, refreshed while this dashboard is visible. -->
+    <section class="card mb-4 shadow-sm" aria-labelledby="datastoreUsageTitle">
+        <div class="card-header bg-primary text-white d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <strong id="datastoreUsageTitle">Proxmox datastore utilization</strong>
+            <span id="datastoreUsageTime" class="small opacity-75" role="status" aria-live="polite">Loading…</span>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0">
+                    <thead class="table-light"><tr>
+                        <th>Datastore</th>
+                        <th style="min-width:210px;width:30%">Utilization</th>
+                        <th class="text-end">Used</th><th class="text-end">Total</th><th class="text-end">Free</th>
+                    </tr></thead>
+                    <tbody id="datastoreUsageBody">
+                        <tr><td colspan="5" class="text-muted text-center py-3">Loading datastore usage…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div id="datastoreUsageWarning" class="card-footer small text-muted d-none"></div>
+    </section>
 
     @if (netappEnabled)
     {
@@ -192,118 +229,175 @@
 
 @section Scripts {
     <script>
-        (async () => {
-          // Build URL safely (supports UsePathBase / reverse proxy)
-          const STATUS_URL = '@Url.Content("~/api/updates/status")';
-          try {
-            console.log("[BP] Update check →", STATUS_URL);
-            const r = await fetch(STATUS_URL, { cache: 'no-store', credentials: 'same-origin' });
-            if (!r.ok) { console.warn("[BP] Update status HTTP not OK:", r.status, r.statusText); return; }
-
-            const ct = (r.headers.get('content-type') || '').toLowerCase();
-            if (!ct.includes('application/json')) { console.warn("[BP] Update status returned non-JSON (maybe login HTML). Content-Type:", ct); return; }
-
-            const d = await r.json();
-
-            // 🔎 Always print what the server thinks
-            console.info(`[BP] Versions: current=${String(d?.currentVersion || "")}, latest=${String(d?.latestVersion || "")}, isUpdateAvailable=${!!d?.isUpdateAvailable}`);
-
-            // No update? exit after logging
-            if (!d || !d.isUpdateAvailable) {
-              console.log("[BP] No update available. current:", d?.currentVersion, "latest:", d?.latestVersion);
-              return;
+        // Proxmox storage consumption from the live node storage status API.
+        (() => {
+          const endpoint = '@Url.Action("Get", "HomeDatastores")';
+          const tbody = document.getElementById('datastoreUsageBody');
+          const status = document.getElementById('datastoreUsageTime');
+          const appTimeZone = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(appTimeZoneId));
+          // Always use a 24-hour clock; the configured application timezone
+          // controls the actual time and daylight-saving offset independently.
+          const formatUpdateTime = () => {
+            const options = { hour: '2-digit', minute: '2-digit', second: '2-digit',
+              hour12: false, hourCycle: 'h23', timeZone: appTimeZone };
+            try { return new Intl.DateTimeFormat('sv-SE', options).format(new Date()); }
+            catch (e) {
+              console.warn('Invalid application timezone for dashboard clock:', appTimeZone, e);
+              return new Intl.DateTimeFormat('sv-SE', {
+                hour: '2-digit', minute: '2-digit', second: '2-digit',
+                hour12: false, hourCycle: 'h23'
+              }).format(new Date());
             }
+          };
+          const warning = document.getElementById('datastoreUsageWarning');
+          let busy = false;
+          const escape = value => String(value ?? '').replace(/[&<>"']/g,
+            ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+          function fmt(bytes) {
+            if (!Number.isFinite(bytes) || bytes < 0) return '—';
+            const units = ['B','KiB','MiB','GiB','TiB','PiB'];
+            let index=0;
+            while (bytes >= 1024 && index < units.length - 1) { bytes /= 1024; index++; }
+            return (index === 0 ? bytes.toFixed(0) : bytes.toFixed(bytes < 10 ? 2 : 1)) + ' ' + units[index];
+          }
+          async function refresh() {
+            if (busy || document.hidden) return;
+            busy = true;
+            try {
+              const resp = await fetch(endpoint, {cache:'no-store',credentials:'same-origin'});
+              if (!resp.ok || !(resp.headers.get('content-type') || '').includes('json'))
+                throw new Error('HTTP ' + resp.status);
+              const data = await resp.json();
+              const items = Array.isArray(data.storages) ? data.storages : [];
+              tbody.innerHTML = items.length ? items.map(d => {
+                const total = Number(d.totalBytes), used = Number(d.usedBytes);
+                const pct = total > 0 ? Math.min(100, Math.max(0, used / total * 100)) : 0;
+                const red = pct > 80; // 80% is green; ABOVE 80% is red.
+                const barClass = red ? 'bg-danger' : 'bg-success';
+                const text = Number.isFinite(pct) ? pct.toFixed(1) + '%' : '—';
+                return `<tr>
+                  <td class="fw-semibold">${escape(d.storage)}</td>
+                  <td><div class="d-flex align-items-center gap-2">
+                    <div class="progress flex-grow-1" style="height:14px" role="progressbar"
+                      aria-label="${escape(d.storage)} used" aria-valuenow="${pct.toFixed(1)}" aria-valuemin="0" aria-valuemax="100">
+                      <div class="progress-bar ${barClass}" style="width:${pct}%"></div>
+                    </div><span class="small fw-semibold text-nowrap" style="min-width:48px">${text}</span>
+                  </div></td>
+                  <td class="text-end text-nowrap">${fmt(used)}</td>
+                  <td class="text-end text-nowrap">${fmt(total)}</td>
+                  <td class="text-end text-nowrap">${fmt(Math.max(0,total-used))}</td>
+                </tr>`;
+              }).join('') : '<tr><td colspan="5" class="text-muted text-center py-3">No mounted shared NFS datastores reported.</td></tr>';
+              status.textContent = 'Updated ' + formatUpdateTime();
+              const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+              warning.textContent = warnings.join('; ');
+              warning.classList.toggle('d-none', warnings.length === 0);
+            } catch(e) {
+              // Keep last good figures instead of silently replacing them with zeroes.
+              status.textContent = 'Unable to refresh datastore usage';
+              warning.textContent = 'Live Proxmox storage information is unavailable: ' + e.message;
+              warning.classList.remove('d-none');
+            } finally { busy = false; }
+          }
+          void refresh();
+          setInterval(refresh, 60000);
+          document.addEventListener('visibilitychange', () => { if (!document.hidden) void refresh(); });
+        })();
+        (async () => {
+          try {
+            const r = await fetch('/api/updates/status', { cache: 'no-store' });
+            if (!r.ok) return;
+            const d = await r.json();
+            if (!d || !d.isUpdateAvailable) return;
 
-            const commands =
-              "sudo apt-get update\n" +
-              "sudo apt-get dist-upgrade -y\n" +
-              "docker compose down\n" +
-              "docker image prune -f\n" +
-              "docker compose pull\n" +
-              "docker compose up -d";
-
-            // Optional date bit
-            const latestDateHtml = d.latestDate ? `<small class="text-muted ms-2">(${String(d.latestDate)})</small>` : "";
-
-            // Escape for innerHTML injection
-            const commandsEsc = commands.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+            const commands = [
+              "sudo apt-get update",
+              "sudo apt-get dist-upgrade -y",
+              "docker compose down",
+              "docker image prune -f",
+              "docker compose pull",
+              "docker compose up -d"
+            ].join("\n");
 
             const html = `
-              <div class="alert alert-info d-flex align-items-center justify-content-between shadow-sm" role="alert">
-                <div>
-                  <strong>Update available:</strong>
-                  <span class="badge bg-primary">v${String(d.latestVersion || "")}</span>
-                  ${latestDateHtml}
-                  <span class="ms-2">You’re on <code>${String(d.currentVersion || "")}</code>.</span>
-                </div>
-                <div class="ms-3">
-                  <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#whatsNewModal">
-                    What’s new
-                  </button>
-                  <button type="button" class="btn btn-sm btn-success ms-2" data-bs-toggle="modal" data-bs-target="#updateInstructionsModal">
-                    Get update
-                  </button>
-                </div>
-              </div>
+        <div class="alert alert-info d-flex align-items-center justify-content-between shadow-sm" role="alert">
+          <div>
+            <strong>Update available:</strong>
+            <span class="badge bg-primary">v${d.latestVersion}</span>
+            ${d.latestDate ? `<small class="text-muted ms-2">(${d.latestDate})</small>` : ``}
+            <span class="ms-2">You’re on <code>${d.currentVersion}</code>.</span>
+          </div>
+          <div class="ms-3">
+            <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#whatsNewModal">
+              What’s new
+            </button>
+            <button type="button" class="btn btn-sm btn-success ms-2" data-bs-toggle="modal" data-bs-target="#updateInstructionsModal">
+              Get update
+            </button>
+          </div>
+        </div>
 
-              <!-- What's New Modal -->
-              <div class="modal fade" id="whatsNewModal" tabindex="-1" aria-labelledby="whatsNewLabel" aria-hidden="true">
-                <div class="modal-dialog modal-lg modal-dialog-scrollable">
-                  <div class="modal-content">
-                    <div class="modal-header">
-                      <h5 class="modal-title" id="whatsNewLabel">What’s new in v${String(d.latestVersion || "")}</h5>
-                      <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                    </div>
-                    <div class="modal-body">${d.whatsNewHtml || "<p>No changelog entries found.</p>"}</div>
-                  </div>
-                </div>
+        <!-- What's New Modal -->
+        <div class="modal fade" id="whatsNewModal" tabindex="-1" aria-labelledby="whatsNewLabel" aria-hidden="true">
+          <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title" id="whatsNewLabel">What’s new in v${d.latestVersion}</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
               </div>
+              <div class="modal-body">${d.whatsNewHtml || "<p>No changelog entries found.</p>"}</div>
+            </div>
+          </div>
+        </div>
 
-              <!-- Update Instructions Modal -->
-              <div class="modal fade" id="updateInstructionsModal" tabindex="-1" aria-labelledby="updateInstructionsLabel" aria-hidden="true">
-                <div class="modal-dialog modal-lg modal-dialog-scrollable">
-                  <div class="modal-content">
-                    <div class="modal-header">
-                      <h5 class="modal-title" id="updateInstructionsLabel">Update BareProx (Docker Compose on Debian)</h5>
-                      <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                    </div>
-                    <div class="modal-body">
-                      <p class="mb-2">Run these commands on the host where <code>docker-compose.yml</code> lives:</p>
-                      <pre class="bg-light border rounded p-3 mb-3"><code id="bp-update-commands">${commandsEsc}</code></pre>
-                      <button type="button" class="btn btn-outline-secondary btn-sm" id="bp-copy-cmds">Copy commands</button>
-                      <hr/>
-                      <ul class="small text-muted mb-0">
-                        <li>Run these in the directory containing your <code>docker-compose.yml</code>.</li>
-                        <li><code>docker image prune</code> only removes dangling images; remove <code>-f</code> to confirm interactively.</li>
-                        <li>If you use legacy <code>docker-compose</code>, replace <code>docker compose</code> with <code>docker-compose</code>.</li>
-                      </ul>
-                    </div>
-                  </div>
-                </div>
-              </div>`;
+        <!-- Update Instructions Modal -->
+        <div class="modal fade" id="updateInstructionsModal" tabindex="-1" aria-labelledby="updateInstructionsLabel" aria-hidden="true">
+          <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title" id="updateInstructionsLabel">Update BareProx (Docker Compose on Debian)</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+              </div>
+              <div class="modal-body">
+                <p class="mb-2">Run these commands on the host where <code>docker-compose.yml</code> lives:</p>
+                <pre class="bg-light border rounded p-3 mb-3"><code id="bp-update-commands">${commands.replace(/&/g,"&amp;").replace(/</g,"&lt;")}</code></pre>
+
+                <!-- Add this button so your copy handler works -->
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="bp-copy-cmds">Copy commands</button>
+
+                <hr/>
+                <ul class="small text-muted mb-0">
+                  <li>Run these in the directory containing your <code>docker-compose.yml</code>.</li>
+                  <li><code>docker image prune</code> only removes dangling images; remove <code>-f</code> to confirm interactively.</li>
+                  <li>If you use legacy <code>docker-compose</code>, replace <code>docker compose</code> with <code>docker-compose</code>.</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+        </div>`;
 
             const host = document.getElementById('update-banner-container');
-            if (!host) { console.warn("[BP] #update-banner-container not found"); return; }
-            host.innerHTML = html;
+            if (host) {
+              host.innerHTML = html;
 
-            // Copy handler
-            const btn = document.getElementById('bp-copy-cmds');
-            const codeEl = document.getElementById('bp-update-commands');
-            if (btn && codeEl) {
-              btn.addEventListener('click', async () => {
-                try {
-                  await navigator.clipboard.writeText(codeEl.innerText);
-                  btn.textContent = 'Copied!';
-                  setTimeout(() => (btn.textContent = 'Copy commands'), 1500);
-                } catch {
-                  btn.textContent = 'Copy failed';
-                  setTimeout(() => (btn.textContent = 'Copy commands'), 1500);
-                }
-              });
+              // Copy handler
+              const btn = document.getElementById('bp-copy-cmds');
+              const codeEl = document.getElementById('bp-update-commands');
+              if (btn && codeEl) {
+                btn.addEventListener('click', async () => {
+                  try {
+                    await navigator.clipboard.writeText(codeEl.innerText);
+                    btn.textContent = 'Copied!';
+                    setTimeout(() => (btn.textContent = 'Copy commands'), 1500);
+                  } catch {
+                    btn.textContent = 'Copy failed';
+                    setTimeout(() => (btn.textContent = 'Copy commands'), 1500);
+                  }
+                });
+              }
             }
-          } catch (err) {
-            console.warn('[BP] Update status banner error', err);
-          }
+          } catch { /* ignore */ }
         })();
     </script>
 }

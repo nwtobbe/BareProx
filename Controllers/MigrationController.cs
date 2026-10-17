@@ -1,4 +1,5 @@
-﻿/*
+using Microsoft.Extensions.Caching.Memory;
+/*
  * BareProx - Backup and Restore Automation for Proxmox using NetApp
  *
  * Copyright (C) 2025-2026 Tobias Modig
@@ -39,10 +40,12 @@ namespace BareProx.Controllers
     public class MigrationController : Controller
     {
         private readonly ILogger<MigrationController> _logger;
+        private readonly VCenterSettingsStore _vcenterSettings;
         private readonly ApplicationDbContext _db;
         private readonly QueryDbContext _qdb;
         private readonly ProxmoxService _proxmoxService;
         private readonly IProxmoxFileScanner _scanner;
+        private readonly VCenterVmStatusService _vmStatus;
         private readonly IMigrationQueueRunner _runner;
         private readonly IProxmoxMigration _migration; // replaces ProxmoxService for capability lookups
 
@@ -52,16 +55,20 @@ namespace BareProx.Controllers
             QueryDbContext qdb,
             ProxmoxService proxmoxService,
             IProxmoxFileScanner scanner,
+            VCenterVmStatusService vmStatus,
             IMigrationQueueRunner runner,
-            IProxmoxMigration migration)
+            IProxmoxMigration migration, 
+            VCenterSettingsStore vcenterSettings)
         {
             _logger = logger;
             _db = db;
             _qdb = qdb;
             _proxmoxService = proxmoxService;
             _scanner = scanner;
+            _vmStatus = vmStatus;
             _runner = runner;
             _migration = migration;
+            _vcenterSettings = vcenterSettings;
         }
 
         // =====================================================================
@@ -138,7 +145,11 @@ namespace BareProx.Controllers
 
             var vm = new MigrationSettingsViewModel
             {
-                SelectedClusterId = clusterIdToUse
+                SelectedClusterId = clusterIdToUse,
+                // Defaults for a cluster that has not yet been configured.
+                // Saved values are loaded below without being overwritten.
+                MaxParallelMigrations = 1,
+                MaxParallelCutovers = 1
             };
 
             // 2) Hydrate dropdowns (this may set SelectedClusterId if still 0)
@@ -148,6 +159,7 @@ namespace BareProx.Controllers
             if (vm.SelectedClusterId == 0)
             {
                 vm.HasSavedConfigForCluster = false;
+                await LoadVCenterSettingsAsync(vm, ct);
                 return View(vm);
             }
 
@@ -161,6 +173,12 @@ namespace BareProx.Controllers
                 vm.HasSavedConfigForCluster = true;
                 vm.SelectedHostId = saved.ProxmoxHostId;
                 vm.SelectedStorageIdentifier = saved.StorageIdentifier;
+                vm.MaxParallelMigrations = saved.MaxParallelMigrations;
+                vm.MaxParallelCutovers = saved.MaxParallelCutovers;
+                vm.GuestPrepTimeoutMinutes = saved.GuestPrepTimeoutMinutes;
+                vm.VmwareShutdownTimeoutMinutes = saved.VmwareShutdownTimeoutMinutes;
+                vm.GuestAgentStartupTimeoutMinutes = saved.GuestAgentStartupTimeoutMinutes;
+                vm.GuestVerificationTimeoutMinutes = saved.GuestVerificationTimeoutMinutes;
 
                 // Optional safety: if the saved host/storage no longer exists in options,
                 // you can decide to mark as not configured or just show the raw values.
@@ -183,6 +201,8 @@ namespace BareProx.Controllers
             {
                 // 4) No saved config yet for this cluster → reasonable defaults
                 vm.HasSavedConfigForCluster = false;
+                vm.MaxParallelMigrations = 1;
+                vm.MaxParallelCutovers = 1;
 
                 if (vm.HostOptions.Any() && vm.SelectedHostId == 0)
                 {
@@ -195,7 +215,7 @@ namespace BareProx.Controllers
                     vm.SelectedStorageIdentifier = vm.StorageOptions.First().Value;
                 }
             }
-
+            await LoadVCenterSettingsAsync(vm, ct);
             return View(vm);
         }
 
@@ -206,6 +226,28 @@ namespace BareProx.Controllers
         public async Task<IActionResult> Settings(MigrationSettingsViewModel vm, CancellationToken ct = default)
         {
             await HydrateOptionsAsync(vm, ct);
+            vm.VCenterPasswordSaved = !string.IsNullOrEmpty((await _vcenterSettings.ReadAsync(ct)).EncryptedPassword);
+
+            // vCenter is optional; when configured require a complete endpoint and identity.
+            if (string.IsNullOrWhiteSpace(vm.VCenterServer) != string.IsNullOrWhiteSpace(vm.VCenterUsername))
+                ModelState.AddModelError(nameof(vm.VCenterServer), "Provide both vCenter server and username, or leave both empty.");
+            if (!string.IsNullOrWhiteSpace(vm.VCenterServer))
+            {
+                var raw = vm.VCenterServer.Trim();
+                if (!raw.Contains("://", StringComparison.Ordinal)) raw = "https://" + raw;
+                if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri) || uri.Scheme != "https" ||
+                string.IsNullOrWhiteSpace(uri.Host) || uri.UserInfo.Length > 0 ||
+                uri.AbsolutePath != "/" || uri.Query.Length > 0 || uri.Fragment.Length > 0)
+                    ModelState.AddModelError(nameof(vm.VCenterServer), "Enter a valid HTTPS vCenter hostname without a path.");
+            }
+
+            var priorVcenter = await _vcenterSettings.ReadAsync(ct);
+            if (!string.IsNullOrWhiteSpace(vm.VCenterServer) &&
+                string.IsNullOrEmpty(vm.VCenterPassword) &&
+                (string.IsNullOrEmpty(priorVcenter.EncryptedPassword) ||
+                 !string.Equals(priorVcenter.Server, vm.VCenterServer.Trim(), StringComparison.OrdinalIgnoreCase) ||
+                 !string.Equals(priorVcenter.Username, vm.VCenterUsername?.Trim(), StringComparison.Ordinal)))
+                ModelState.AddModelError(nameof(vm.VCenterPassword), "Enter the vCenter password for this server and username.");
 
             if (vm.SelectedClusterId == 0)
                 ModelState.AddModelError(nameof(vm.SelectedClusterId), "Select a cluster.");
@@ -216,6 +258,21 @@ namespace BareProx.Controllers
             if (string.IsNullOrWhiteSpace(vm.SelectedStorageIdentifier) ||
                 !vm.StorageOptions.Any(o => o.Value == vm.SelectedStorageIdentifier))
                 ModelState.AddModelError(nameof(vm.SelectedStorageIdentifier), "Select a valid datastore.");
+
+            if (vm.MaxParallelMigrations is < 1 or > 8)
+                ModelState.AddModelError(nameof(vm.MaxParallelMigrations), "Select between 1 and 8 parallel migrations.");
+
+            if (vm.MaxParallelCutovers is < 1 or > 8)
+                ModelState.AddModelError(nameof(vm.MaxParallelCutovers), "Select between 1 and 8 automated cutovers.");
+
+            if (vm.GuestPrepTimeoutMinutes is < 5 or > 120)
+                ModelState.AddModelError(nameof(vm.GuestPrepTimeoutMinutes), "Select between 5 and 120 minutes.");
+            if (vm.VmwareShutdownTimeoutMinutes is < 1 or > 120)
+                ModelState.AddModelError(nameof(vm.VmwareShutdownTimeoutMinutes), "Select between 1 and 120 minutes.");
+            if (vm.GuestAgentStartupTimeoutMinutes is < 5 or > 180)
+                ModelState.AddModelError(nameof(vm.GuestAgentStartupTimeoutMinutes), "Select between 5 and 180 minutes.");
+            if (vm.GuestVerificationTimeoutMinutes is < 5 or > 180)
+                ModelState.AddModelError(nameof(vm.GuestVerificationTimeoutMinutes), "Select between 5 and 180 minutes.");
 
             if (!ModelState.IsValid)
             {
@@ -344,6 +401,12 @@ namespace BareProx.Controllers
                     ProxmoxHostId = vm.SelectedHostId,
                     StorageIdentifier = vm.SelectedStorageIdentifier!,
                     SelectedNetappVolumeId = selectedNetappVolumeId,
+                    MaxParallelMigrations = vm.MaxParallelMigrations,
+                    MaxParallelCutovers = vm.MaxParallelCutovers,
+                    GuestPrepTimeoutMinutes = vm.GuestPrepTimeoutMinutes,
+                    VmwareShutdownTimeoutMinutes = vm.VmwareShutdownTimeoutMinutes,
+                    GuestAgentStartupTimeoutMinutes = vm.GuestAgentStartupTimeoutMinutes,
+                    GuestVerificationTimeoutMinutes = vm.GuestVerificationTimeoutMinutes,
                     UpdatedAt = DateTime.UtcNow
                 });
             }
@@ -352,9 +415,28 @@ namespace BareProx.Controllers
                 existing.ProxmoxHostId = vm.SelectedHostId;
                 existing.StorageIdentifier = vm.SelectedStorageIdentifier!;
                 existing.SelectedNetappVolumeId = selectedNetappVolumeId;
+                existing.MaxParallelMigrations = vm.MaxParallelMigrations;
+                existing.MaxParallelCutovers = vm.MaxParallelCutovers;
+                existing.GuestPrepTimeoutMinutes = vm.GuestPrepTimeoutMinutes;
+                existing.VmwareShutdownTimeoutMinutes = vm.VmwareShutdownTimeoutMinutes;
+                existing.GuestAgentStartupTimeoutMinutes = vm.GuestAgentStartupTimeoutMinutes;
+                existing.GuestVerificationTimeoutMinutes = vm.GuestVerificationTimeoutMinutes;
                 existing.UpdatedAt = DateTime.UtcNow;
             }
 
+            // Save the vCenter secret before committing the database selection.
+            // A blank password keeps the current encrypted secret only if the endpoint and username match.
+            try
+            {
+                await _vcenterSettings.SetAsync(vm.VCenterServer, vm.VCenterUsername,
+                    vm.VCenterPassword, vm.VCenterAllowUntrustedCertificate, ct);
+            }
+            catch (InvalidOperationException ex)
+            {
+                ModelState.AddModelError(nameof(vm.VCenterPassword), ex.Message);
+                TempData["ErrorMessage"] = "Please fix the validation errors.";
+                return View(vm);
+            }
             await _db.SaveChangesAsync(ct);
 
             TempData["SuccessMessage"] = "Settings saved.";
@@ -362,6 +444,15 @@ namespace BareProx.Controllers
         }
 
 
+
+        private async Task LoadVCenterSettingsAsync(MigrationSettingsViewModel vm, CancellationToken ct)
+        {
+            var vc = await _vcenterSettings.ReadAsync(ct);
+            vm.VCenterServer = vc.Server;
+            vm.VCenterUsername = vc.Username;
+            vm.VCenterAllowUntrustedCertificate = vc.AllowUntrustedCertificate;
+            vm.VCenterPasswordSaved = !string.IsNullOrEmpty(vc.EncryptedPassword);
+        }
 
         /// <summary>
         /// Fills dropdowns for the Settings view (clusters/hosts/storages).
@@ -666,6 +757,7 @@ namespace BareProx.Controllers
             try
             {
                 var items = await _scanner.ScanForVmxAsync(sel.ClusterId, sel.ProxmoxHostId, sel.StorageIdentifier, ct);
+                await _vmStatus.EnrichAsync(items, ct);
                 return Ok(items);
             }
             catch (Exception ex)
@@ -683,13 +775,31 @@ namespace BareProx.Controllers
         /// <summary>
         /// Starts the queue runner. (JSON; no CSRF token.)
         /// </summary>
+        // Explicit runner state for the Migration page. Never infer activity from queue rows.
+        [HttpGet("QueueState")]
+        [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+        [Produces(MediaTypeNames.Application.Json)]
+        public IActionResult QueueState()
+        {
+            var manualRunning = _runner.IsRunning;
+            var automatedRunning = MigrationAutomationQueueStageController.IsRunning;
+            return Ok(new { running = manualRunning || automatedRunning, manualRunning, automatedRunning });
+        }
+
         [HttpPost("RunQueue")]
         [IgnoreAntiforgeryToken]
         [Produces(MediaTypeNames.Application.Json)]
         public async Task<IActionResult> RunQueue(CancellationToken ct)
         {
-            var started = await _runner.StartAsync(ct);
-            return Ok(new { ok = true, started });
+            await MigrationQueueControlGate.Sync.WaitAsync(ct);
+            try
+            {
+                if (MigrationAutomationQueueStageController.IsRunning)
+                    return Conflict(new { ok = false, started = false, error = "Automated migration is already running." });
+                var started = await _runner.StartAsync(ct);
+                return Ok(new { ok = true, started });
+            }
+            finally { MigrationQueueControlGate.Sync.Release(); }
         }
 
         private static string ToJsonStringOrEmpty(object? obj, string? already)
@@ -713,7 +823,41 @@ namespace BareProx.Controllers
                 .OrderByDescending(x => x.CreatedAtUtc)
                 .ToListAsync(ct);
 
-            return Ok(items);
+            return Ok(items.Select(item => new
+            {
+                item.Id, item.VmId, item.Name, item.CpuType, item.OsType,
+                item.PrepareVirtio, item.MountVirtioIso, item.VirtioIsoName,
+                item.ScsiController, item.VmxPath, item.Uuid, item.Uefi,
+                item.MemoryMiB, item.Sockets, item.Cores, item.DisksJson,
+                item.NicsJson, item.Status, item.CreatedAtUtc,
+                HasVerifiedGuestCredentials = !string.IsNullOrWhiteSpace(item.GuestUsername) &&
+                    !string.IsNullOrWhiteSpace(item.EncryptedGuestPassword)
+            }));
+        }
+
+        private async Task<string?> ValidateNoVmwareSnapshotsAsync(QueueItemDto dto, CancellationToken ct)
+        {
+            if (string.IsNullOrWhiteSpace(dto.VmxPath))
+                return "VMX source path is required to verify VMware snapshots.";
+            var selection = await _db.MigrationSelections.AsNoTracking().FirstOrDefaultAsync(ct);
+            if (selection == null) return "Migration datastore is not configured.";
+            try
+            {
+                var scanned = await _scanner.ScanForVmxAsync(selection.ClusterId, selection.ProxmoxHostId,
+                    selection.StorageIdentifier, ct);
+                var vm = scanned.SingleOrDefault(x => string.Equals(x.VmxPath, dto.VmxPath,
+                    StringComparison.Ordinal));
+                if (vm == null) return "Source VM could not be verified on the datastore.";
+                if (!vm.SnapshotCheckPassed) return vm.SnapshotWarning ?? "VMware snapshot check could not be completed.";
+                if (vm.HasVmwareSnapshots) return vm.SnapshotWarning ?? "VMware snapshot detected; queueing blocked.";
+                return null;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "VMware snapshot validation failed before queueing.");
+                return "Could not verify VMware snapshots. Queueing is blocked until the datastore scan succeeds.";
+            }
         }
 
         /// <summary>
@@ -723,10 +867,53 @@ namespace BareProx.Controllers
         [Consumes(MediaTypeNames.Application.Json)]
         [IgnoreAntiforgeryToken] // same-site fetch JSON; no form token
         [Produces(MediaTypeNames.Application.Json)]
-        public async Task<IActionResult> QueueAdd([FromBody] QueueItemDto dto, CancellationToken ct)
+        public async Task<IActionResult> QueueAdd([FromBody] QueueItemDto dto,
+            [FromServices] IMemoryCache verificationCache, CancellationToken ct)
         {
             if (dto == null)
                 return BadRequest(new { ok = false, error = "Empty payload" });
+            var snapshotError = await ValidateNoVmwareSnapshotsAsync(dto, ct);
+            if (snapshotError != null)
+                return BadRequest(new { ok = false, error = snapshotError });
+
+            // The browser's Automated flag is untrusted. Re-resolve the VMware source VM
+            // and enforce supported guest-OS candidates before accepting automatic queue items.
+            // Legacy Windows guests are excluded from automatic migration.
+            // Manual migrations are deliberately unaffected.
+            if (dto.Automated)
+            {
+                var selection = await _db.MigrationSelections.AsNoTracking().FirstOrDefaultAsync(ct);
+                if (selection == null)
+                    return BadRequest(new { ok = false, error = "Migration datastore is not configured." });
+                var sourceVms = await _scanner.ScanForVmxAsync(selection.ClusterId,
+                    selection.ProxmoxHostId, selection.StorageIdentifier ?? "", ct);
+                var sourceVm = sourceVms.SingleOrDefault(x =>
+                    string.Equals(x.VmxPath, dto.VmxPath, StringComparison.Ordinal) &&
+                    string.Equals(new string((x.UuidBios ?? "").Where(Uri.IsHexDigit).ToArray()),
+                        new string((dto.Uuid ?? "").Where(Uri.IsHexDigit).ToArray()),
+                        StringComparison.OrdinalIgnoreCase));
+                if (sourceVm?.GuestOs?.Trim() is not
+                    ("Windows Server 2016" or "Windows Server 2019" or
+             "Windows Server 2022" or "Windows Server 2025"))
+                    return BadRequest(new { ok = false, error =
+                        "Automatic migration requires Windows Server 2016 or newer (2016, 2019, 2022, 2025). Windows Server 2012 R2 and older are blocked." });
+            }
+
+            VerifiedGuestProof.VerifiedCredentials? verifiedCredentials = null;
+            if (dto.Automated)
+            {
+                // A verified guest is required, even if the browser sends a forged request.
+                // A verification token is single-use and bound to the guest BIOS UUID.
+                var principalName = User.Identity?.IsAuthenticated == true ? User.Identity.Name ?? "" : "";
+                verifiedCredentials = VerifiedGuestProof.Consume(verificationCache, dto.GuestVerificationToken,
+                    dto.Uuid, principalName);
+                if (verifiedCredentials is null || string.IsNullOrWhiteSpace(verifiedCredentials.Username) ||
+                    string.IsNullOrWhiteSpace(verifiedCredentials.EncryptedPassword))
+                    return BadRequest(new { ok = false, error =
+                        "Verify Windows guest credentials again before adding automated migration to the queue." });
+                if (dto.VmId is null or < 100 || string.IsNullOrWhiteSpace(dto.Name))
+                    return BadRequest(new { ok = false, error = "VM name and valid VMID are required." });
+            }
 
             var entity = new MigrationQueueItem
             {
@@ -746,7 +933,9 @@ namespace BareProx.Controllers
                 Cores = dto.Cores,
                 DisksJson = ToJsonStringOrEmpty(dto.Disks, dto.DisksJson),
                 NicsJson = ToJsonStringOrEmpty(dto.Nics, dto.NicsJson),
-                Status = "Queued",
+                GuestUsername = verifiedCredentials?.Username,
+                EncryptedGuestPassword = verifiedCredentials?.EncryptedPassword,
+                Status = dto.Automated ? "AutomationPending" : "Queued",
                 CreatedAtUtc = DateTime.UtcNow
             };
 
@@ -775,7 +964,12 @@ namespace BareProx.Controllers
         {
             var entity = await _db.MigrationQueueItems.FirstOrDefaultAsync(x => x.Id == id, ct);
             if (entity == null) return NotFound(new { ok = false, error = "Not found" });
+            if (entity.Status == "AutomationPending")
+                return BadRequest(new { ok = false, error = "Automated migration plan cannot be edited after guest verification. Remove and requeue it." });
             if (dto == null) return BadRequest(new { ok = false, error = "Empty payload" });
+            var snapshotError = await ValidateNoVmwareSnapshotsAsync(dto, ct);
+            if (snapshotError != null)
+                return BadRequest(new { ok = false, error = snapshotError });
 
             entity.VmId = dto.VmId;
             entity.Name = dto.Name?.Trim();
@@ -817,6 +1011,21 @@ namespace BareProx.Controllers
         {
             var entity = await _db.MigrationQueueItems.FirstOrDefaultAsync(x => x.Id == id, ct);
             if (entity == null) return NotFound(new { ok = false, error = "Not found" });
+
+            // Never remove a record for a migration that may still be executing.
+            // Reject unknown statuses by default.
+            var state = (entity.Status ?? "").Trim().ToLowerInvariant();
+            // Any persisted failure is terminal, including the detailed automation
+            // states (PrepFailed, ImportFailed, StartFailed, BootVerifyFailed,
+            // PostShutdownFailed, CutoverFailed, etc.). Never remove active states.
+            var removable = state is "queued" or "automationpending"
+                or "done" or "completed"
+                or "canceled" or "cancelled"
+                or "automationcanceled" or "automationcancelled"
+                || state.EndsWith("failed", StringComparison.Ordinal);
+            if (!removable)
+                return Conflict(new { ok = false,
+                    error = "This migration has started or its state is unknown. Only queued, failed, canceled or completed items may be removed." });
 
             try
             {

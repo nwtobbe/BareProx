@@ -1,0 +1,1950 @@
+{
+  "drivers": [
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viosock/2k25/amd64/viosock.inf",
+      "name": "VirtIO Socket Driver",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viosock/2k25/ARM64/viosock.inf",
+      "name": "VirtIO Socket Driver",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viosock/w11/amd64/viosock.inf",
+      "name": "VirtIO Socket Driver",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viosock/w11/ARM64/viosock.inf",
+      "name": "VirtIO Socket Driver",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viosock/2k22/amd64/viosock.inf",
+      "name": "VirtIO Socket Driver",
+      "windows_version": "2k22"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viosock/2k19/amd64/viosock.inf",
+      "name": "VirtIO Socket Driver",
+      "windows_version": "2k19"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viosock/2k16/amd64/viosock.inf",
+      "name": "VirtIO Socket Driver",
+      "windows_version": "2k16"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viosock/w10/x86/viosock.inf",
+      "name": "VirtIO Socket Driver",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viosock/w10/amd64/viosock.inf",
+      "name": "VirtIO Socket Driver",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viosock/w10/ARM64/viosock.inf",
+      "name": "VirtIO Socket Driver",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viomem/2k25/amd64/viomem.inf",
+      "name": "VirtIO Viomem Driver",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viomem/2k25/ARM64/viomem.inf",
+      "name": "VirtIO Viomem Driver",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viomem/w11/amd64/viomem.inf",
+      "name": "VirtIO Viomem Driver",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viomem/w11/ARM64/viomem.inf",
+      "name": "VirtIO Viomem Driver",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viomem/2k22/amd64/viomem.inf",
+      "name": "VirtIO Viomem Driver",
+      "windows_version": "2k22"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viomem/2k19/amd64/viomem.inf",
+      "name": "VirtIO Viomem Driver",
+      "windows_version": "2k19"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viomem/2k16/amd64/viomem.inf",
+      "name": "VirtIO Viomem Driver",
+      "windows_version": "2k16"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viomem/w10/x86/viomem.inf",
+      "name": "VirtIO Viomem Driver",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viomem/w10/amd64/viomem.inf",
+      "name": "VirtIO Viomem Driver",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viomem/w10/ARM64/viomem.inf",
+      "name": "VirtIO Viomem Driver",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "viogpudo/2k12/amd64/viogpudo.inf",
+      "name": "Red Hat VirtIO GPU DOD controller",
+      "windows_version": "2k12"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "viogpudo/w8/x86/viogpudo.inf",
+      "name": "Red Hat VirtIO GPU DOD controller",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "viogpudo/w8/amd64/viogpudo.inf",
+      "name": "Red Hat VirtIO GPU DOD controller",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "viogpudo/2k12R2/amd64/viogpudo.inf",
+      "name": "Red Hat VirtIO GPU DOD controller",
+      "windows_version": "2k12R2"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "viogpudo/w8.1/x86/viogpudo.inf",
+      "name": "Red Hat VirtIO GPU DOD controller",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "viogpudo/w8.1/amd64/viogpudo.inf",
+      "name": "Red Hat VirtIO GPU DOD controller",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viogpudo/2k25/amd64/viogpudo.inf",
+      "name": "Red Hat VirtIO GPU DOD controller",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viogpudo/2k25/ARM64/viogpudo.inf",
+      "name": "Red Hat VirtIO GPU DOD controller",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viogpudo/w11/amd64/viogpudo.inf",
+      "name": "Red Hat VirtIO GPU DOD controller",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viogpudo/w11/ARM64/viogpudo.inf",
+      "name": "Red Hat VirtIO GPU DOD controller",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viogpudo/2k22/amd64/viogpudo.inf",
+      "name": "Red Hat VirtIO GPU DOD controller",
+      "windows_version": "2k22"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viogpudo/2k19/amd64/viogpudo.inf",
+      "name": "Red Hat VirtIO GPU DOD controller",
+      "windows_version": "2k19"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viogpudo/2k16/amd64/viogpudo.inf",
+      "name": "Red Hat VirtIO GPU DOD controller",
+      "windows_version": "2k16"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viogpudo/w10/x86/viogpudo.inf",
+      "name": "Red Hat VirtIO GPU DOD controller",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viogpudo/w10/amd64/viogpudo.inf",
+      "name": "Red Hat VirtIO GPU DOD controller",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viogpudo/w10/ARM64/viogpudo.inf",
+      "name": "Red Hat VirtIO GPU DOD controller",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "11/20/2020,10.0.0.21000",
+      "inf_path": "qxldod/2k19/amd64/qxldod.inf",
+      "name": "Red Hat QXL controller",
+      "windows_version": "2k19"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "11/20/2020,10.0.0.21000",
+      "inf_path": "qxldod/2k16/amd64/qxldod.inf",
+      "name": "Red Hat QXL controller",
+      "windows_version": "2k16"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "11/20/2020,10.0.0.21000",
+      "inf_path": "qxldod/w10/x86/qxldod.inf",
+      "name": "Red Hat QXL controller",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "11/20/2020,10.0.0.21000",
+      "inf_path": "qxldod/w10/amd64/qxldod.inf",
+      "name": "Red Hat QXL controller",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "11/20/2020,10.0.0.21000",
+      "inf_path": "qxldod/2k12R2/amd64/qxldod.inf",
+      "name": "Red Hat QXL controller",
+      "windows_version": "2k12R2"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "11/20/2020,10.0.0.21000",
+      "inf_path": "qxldod/2k12/amd64/qxldod.inf",
+      "name": "Red Hat QXL controller",
+      "windows_version": "2k12"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "11/20/2020,10.0.0.21000",
+      "inf_path": "qxldod/w8.1/x86/qxldod.inf",
+      "name": "Red Hat QXL controller",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "11/20/2020,10.0.0.21000",
+      "inf_path": "qxldod/w8.1/amd64/qxldod.inf",
+      "name": "Red Hat QXL controller",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "11/20/2020,10.0.0.21000",
+      "inf_path": "qxldod/w8/x86/qxldod.inf",
+      "name": "Red Hat QXL controller",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "11/20/2020,10.0.0.21000",
+      "inf_path": "qxldod/w8/amd64/qxldod.inf",
+      "name": "Red Hat QXL controller",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/17/2013,5.1.0.10018",
+      "inf_path": "qxl/xp/x86/qxl.inf",
+      "name": "Red Hat QXL GPU",
+      "windows_version": "xp"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "09/22/2015,6.1.0.10024",
+      "inf_path": "qxl/w7/x86/qxl.inf",
+      "name": "Red Hat QXL GPU",
+      "windows_version": "w7"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "09/22/2015,6.1.0.10024",
+      "inf_path": "qxl/w7/amd64/qxl.inf",
+      "name": "Red Hat QXL GPU",
+      "windows_version": "w7"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "09/22/2015,6.1.0.10024",
+      "inf_path": "qxl/2k8R2/amd64/qxl.inf",
+      "name": "Red Hat QXL GPU",
+      "windows_version": "2k8R2"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "04/27/2017,100.0.0.0",
+      "inf_path": "smbus/2k25/amd64/smbus.inf",
+      "name": "Red Hat Q35 SM Bus driver",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "04/27/2017,100.0.0.0",
+      "inf_path": "smbus/2k22/amd64/smbus.inf",
+      "name": "Red Hat Q35 SM Bus driver",
+      "windows_version": "2k22"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "04/27/2017,100.0.0.0",
+      "inf_path": "smbus/w11/amd64/smbus.inf",
+      "name": "Red Hat Q35 SM Bus driver",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "04/27/2017,100.0.0.0",
+      "inf_path": "smbus/2k8/amd64/smbus.inf",
+      "name": "Red Hat Q35 SM Bus driver",
+      "windows_version": "2k8"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "04/27/2017,100.0.0.0",
+      "inf_path": "smbus/2k8/x86/smbus.inf",
+      "name": "Red Hat Q35 SM Bus driver",
+      "windows_version": "2k8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "05/21/2022,100.90.104.22100",
+      "inf_path": "qemufwcfg/2k25/amd64/qemufwcfg.inf",
+      "name": "QEMU FWCfg Device",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "05/21/2022,100.90.104.22100",
+      "inf_path": "qemufwcfg/2k22/amd64/qemufwcfg.inf",
+      "name": "QEMU FWCfg Device",
+      "windows_version": "2k22"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "05/21/2022,100.90.104.22100",
+      "inf_path": "qemufwcfg/w11/amd64/qemufwcfg.inf",
+      "name": "QEMU FWCfg Device",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "05/21/2022,100.90.104.22100",
+      "inf_path": "qemufwcfg/2k19/amd64/qemufwcfg.inf",
+      "name": "QEMU FWCfg Device",
+      "windows_version": "2k19"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "05/21/2022,100.90.104.22100",
+      "inf_path": "qemufwcfg/2k16/amd64/qemufwcfg.inf",
+      "name": "QEMU FWCfg Device",
+      "windows_version": "2k16"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "05/21/2022,100.90.104.22100",
+      "inf_path": "qemufwcfg/w10/amd64/qemufwcfg.inf",
+      "name": "QEMU FWCfg Device",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "05/21/2022,100.90.104.22100",
+      "inf_path": "qemufwcfg/w10/x86/qemufwcfg.inf",
+      "name": "QEMU FWCfg Device",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "11/27/2012,51.64.104.4800",
+      "inf_path": "viostor/xp/x86/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "xp"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "11/27/2012,52.64.104.4800",
+      "inf_path": "viostor/xp/amd64/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "xp"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "11/27/2012,52.64.104.4800",
+      "inf_path": "viostor/2k3/x86/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "2k3"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "11/27/2012,52.64.104.4800",
+      "inf_path": "viostor/2k3/amd64/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "2k3"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/25/2018,60.76.104.15800",
+      "inf_path": "viostor/2k8/x86/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "2k8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/25/2018,60.76.104.15800",
+      "inf_path": "viostor/2k8/amd64/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "2k8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "viostor/2k12/amd64/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "2k12"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "viostor/w8/x86/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "viostor/w8/amd64/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "viostor/2k12R2/amd64/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "2k12R2"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "viostor/w8.1/x86/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "viostor/w8.1/amd64/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "06/07/2019,61.77.104.17200",
+      "inf_path": "viostor/2k8R2/amd64/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "2k8R2"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "06/07/2019,61.77.104.17200",
+      "inf_path": "viostor/w7/x86/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "w7"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "06/07/2019,61.77.104.17200",
+      "inf_path": "viostor/w7/amd64/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "w7"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viostor/2k25/amd64/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viostor/2k25/ARM64/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viostor/w11/amd64/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viostor/w11/ARM64/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viostor/2k22/amd64/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "2k22"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viostor/2k19/amd64/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "2k19"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viostor/2k16/amd64/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "2k16"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viostor/w10/x86/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viostor/w10/amd64/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viostor/w10/ARM64/viostor.inf",
+      "name": "Red Hat VirtIO SCSI controller",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "08/03/2018,60.76.104.16000",
+      "inf_path": "vioscsi/2k8/x86/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "2k8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "08/03/2018,60.76.104.16000",
+      "inf_path": "vioscsi/2k8/amd64/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "2k8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "vioscsi/2k12/amd64/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "2k12"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "vioscsi/w8/x86/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "vioscsi/w8/amd64/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "vioscsi/2k12R2/amd64/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "2k12R2"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "vioscsi/w8.1/x86/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "vioscsi/w8.1/amd64/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "08/03/2018,61.76.104.16000",
+      "inf_path": "vioscsi/2k8R2/amd64/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "2k8R2"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "08/03/2018,61.76.104.16000",
+      "inf_path": "vioscsi/w7/x86/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "w7"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "08/03/2018,61.76.104.16000",
+      "inf_path": "vioscsi/w7/amd64/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "w7"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioscsi/2k25/amd64/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioscsi/2k25/ARM64/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioscsi/w11/amd64/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioscsi/w11/ARM64/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioscsi/2k22/amd64/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "2k22"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioscsi/2k19/amd64/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "2k19"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioscsi/2k16/amd64/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "2k16"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioscsi/w10/x86/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioscsi/w10/amd64/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioscsi/w10/ARM64/vioscsi.inf",
+      "name": "Red Hat VirtIO SCSI pass-through controller",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "11/29/2012,51.64.104.4900",
+      "inf_path": "NetKVM/xp/x86/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "xp"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "11/29/2012,52.64.104.4900",
+      "inf_path": "NetKVM/xp/amd64/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "xp"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "11/29/2012,51.64.104.4900",
+      "inf_path": "NetKVM/2k3/x86/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "2k3"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "11/29/2012,52.64.104.4900",
+      "inf_path": "NetKVM/2k3/amd64/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "2k3"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "08/03/2018,60.76.104.16000",
+      "inf_path": "NetKVM/2k8/x86/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "2k8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "08/03/2018,60.76.104.16000",
+      "inf_path": "NetKVM/2k8/amd64/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "2k8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "NetKVM/2k12/amd64/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "2k12"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "NetKVM/w8/x86/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "NetKVM/w8/amd64/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "NetKVM/2k12R2/amd64/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "2k12R2"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "NetKVM/w8.1/x86/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "NetKVM/w8.1/amd64/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "06/07/2019,61.77.104.17200",
+      "inf_path": "NetKVM/w7/x86/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "w7"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "06/07/2019,61.77.104.17200",
+      "inf_path": "NetKVM/w7/amd64/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "w7"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "06/07/2019,61.77.104.17200",
+      "inf_path": "NetKVM/2k8R2/amd64/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "2k8R2"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "NetKVM/2k25/amd64/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "NetKVM/2k25/ARM64/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "NetKVM/w11/amd64/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "NetKVM/w11/ARM64/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "NetKVM/2k22/amd64/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "2k22"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "NetKVM/2k19/amd64/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "2k19"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "NetKVM/2k16/amd64/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "2k16"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "NetKVM/w10/x86/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "NetKVM/w10/amd64/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "NetKVM/w10/ARM64/netkvm.inf",
+      "name": "Red Hat VirtIO Ethernet Adapter",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "fwcfg/2k12R2/amd64/fwcfg.inf",
+      "name": "QEMU FwCfg Device",
+      "windows_version": "2k12R2"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "fwcfg/w8.1/x86/fwcfg.inf",
+      "name": "QEMU FwCfg Device",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "fwcfg/w8.1/amd64/fwcfg.inf",
+      "name": "QEMU FwCfg Device",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "fwcfg/2k25/amd64/fwcfg.inf",
+      "name": "QEMU FwCfg Device",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "fwcfg/w11/amd64/fwcfg.inf",
+      "name": "QEMU FwCfg Device",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "fwcfg/2k22/amd64/fwcfg.inf",
+      "name": "QEMU FwCfg Device",
+      "windows_version": "2k22"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "fwcfg/2k19/amd64/fwcfg.inf",
+      "name": "QEMU FwCfg Device",
+      "windows_version": "2k19"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "fwcfg/2k16/amd64/fwcfg.inf",
+      "name": "QEMU FwCfg Device",
+      "windows_version": "2k16"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "fwcfg/w10/x86/fwcfg.inf",
+      "name": "QEMU FwCfg Device",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "fwcfg/w10/amd64/fwcfg.inf",
+      "name": "QEMU FwCfg Device",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "fwcfg/2k12/amd64/fwcfg.inf",
+      "name": "QEMU FwCfg Device",
+      "windows_version": "2k12"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "fwcfg/w8/x86/fwcfg.inf",
+      "name": "QEMU FwCfg Device",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "fwcfg/w8/amd64/fwcfg.inf",
+      "name": "QEMU FwCfg Device",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "viofs/2k12R2/amd64/viofs.inf",
+      "name": "VirtIO FS Device",
+      "windows_version": "2k12R2"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "viofs/w8.1/x86/viofs.inf",
+      "name": "VirtIO FS Device",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "viofs/w8.1/amd64/viofs.inf",
+      "name": "VirtIO FS Device",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viofs/2k25/amd64/viofs.inf",
+      "name": "VirtIO FS Device",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viofs/w11/amd64/viofs.inf",
+      "name": "VirtIO FS Device",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viofs/w11/ARM64/viofs.inf",
+      "name": "VirtIO FS Device",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viofs/2k22/amd64/viofs.inf",
+      "name": "VirtIO FS Device",
+      "windows_version": "2k22"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viofs/2k19/amd64/viofs.inf",
+      "name": "VirtIO FS Device",
+      "windows_version": "2k19"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viofs/2k16/amd64/viofs.inf",
+      "name": "VirtIO FS Device",
+      "windows_version": "2k16"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viofs/w10/x86/viofs.inf",
+      "name": "VirtIO FS Device",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viofs/w10/amd64/viofs.inf",
+      "name": "VirtIO FS Device",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viofs/w10/ARM64/viofs.inf",
+      "name": "VirtIO FS Device",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "viofs/2k12/amd64/viofs.inf",
+      "name": "VirtIO FS Device",
+      "windows_version": "2k12"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "viofs/w8/x86/viofs.inf",
+      "name": "VirtIO FS Device",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "viofs/w8/amd64/viofs.inf",
+      "name": "VirtIO FS Device",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "vioserial/2k12R2/amd64/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "2k12R2"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "vioserial/w8.1/x86/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "vioserial/w8.1/amd64/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioserial/2k25/amd64/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioserial/2k25/ARM64/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioserial/w11/amd64/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioserial/w11/ARM64/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioserial/2k22/amd64/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "2k22"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioserial/2k19/amd64/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "2k19"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioserial/2k16/amd64/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "2k16"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioserial/w10/x86/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioserial/w10/amd64/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioserial/w10/ARM64/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "11/19/2014,51.71.104.9400",
+      "inf_path": "vioserial/xp/x86/vioser.inf",
+      "name": "VirtIO-Serial Driver",
+      "windows_version": "xp"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "11/19/2014,52.71.104.9400",
+      "inf_path": "vioserial/xp/amd64/vioser.inf",
+      "name": "VirtIO-Serial Driver",
+      "windows_version": "xp"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "11/19/2014,51.71.104.9400",
+      "inf_path": "vioserial/2k3/x86/vioser.inf",
+      "name": "VirtIO-Serial Driver",
+      "windows_version": "2k3"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "11/19/2014,52.71.104.9400",
+      "inf_path": "vioserial/2k3/amd64/vioser.inf",
+      "name": "VirtIO-Serial Driver",
+      "windows_version": "2k3"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "06/11/2018,60.76.104.15400",
+      "inf_path": "vioserial/2k8/x86/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "2k8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "06/11/2018,60.76.104.15400",
+      "inf_path": "vioserial/2k8/amd64/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "2k8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "vioserial/2k12/amd64/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "2k12"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "vioserial/w8/x86/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "vioserial/w8/amd64/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "06/11/2018,61.76.104.15400",
+      "inf_path": "vioserial/2k8R2/amd64/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "2k8R2"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "06/11/2018,61.76.104.15400",
+      "inf_path": "vioserial/w7/x86/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "w7"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "06/11/2018,61.76.104.15400",
+      "inf_path": "vioserial/w7/amd64/vioser.inf",
+      "name": "VirtIO Serial Driver",
+      "windows_version": "w7"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "viorng/2k12R2/amd64/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "2k12R2"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "viorng/w8.1/x86/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "viorng/w8.1/amd64/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viorng/2k25/amd64/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viorng/2k25/ARM64/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viorng/w11/amd64/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viorng/w11/ARM64/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viorng/2k22/amd64/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "2k22"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viorng/2k19/amd64/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "2k19"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viorng/2k16/amd64/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "2k16"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viorng/w10/x86/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viorng/w10/amd64/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "viorng/w10/ARM64/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "06/11/2018,60.76.104.15400",
+      "inf_path": "viorng/2k8/x86/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "2k8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "06/11/2018,60.76.104.15400",
+      "inf_path": "viorng/2k8/amd64/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "2k8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "viorng/2k12/amd64/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "2k12"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "viorng/w8/x86/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "viorng/w8/amd64/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "06/11/2018,61.76.104.15400",
+      "inf_path": "viorng/2k8R2/amd64/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "2k8R2"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "06/11/2018,61.76.104.15400",
+      "inf_path": "viorng/w7/x86/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "w7"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "06/11/2018,61.76.104.15400",
+      "inf_path": "viorng/w7/amd64/viorng.inf",
+      "name": "VirtIO RNG Device",
+      "windows_version": "w7"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "vioinput/2k12R2/amd64/vioinput.inf",
+      "name": "VirtIO Input Driver",
+      "windows_version": "2k12R2"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "vioinput/w8.1/x86/vioinput.inf",
+      "name": "VirtIO Input Driver",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "vioinput/w8.1/amd64/vioinput.inf",
+      "name": "VirtIO Input Driver",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioinput/2k25/amd64/vioinput.inf",
+      "name": "VirtIO Input Driver",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioinput/2k25/ARM64/vioinput.inf",
+      "name": "VirtIO Input Driver",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioinput/w11/amd64/vioinput.inf",
+      "name": "VirtIO Input Driver",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioinput/w11/ARM64/vioinput.inf",
+      "name": "VirtIO Input Driver",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioinput/2k22/amd64/vioinput.inf",
+      "name": "VirtIO Input Driver",
+      "windows_version": "2k22"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioinput/2k19/amd64/vioinput.inf",
+      "name": "VirtIO Input Driver",
+      "windows_version": "2k19"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioinput/2k16/amd64/vioinput.inf",
+      "name": "VirtIO Input Driver",
+      "windows_version": "2k16"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioinput/w10/x86/vioinput.inf",
+      "name": "VirtIO Input Driver",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioinput/w10/amd64/vioinput.inf",
+      "name": "VirtIO Input Driver",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "vioinput/w10/ARM64/vioinput.inf",
+      "name": "VirtIO Input Driver",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "vioinput/2k12/amd64/vioinput.inf",
+      "name": "VirtIO Input Driver",
+      "windows_version": "2k12"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "vioinput/w8/x86/vioinput.inf",
+      "name": "VirtIO Input Driver",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "vioinput/w8/amd64/vioinput.inf",
+      "name": "VirtIO Input Driver",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "06/07/2019,61.77.104.17200",
+      "inf_path": "vioinput/2k8R2/amd64/vioinput.inf",
+      "name": "VirtIO Input Driver",
+      "windows_version": "2k8R2"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "06/07/2019,61.77.104.17200",
+      "inf_path": "vioinput/w7/x86/vioinput.inf",
+      "name": "VirtIO Input Driver",
+      "windows_version": "w7"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "06/07/2019,61.77.104.17200",
+      "inf_path": "vioinput/w7/amd64/vioinput.inf",
+      "name": "VirtIO Input Driver",
+      "windows_version": "w7"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "pvpanic/2k12R2/amd64/pvpanic-pci.inf",
+      "name": "QEMU PVPanic PCI Device",
+      "windows_version": "2k12R2"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "pvpanic/2k12R2/amd64/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "2k12R2"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "pvpanic/w8.1/x86/pvpanic-pci.inf",
+      "name": "QEMU PVPanic PCI Device",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "pvpanic/w8.1/x86/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "pvpanic/w8.1/amd64/pvpanic-pci.inf",
+      "name": "QEMU PVPanic PCI Device",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "pvpanic/w8.1/amd64/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "pvpanic/2k25/amd64/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "pvpanic/2k25/ARM64/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "pvpanic/w11/amd64/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "pvpanic/w11/ARM64/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "pvpanic/2k22/amd64/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "2k22"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "pvpanic/2k19/amd64/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "2k19"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "pvpanic/2k16/amd64/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "2k16"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "pvpanic/w10/x86/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "pvpanic/w10/amd64/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "pvpanic/w10/ARM64/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "06/11/2018,60.76.104.15400",
+      "inf_path": "pvpanic/2k8/x86/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "2k8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "06/11/2018,60.76.104.15400",
+      "inf_path": "pvpanic/2k8/amd64/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "2k8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "pvpanic/2k12/amd64/pvpanic-pci.inf",
+      "name": "QEMU PVPanic PCI Device",
+      "windows_version": "2k12"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "pvpanic/2k12/amd64/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "2k12"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "pvpanic/w8/x86/pvpanic-pci.inf",
+      "name": "QEMU PVPanic PCI Device",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "pvpanic/w8/x86/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "pvpanic/w8/amd64/pvpanic-pci.inf",
+      "name": "QEMU PVPanic PCI Device",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "pvpanic/w8/amd64/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "06/11/2018,61.76.104.15400",
+      "inf_path": "pvpanic/2k8R2/amd64/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "2k8R2"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "06/11/2018,61.76.104.15400",
+      "inf_path": "pvpanic/w7/x86/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "w7"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "06/11/2018,61.76.104.15400",
+      "inf_path": "pvpanic/w7/amd64/pvpanic.inf",
+      "name": "QEMU PVPanic Device",
+      "windows_version": "w7"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "09/16/2013,51.65.104.7000",
+      "inf_path": "Balloon/xp/x86/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "xp"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "09/16/2013,52.65.104.7000",
+      "inf_path": "Balloon/xp/amd64/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "xp"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "09/16/2013,52.65.104.7000",
+      "inf_path": "Balloon/2k3/x86/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "2k3"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "09/16/2013,52.65.104.7000",
+      "inf_path": "Balloon/2k3/amd64/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "2k3"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "06/11/2018,60.76.104.15400",
+      "inf_path": "Balloon/2k8/x86/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "2k8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "06/11/2018,60.76.104.15400",
+      "inf_path": "Balloon/2k8/amd64/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "2k8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "Balloon/2k12/amd64/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "2k12"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "Balloon/w8/x86/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,62.93.104.24000",
+      "inf_path": "Balloon/w8/amd64/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "w8"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "Balloon/2k12R2/amd64/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "2k12R2"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "Balloon/w8.1/x86/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/21/2023,63.93.104.24000",
+      "inf_path": "Balloon/w8.1/amd64/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "w8.1"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "03/10/2019,61.77.104.16900",
+      "inf_path": "Balloon/2k8R2/amd64/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "2k8R2"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "03/10/2019,61.77.104.16900",
+      "inf_path": "Balloon/w7/x86/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "w7"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "03/10/2019,61.77.104.16900",
+      "inf_path": "Balloon/w7/amd64/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "w7"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "Balloon/2k25/amd64/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "Balloon/2k25/ARM64/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "2k25"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "Balloon/w11/amd64/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "Balloon/w11/ARM64/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "w11"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "Balloon/2k22/amd64/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "2k22"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "Balloon/2k19/amd64/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "2k19"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "Balloon/2k16/amd64/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "2k16"
+    },
+    {
+      "arch": "x86",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "Balloon/w10/x86/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "amd64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "Balloon/w10/amd64/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "w10"
+    },
+    {
+      "arch": "ARM64",
+      "driver_version": "07/22/2026,100.103.104.30200",
+      "inf_path": "Balloon/w10/ARM64/balloon.inf",
+      "name": "VirtIO Balloon Driver",
+      "windows_version": "w10"
+    }
+  ]
+}

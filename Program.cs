@@ -262,6 +262,9 @@ if (string.IsNullOrWhiteSpace(existingKey))
 // Services registration
 // ============================================================================
 builder.Services.AddSingleton<IEncryptionService, EncryptionService>();
+builder.Services.AddSingleton<IEncryptionService, EncryptionService>();
+builder.Services.AddScoped<VCenterSettingsStore>();
+
 
 if (isConfigured)
 {
@@ -386,10 +389,12 @@ if (isConfigured)
     builder.Services.AddSingleton<IMigrationQueueRunner, MigrationQueueRunner>();
     builder.Services.AddScoped<IStorageSnapshotCoordinator, StorageSnapshotCoordinator>();
     builder.Services.AddScoped<IMigrationExecutor, ProxmoxMigrationExecutor>();
+    builder.Services.AddScoped<VCenterVmStatusService>();
     builder.Services.AddScoped<BareProx.Services.Proxmox.Migration.IProxmoxMigration, BareProx.Services.Proxmox.Migration.ProxmoxMigration>();
     builder.Services.AddScoped<IProxmoxOpsService, ProxmoxOpsService>();
     builder.Services.AddScoped<IProxmoxSnapshotsService, ProxmoxSnapshotsService>();
     builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
+    builder.Services.AddSingleton<MigrationReportMailService>();
     builder.Services.AddMemoryCache();
     builder.Services.AddHttpClient(nameof(UpdateChecker));
     builder.Services.AddSingleton<IUpdateChecker, UpdateChecker>();
@@ -418,6 +423,7 @@ if (isConfigured)
     builder.Services.AddSingleton<IBackgroundServiceQueue, BackgroundServiceQueue>();
     builder.Services.AddHostedService<QueuedBackgroundService>();
     builder.Services.AddHostedService<ScheduledBackupService>();
+    builder.Services.AddHostedService<MigrationReportMailWorker>();
     builder.Services.AddHostedService<JanitorService>();
     builder.Services.AddSingleton<IProxmoxInventoryCache, ProxmoxInventoryCache>();
 

@@ -1,274 +1,894 @@
-﻿@{
+@{
     ViewData["Title"] = "Migration – Help";
 }
 
 <h2 class="mb-3">Migration Help</h2>
 
-<!-- Legend -->
-<div class="card border-0 bg-light mb-3">
-    <div class="card-body py-2">
-        <div class="d-flex flex-wrap align-items-center gap-2">
-            <span class="badge rounded-pill bg-primary">Before</span>
-            <span class="badge rounded-pill bg-warning text-dark">During</span>
-            <span class="badge rounded-pill bg-success">After</span>
-            <span class="badge rounded-pill bg-info text-dark">Optional</span>
-            <span class="badge rounded-pill bg-secondary">UEFI only</span>
+<div class="card border-0 bg-light mb-4">
+    <div class="card-body py-3">
+        <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+            <span class="badge rounded-pill bg-primary">Prepare</span>
+            <span class="badge rounded-pill bg-info text-dark">Automatic</span>
+            <span class="badge rounded-pill bg-secondary">Manual</span>
+            <span class="badge rounded-pill bg-warning text-dark">Cutover</span>
+            <span class="badge rounded-pill bg-success">Verify</span>
         </div>
-        <div class="small text-muted mt-2">
+        <div class="small text-muted">
             <strong>Jump to:</strong>
-            <a href="#before" class="link-secondary me-2">Before</a> ·
-            <a href="#during" class="link-secondary me-2">During</a> ·
-            <a href="#after" class="link-secondary me-2">After</a> ·
+            <a href="#overview" class="link-secondary me-2">Overview</a> ·
+            <a href="#prerequisites" class="link-secondary me-2">Prerequisites</a> ·
+            <a href="#configuration" class="link-secondary me-2">VM configuration</a> ·
+            <a href="#automatic" class="link-secondary me-2">Automatic migration</a> ·
+            <a href="#manual" class="link-secondary me-2">Manual migration</a> ·
+            <a href="#queue" class="link-secondary me-2">Queue &amp; concurrency</a> ·
+            <a href="#admin-controls" class="link-secondary me-2">Clear queue &amp; disable Migration</a> ·
+            <a href="#after" class="link-secondary me-2">After migration</a> ·
+            <a href="#reports" class="link-secondary me-2">Reports</a> ·
+                <a href="#guest-logs" class="link-secondary me-2">Windows guest logs</a> ·
+            <a href="#report-email" class="link-secondary me-2">Email reports</a> ·
             <a href="#troubleshooting" class="link-secondary">Troubleshooting</a>
         </div>
     </div>
 </div>
 
-<div class="alert alert-info">
-    <strong>Heads-up:</strong> Experimental! And will probably always stay experimental.
-    <br /><br />
-    Does <u>not</u> support:
-    <ul class="mb-0">
-        <li>RAW devices</li>
-        <li>Encrypted VMs</li>
-        <li>TPM</li>
-        <li>VMs with snapshots</li>
-        <li>…and probably more</li>
-    </ul>
+<div class="alert alert-warning">
+    <h5 class="alert-heading">Migration is still an experimental feature</h5>
+    <p class="mb-2">
+        Always test the complete process with non-critical VMs before using it for production workloads.
+        A migration changes hypervisor, virtual hardware, storage presentation and network devices.
+    </p>
+    <p class="mb-0">
+        <strong>Important:</strong> BareProx deliberately does not automatically retry or roll back a failed cutover.
+        If a migration fails after the VMware VM has been powered off, inspect both VMware and Proxmox before taking any recovery action.
+    </p>
 </div>
 
-<p class="text-muted mb-4">
-    This guide explains what to prepare before migrating, what the app does during a run, and what to verify after.
-    Start with one or several <strong>test VMs</strong>, then move to a live run.
-</p>
-
-<!-- BEFORE -->
-<div class="card mb-3">
+<section id="overview" class="card mb-4">
     <div class="card-body">
-        <h5 id="before" class="card-title">
-            Before you start (prerequisites &amp; checklist)
-            <span class="badge bg-primary ms-2">Before</span>
-        </h5>
-
-        <ul class="mb-0">
-            <li>
-                <strong>Add a common datastore:</strong> One that both Proxmox and VMware can access.
-                <div class="small text-muted">Do not enable “expose .snapshot to clients”.</div>
-            </li>
-
-            <li>
-                <strong>Add the common datastore:</strong>
-                <ul>
-                    <li>To VMware (one or many ESXi hosts)</li>
-                    <li>To one or more Proxmox hosts</li>
-                    <li>In BareProx / Settings: select it both as a Proxmox storage and as a NetApp storage</li>
-                </ul>
-            </li>
-
-            <li>
-                <strong>Define Migration Settings:</strong> Select Proxmox Cluster, Proxmox host, and migration datastore
-                in <a asp-action="Settings">Migration Settings</a>.
-            </li>
-
-            <li>
-                <strong>Upload VirtIO ISO:</strong> Upload to your image repository. Prefer keeping the file name starting with “<code>virtio</code>”.
-            </li>
-
-            <li>
-                <strong>Source VM ready (Windows):</strong>
-                <ul>
-                    <li>Move the VM to the migration datastore.</li>
-                    <li>Ensure each <code>.vmdk</code> and its <code>-flat.vmdk</code> are reachable from the Proxmox host.</li>
-                    <li>No vm snapshots are allowed.</li>
-                    <li>If using static IPs, record IP/gateway per NIC (verify against MAC addresses).</li>
-                    <li class="small text-muted">There will be new interfaces on the Proxmox side. Track MTU if you use &ne; 1500.</li>
-                    <li>
-                        Uninstall VMware Tools (preferably before shutdown).
-                        <ul>
-                            <li>Can be hard to remove post-migration. There a link to scripts available at the bottom on this page.</li>
-                        </ul>
-                    </li>
-                    <li>Disable application services (for clean cutover), then shutdown the VM.</li>
-                    <li>Remove the VM from vCenter inventory.</li>
-                </ul>
-            </li>
-
-            <li>
-                <strong>Source VM ready (Linux):</strong>
-                <ul>
-                    <li>Likely similar to Windows; not extensively (at all) tested.</li>
-                </ul>
-            </li>
-        </ul>
-
-        <h5 class="mt-3">Change settings and queue VMs</h5>
-        <ul class="mb-0">
-            <li>
-                <strong>VMID (required):</strong> Choose a VMID that is not in use across the Proxmox cluster.
-                <ul>
-                    <li><code>cat /etc/pve/.vmlist</code></li>
-                    <li><code>pvesh get /cluster/resources --type vm</code></li>
-                    <li><code>pvesh get /cluster/nextid</code></li>
-                </ul>
-            </li>
-            <li><strong>Name:</strong> Optionally change the VM name.</li>
-            <li><strong>CPU Type:</strong> Similar to EVC; choose <em>host</em> for current host or something compatible cluster-wide.</li>
-            <li><strong>OS Type:</strong> Verify detected OS is correct.</li>
-            <li><strong>Memory / CPU Sockets / CPU Cores:</strong> Adjust as needed (avoid over-provisioning; consider host CPU layout and a ~3:1 vCPU planning guideline).</li>
-
-            <li>
-                <strong>Prepare for VirtIO:</strong> Will target VirtIO SCSI drivers and set disks to <em>SATA</em> for initial boot.
-                <ul>
-                    <li>Adds a dummy 1&nbsp;GiB disk so Windows can install VirtIO drivers from the ISO.</li>
-                </ul>
-            </li>
-
-            <li><strong>Mount VirtIO:</strong> Mount the VirtIO ISO to install storage/network drivers and the guest agent.</li>
-
-            <li>
-                <strong>SCSI Controller:</strong> If you want something other than <em>virtio-scsi-single</em> and you don’t click “Prepare for VirtIO”.
-                <ul>
-                    <li>After migration, temporarily add a dummy SCSI disk for Windows so it installs SCSI drivers on first boot.</li>
-                </ul>
-            </li>
-
-            <li>
-                <strong>Disks:</strong> Use <em>SATA</em> initially for maximum compatibility (Windows may not boot otherwise if drivers aren’t present).
-                <ul>
-                    <li>Keep or adjust the index; index <code>0</code> is the boot device.</li>
-                </ul>
-            </li>
-
-            <li>
-                <strong>Networking:</strong> Map NICs to the correct SDNs/bridges/VLANs.
-                <ul>
-                    <li>Change/keep MAC as desired.</li>
-                    <li>Consider switching to <em>VirtIO</em> NICs (device model changes either way).</li>
-                </ul>
-            </li>
-        </ul>
-
-        <p class="mt-3 mb-0">
-            <strong>Queue the VM(s)</strong> and <strong>Run queue</strong>.
+        <h3 class="h5 card-title">1. How migration works</h3>
+        <p>
+            BareProx migrates VMware VMs to Proxmox by using a datastore that is accessible from both environments.
+            The VMware VMDK data remains on the shared datastore while BareProx creates the Proxmox VM configuration and
+            points Proxmox at the VMware disk data. After the VM has been verified, move the disks to their final Proxmox
+            datastore in the normal Proxmox way.
         </p>
-    </div>
-</div>
 
-<!-- DURING -->
-<div class="card mb-3">
-    <div class="card-body">
-        <h5 id="during" class="card-title">
-            What happens during migration (pipeline)
-            <span class="badge bg-warning text-dark ms-2">During</span>
-        </h5>
-        <ol class="mb-0">
-            <li><strong>Validate:</strong> Checks VMID/Name; warns if no disks.</li>
-            <li><strong>CheckVmid:</strong> Confirms VMID is free on PVE.</li>
-            <li><strong>PlaceDescriptor:</strong> Copy each VMDK descriptor to <code>/images/&lt;vmid&gt;</code>, force <code>monolithicFlat</code>, rewrite RW line to absolute <code>-flat.vmdk</code>, verify.</li>
-            <li><strong>WriteConf:</strong> Writes a minimal bootable <code>/etc/pve/qemu-server/&lt;vmid&gt;.conf</code> (q35, seabios/ovmf, cdrom stub, cpu/mem, scsi if needed, iothread for scsi/virtio).</li>
-            <li>
-                <strong>AddDummyDisk</strong> <span class="badge bg-info text-dark ms-1">Optional</span>:
-                Adds 1&nbsp;GiB VirtIO disk for driver staging if “Prepare for VirtIO” is selected.
-            </li>
-            <li>
-                <strong>MountISO</strong> <span class="badge bg-info text-dark ms-1">Optional</span>:
-                Mounts the VirtIO ISO on <code>ide2</code>.
-            </li>
-            <li>
-                <strong>AddEfiDisk</strong> <span class="badge bg-secondary ms-1">UEFI only</span>:
-                Ensures <code>efidisk0</code> exists (idempotent).
-            </li>
-        </ol>
-        <div class="mt-3 text-muted">
-            All steps are logged to <a asp-controller="Jobs" asp-action="Index">Jobs</a> and stored in the database.
+        <div class="row g-3">
+            <div class="col-lg-6">
+                <div class="border rounded p-3 h-100">
+                    <h4 class="h6">Automatic migration <span class="badge bg-info text-dark ms-1">Recommended when eligible</span></h4>
+                    <p class="mb-2">
+                        BareProx prepares Windows through vCenter Guest Operations, installs the required VirtIO components,
+                        preserves the network mapping, removes VMware Tools during cutover, shuts the source VM down,
+                        creates and starts the Proxmox VM, and verifies the guest. A single VMID-specific NetApp safety snapshot is taken before staging begins.
+                    </p>
+                    <p class="mb-0 small text-muted">
+                        Supported for Windows Server 2016, 2019, 2022 and 2025 (64-bit) when the VM is powered on,
+                        VMware Tools is running and the VMware snapshot check is clear.
+                    </p>
+                </div>
+            </div>
+            <div class="col-lg-6">
+                <div class="border rounded p-3 h-100">
+                    <h4 class="h6">Manual migration <span class="badge bg-secondary ms-1">Fallback / full control</span></h4>
+                    <p class="mb-2">
+                        You prepare and shut down the VMware VM yourself. BareProx creates the required NetApp snapshot,
+                        builds the Proxmox VM and disk descriptors, and leaves first boot and guest preparation to you.
+                    </p>
+                    <p class="mb-0 small text-muted">
+                        Use manual mode for Windows Server 2012 R2 and older, Linux, unsupported guests, or whenever you want
+                        to control the guest preparation and cutover yourself.
+                    </p>
+                </div>
+            </div>
         </div>
     </div>
-</div>
+</section>
 
-<!-- AFTER -->
-<div class="card mb-3">
+<section class="card mb-4">
     <div class="card-body">
-        <h5 id="after" class="card-title">
-            After migration (post-checks &amp; cutover)
-            <span class="badge bg-success ms-2">After</span>
-        </h5>
+        <h3 class="h5 card-title">Support and important limitations</h3>
+        <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Guest / feature</th>
+                        <th>Automatic</th>
+                        <th>Manual</th>
+                        <th>Notes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Windows Server 2016 / 2019 / 2022 / 2025, 64-bit</td>
+                        <td><span class="text-success fw-semibold">Supported</span></td>
+                        <td><span class="text-success fw-semibold">Supported</span></td>
+                        <td>Automatic mode additionally requires powered-on VM, running VMware Tools and verified guest credentials.</td>
+                    </tr>
+                    <tr>
+                        <td>Windows Server 2012 R2 and older</td>
+                        <td><span class="text-danger fw-semibold">Blocked</span></td>
+                        <td>Manual only</td>
+                        <td>Do not expect automatic GuestPrep/cutover to be offered.</td>
+                    </tr>
+                    <tr>
+                        <td>Linux</td>
+                        <td><span class="text-danger fw-semibold">Not supported</span></td>
+                        <td>Manual</td>
+                        <td>Manual Linux migration has received less testing than Windows.</td>
+                    </tr>
+                    <tr>
+                        <td>VMware snapshots</td>
+                        <td><span class="text-danger fw-semibold">Blocked</span></td>
+                        <td><span class="text-danger fw-semibold">Blocked</span></td>
+                        <td>Snapshot status must be successfully verified and clear before the VM can be queued.</td>
+                    </tr>
+                    <tr>
+                        <td>UEFI</td>
+                        <td>Supported</td>
+                        <td>Supported</td>
+                        <td>BareProx creates <code>efidisk0</code> when required.</td>
+                    </tr>
+                    <tr>
+                        <td>TPM / encrypted VM</td>
+                        <td><span class="text-danger fw-semibold">Not supported</span></td>
+                        <td><span class="text-danger fw-semibold">Not supported</span></td>
+                        <td>Remove or redesign these dependencies before migration.</td>
+                    </tr>
+                    <tr>
+                        <td>RAW / passthrough devices</td>
+                        <td><span class="text-danger fw-semibold">Not supported</span></td>
+                        <td><span class="text-danger fw-semibold">Not supported</span></td>
+                        <td>Convert the VM to normal virtual disks/devices first.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</section>
+
+<section id="prerequisites" class="card mb-4">
+    <div class="card-body">
+        <h3 class="h5 card-title">2. Prerequisites</h3>
+        <ol class="mb-0">
+            <li class="mb-2">
+                <strong>Use a shared migration datastore.</strong>
+                The datastore must be accessible by the VMware host(s) containing the source VM and by the selected Proxmox host.
+                BareProx must be able to see the VMX, VMDK descriptor and corresponding <code>-flat.vmdk</code> files from Proxmox.
+            </li>
+            <li class="mb-2">
+                <strong>Configure Migration Settings.</strong>
+                In <a asp-action="Settings">Migration Settings</a>, select the Proxmox cluster, target host and migration datastore.
+                BareProx also resolves the selected datastore to the NetApp volume used for migration safety snapshots. Configure GuestPrep, VMware shutdown, QEMU Guest Agent startup and guest-verification timeouts here; defaults are 35, 15, 20 and 20 minutes respectively.
+            </li>
+            <li class="mb-2">
+                <strong>Configure concurrency.</strong>
+                <em>Maximum parallel migrations</em> controls manual migration workers and automatic staging workers.
+                <em>Maximum parallel automated cutovers</em> separately limits the disruptive automatic shutdown/import phase.
+            </li>
+            <li class="mb-2">
+                <strong>For automatic migration, configure vCenter.</strong>
+                Enter and verify the vCenter server and credentials in Migration Settings.
+                vCenter Guest Operations is used to copy GuestPrep files and execute preparation inside Windows.
+            </li>
+            <li class="mb-2">
+                <strong>For automatic migration, VMware Tools must be running.</strong>
+                The source VM must remain powered on until BareProx reaches the controlled cutover stage.
+            </li>
+            <li class="mb-2">
+                <strong>Remove/consolidate all VMware snapshots.</strong>
+                BareProx blocks queueing when snapshots exist or when snapshot status cannot be verified.
+            </li>
+            <li>
+                <strong>Have a recovery plan.</strong>
+                Know how you will return to the VMware VM if a cutover fails, and do not delete the VMware VM or its files until the Proxmox VM has been fully verified.
+            </li>
+        </ol>
+    </div>
+</section>
+
+<section class="card mb-4">
+    <div class="card-body">
+        <h3 class="h5 card-title">3. Scan the migration datastore</h3>
+        <p>
+            Open <a asp-action="Migrate">Migration</a>. BareProx scans the selected datastore and displays discovered source VMs.
+            The page refreshes the datastore automatically and can also be refreshed manually.
+        </p>
+        <p class="mb-2">Before opening a VM, check the source table:</p>
         <ul class="mb-0">
-            <li><strong>First boot:</strong> Power on in Proxmox; watch the console.</li>
-            <li>
-                <strong>Install drivers &amp; tools:</strong>
-                <ul>
-                    <li>Windows: VirtIO drivers + QEMU Guest Agent.</li>
-                    <li>Linux: verify virtio modules + qemu-guest-agent.</li>
-                </ul>
-            </li>
-            <li><strong>Networking:</strong> Reapply static IPs if required; verify VLAN/bridge/DNS/routes.</li>
-            <li><strong>Storage:</strong> Confirm all disks, write access, TRIM/discard.</li>
-            <li><strong>Shutdown VM.</strong></li>
-            <li><strong>Cleanup:</strong> Remove temporary VirtIO ISO / dummy disk.</li>
-            <li>
-                <strong>If you used “Prepare for VirtIO”:</strong> Detach disks in Proxmox and attach again as <em>SCSI</em> (edit “unused disk X”).
-                <ul>
-                    <li>Select correct index, enable <code>discard</code> and <code>iothreads</code>.</li>
-                </ul>
-            </li>
-            <li>
-                <strong>Go to VM → Options:</strong>
-                <ul>
-                    <li>Set correct boot order.</li>
-                </ul>
-            </li>
-            <li>
-                <strong>Boot VM:</strong>
-                <ul>
-                    <li>Verify disks.</li>
-                    <li>Re-set static IPs.</li>
-                    <li>Re-enable services.</li>
-                </ul>
-            </li>
-            <li>
-                <strong>Migrate the VM’s disks to the final datastore(s) as qcow2-disks:</strong>
-                <ul>
-                    <li>Proxmox migrates one disk at a time.</li>
-                    <li>For BareProx backups, avoid splitting a single VM’s disks across different datastores.</li>
-                </ul>
-            </li>
+            <li><strong>OS:</strong> Make sure the detected operating system is reasonable.</li>
+            <li><strong>Power:</strong> Automatic migration requires the source VM to be powered on.</li>
+            <li><strong>VMware Tools:</strong> Automatic migration requires VMware Tools to be running.</li>
+            <li><strong>Snapshots:</strong> Must show clear. A failed/unknown snapshot check blocks queueing.</li>
+            <li><strong>CPU / RAM / disks / NIC:</strong> Review the detected hardware before creating the destination plan.</li>
         </ul>
     </div>
-</div>
+</section>
 
-<!-- TROUBLESHOOTING -->
-<div class="card">
+<section id="configuration" class="card mb-4">
     <div class="card-body">
-        <h5 id="troubleshooting" class="card-title">Troubleshooting</h5>
-        <ul class="mb-3">
-            <li><strong>VM won’t boot (UEFI):</strong> Ensure OVMF + <code>efidisk0</code>.</li>
-            <li><strong>“Could not open backing file”:</strong> Descriptor RW line path wrong or inaccessible.</li>
-            <li><strong>“VMID already in use”:</strong> Pick another VMID or remove the conflicting VM.</li>
-            <li><strong>Network mismatch:</strong> Verify bridge exists and VLAN is correct on hosts.</li>
-        </ul>
+        <h3 class="h5 card-title">4. Review the destination VM configuration</h3>
+        <p>
+            Click a source VM to open the migration flow. Eligible Windows Server VMs can choose between
+            <strong>Manual migration</strong> and <strong>Automated migration</strong>. Other guests open the manual wizard directly.
+        </p>
 
-        <h6>Resources</h6>
+        <div class="table-responsive">
+            <table class="table table-sm align-middle">
+                <thead class="table-light"><tr><th>Setting</th><th>What to check</th></tr></thead>
+                <tbody>
+                    <tr>
+                        <td><strong>VM ID</strong></td>
+                        <td>BareProx asks the Proxmox cluster for a free VMID and also considers active migration queue entries. Always verify the value if cluster lookup reports a fallback.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Name</strong></td>
+                        <td>For automatic migration, use 1–63 letters, digits, dots, underscores or hyphens and begin with a letter or digit.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>CPU Type</strong></td>
+                        <td>Choose a model that is appropriate across the Proxmox cluster. <code>host</code> exposes the current host CPU but can reduce migration compatibility between unlike hosts.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>OS Type</strong></td>
+                        <td>Typical mappings are Server 2012/2012 R2 → <code>win8</code>, Server 2016/2019 → <code>win10</code>, Server 2022/2025 → <code>win11</code>.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>CPU / memory</strong></td>
+                        <td>Review sockets, cores and memory. Do not blindly copy oversized VMware allocations if the VM can be right-sized.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Disks</strong></td>
+                        <td>Verify disk count and order carefully. For manual migrations, choose the disk bus (SCSI, SATA, VirtIO or IDE) and a unique target index within that bus. Confirm boot-disk order. Automatic migrations use SCSI with VirtIO SCSI single.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Network</strong></td>
+                        <td>Map every NIC to the correct Proxmox bridge/SDN and VLAN. Verify MAC addresses, especially when Windows uses static IP configuration tied to the old adapter.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Firmware</strong></td>
+                        <td>BareProx preserves BIOS/UEFI intent. UEFI VMs receive an EFI disk on Proxmox.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="alert alert-info mb-0">
+            <strong>Q35 machine type:</strong> BareProx selects the latest Q35 machine type that is common to the Proxmox cluster when the VM is created.
+            You do not need to hard-code a Q35 version in the migration wizard.
+        </div>
+    </div>
+</section>
+
+<section id="automatic" class="card mb-4 border-info">
+    <div class="card-header bg-info bg-opacity-10">
+        <h3 class="h5 mb-0">5. Automatic migration — step by step</h3>
+    </div>
+    <div class="card-body">
+        <div class="alert alert-info">
+            <strong>Automatic migration is intentionally conservative.</strong>
+            BareProx validates identity, snapshot state and destination VMID repeatedly before destructive steps.
+            A failure is terminal for that queue run; BareProx does not blindly retry a partially completed cutover.
+        </div>
+
+        <h4 class="h6">A. Queue the VM</h4>
+        <ol>
+            <li>Select <strong>Automated migration</strong>.</li>
+            <li>Review the detected source VM and proposed Proxmox configuration.</li>
+            <li>If necessary, choose <strong>Review/edit in existing wizard</strong> and correct VMID, name, CPU, RAM, disk order, bridges, VLANs or MAC addresses.</li>
+            <li>Enter Windows credentials and click <strong>Verify</strong>. BareProx performs a read-only vCenter Guest Operations test.</li>
+            <li>After successful verification, click <strong>Add to queue</strong>. The item enters <code>AutomationPending</code>.</li>
+        </ol>
+        <p class="small text-muted">
+            Guest credentials are stored encrypted for the automated migration. The stored Windows password is cleared after the migrated VM starts and QEMU Guest Agent responds.
+        </p>
+
+        <h4 class="h6 mt-4">B. Start the queue</h4>
+        <p>
+            Click <strong>Run Queue</strong> and confirm the migration. BareProx starts automatic staging workers up to
+            <em>Maximum parallel migrations</em>. The following flow happens independently for each VM:
+        </p>
+
+        <ol>
+            <li class="mb-2">
+                <strong>Initial NetApp safety snapshot.</strong>
+                A VMID-specific snapshot is created before GuestPrep files are uploaded. If the snapshot cannot be created, that VM is stopped before staging.
+            </li>
+            <li class="mb-2">
+                <strong>Staging.</strong>
+                BareProx copies GuestPrep, required VirtIO components and the source-to-target MAC mapping to
+                <code>C:\ProgramData\BareProx\Staging</code> through vCenter Guest Operations.
+                <div class="small text-muted">Staging only copies files. It does not run GuestPrep, remove VMware Tools or power off the VM.</div>
+            </li>
+            <li class="mb-2">
+                <strong>Immediately become eligible for cutover.</strong>
+                As soon as one VM reaches <code>Staged</code>, it can start cutover as soon as an automated cutover slot is available.
+                BareProx does <strong>not</strong> wait for every VM in the batch to finish staging first.
+            </li>
+            <li class="mb-2">
+                <strong>Guest preparation while VMware is still running.</strong>
+                BareProx starts GuestPrep to install/prepare VirtIO SCSI, VirtIO drivers, QEMU Guest Agent, network mapping and first-boot processing.
+                VMware Tools is still kept at this stage and no shutdown is requested.
+                <div class="small text-muted">The GuestPrep timeout is configurable in Migration Settings (default: 35 minutes). If preparation fails, BareProx does not intentionally shut down the VMware source VM.</div>
+            </li>
+            <li class="mb-2">
+                <strong>Final pre-cutover checks.</strong>
+                BareProx rescans the source VM, confirms that no VMware snapshots appeared, rechecks the VM identity and verifies that the destination VMID is still free.
+            </li>
+            <li class="mb-2">
+                <strong>Controlled cutover.</strong>
+                GuestPrep performs its final verification, removes VMware Tools, disables VMCI and schedules Windows shutdown.
+                BareProx then waits for vCenter to report <code>POWERED_OFF</code>.
+                <div class="small text-muted">The VMware shutdown timeout is configurable in Migration Settings (default: 15 minutes). If the VM is still running (for example, because of Windows Update), that VM pauses rather than fails. Inspect the VMware console, then choose Continue or Cancel in the queue.</div>
+            </li>
+            <li class="mb-2">
+                <strong>Paused shutdown — manual decision, if necessary.</strong>
+                If the VMware VM does not reach <code>POWERED_OFF</code> within the configured shutdown timeout, BareProx pauses that VM without importing it or creating another snapshot.
+                <strong>Continue</strong> starts another shutdown-wait interval using the saved shutdown timeout and, once the source is confirmed off and pre-import checks pass, resumes at import. It never repeats GuestPrep or VMware Tools removal.
+                <strong>Cancel</strong> marks the item cancelled and stops the remaining BareProx workflow. It does <strong>not</strong> cancel an already-requested Windows shutdown or restore VMware Tools.
+            </li>
+            <li class="mb-2">
+                <strong>Reuse the existing migration snapshot.</strong>
+                BareProx does not create a second NetApp snapshot after shutdown. The one VMID-specific safety snapshot was already created before staging. The prepared Windows source state and the snapshot point-in-time are different; verify the Proxmox guest carefully before retiring VMware.
+            </li>
+            <li class="mb-2">
+                <strong>Create the Proxmox VM.</strong>
+                BareProx validates the VMID, chooses the latest common Q35 machine type, creates rewritten VMDK descriptors, writes the Proxmox configuration and creates the EFI disk when required.
+            </li>
+            <li class="mb-2">
+                <strong>Start the Proxmox VM.</strong>
+                BareProx powers on the destination VM automatically.
+            </li>
+            <li class="mb-2">
+                <strong>Wait for QEMU Guest Agent.</strong>
+                BareProx waits for QGA for the configured guest-agent startup timeout (default: 20 minutes). Windows Update and automatic reboots are tolerated; BareProx does not restart the VM just because the agent is temporarily unavailable.
+            </li>
+            <li>
+                <strong>Verify Windows first boot.</strong>
+                BareProx waits for the configured guest-verification timeout (default: 20 minutes) for the post-migration first-boot task to finish, then verifies that Windows is running, QEMU Guest Agent is running and the temporary first-boot task has been removed.
+                The migration is marked <code>Done</code> only after these checks pass.
+            </li>
+        </ol>
+
+        <div class="alert alert-warning mb-0">
+            <strong>If automatic migration fails after VMware has powered off:</strong>
+            do not simply press Run Queue again. Check the queue logs, VMware power state, NetApp snapshot, Proxmox VM configuration and whether the destination VM is already present or running.
+        </div>
+    </div>
+</section>
+
+<section id="manual" class="card mb-4 border-secondary">
+    <div class="card-header bg-secondary bg-opacity-10">
+        <h3 class="h5 mb-0">6. Manual migration — step by step</h3>
+    </div>
+    <div class="card-body">
+        <p>
+            Manual migration leaves all in-guest preparation and first boot decisions to you. It is the correct choice for
+            Windows Server 2012 R2 and older, Linux and other VMs that are not eligible for automatic migration.
+        </p>
+
+        <h4 class="h6">Before clicking Run Queue</h4>
+        <ol>
+            <li>Record the VM's IP configuration, gateway, DNS, VLAN, MTU and MAC addresses where relevant.</li>
+            <li>Prepare the guest with any storage/network drivers required by the Proxmox hardware you selected.</li>
+            <li>For Windows, consider removing VMware Tools before final shutdown if your rollback plan allows it.</li>
+            <li>Shut the VMware VM down cleanly and confirm that it is powered off.</li>
+            <li>Do <strong>not</strong> delete the VMware VM or source files.</li>
+            <li>Add the VM to the BareProx queue and click <strong>Run Queue</strong>.</li>
+        </ol>
+
+        <div class="alert alert-warning">
+            <strong>Storage driver warning:</strong>
+            the manual migration wizard supports selecting the target disk bus and index. Make sure the selected bus/controller combination is bootable by the guest.
+            Do not assume a Windows VM can boot with VirtIO SCSI unless the driver is already installed/prepared.
+        </div>
+
+        <h4 class="h6 mt-4">What BareProx does for a manual queue item</h4>
+        <ol>
+            <li><strong>Claims the queued VM</strong> and marks it as processing.</li>
+            <li><strong>Creates a VMID-specific NetApp migration snapshot</strong> immediately before the import.</li>
+            <li><strong>Validates VMID and name</strong> and confirms the VMID is free on Proxmox.</li>
+            <li><strong>Selects the latest common Q35 machine type</strong> supported by the selected Proxmox cluster.</li>
+            <li><strong>Copies and rewrites each VMDK descriptor</strong> so it points to the absolute VMware <code>-flat.vmdk</code> path visible from Proxmox.</li>
+            <li><strong>Writes the Proxmox VM configuration</strong> with CPU, memory, OS type, disks, NICs, bridge/VLAN information and boot order.</li>
+            <li><strong>Optionally adds the manual VirtIO helper disk</strong> when <em>Prepare for VirtIO</em> is selected.</li>
+            <li><strong>Optionally mounts a VirtIO ISO</strong> when configured.</li>
+            <li><strong>Adds <code>efidisk0</code></strong> for UEFI VMs.</li>
+            <li>Marks the queue item <code>Done</code> when the import preparation has completed successfully.</li>
+        </ol>
+
         <p class="mb-0">
-            <a href="https://pve.proxmox.com/wiki/Windows_VirtIO_Drivers" target="_blank" rel="noopener">
-                VirtIO Drivers
-            </a>
-            <br />
-
-            <a href="~/downloads/network_migration_tool.ps1" download="network_migration_tool.ps1">
-                Network Migration Tool written by Patrik Westberg
-            </a>
-
-            <br /><br />
-            Not tested but may be useful:
-            <br />
-            <a href="https://github.com/JailBreak-PT/Scripts-Provirtualzone/blob/main/hypervisor_migration_scripts/Windows%20Migrations%20Scripts" target="_blank" rel="noopener">
-                Windows Migration Scripts (GitHub)
-            </a>
+            Manual mode does <strong>not</strong> automatically start and verify the guest. Continue with the post-migration checks below.
         </p>
     </div>
-</div>
+</section>
 
-<div class="mt-3">
+<section id="queue" class="card mb-4">
+    <div class="card-body">
+        <h3 class="h5 card-title">7. Queue, concurrency and statuses</h3>
+
+        <h4 class="h6">Concurrency</h4>
+        <ul>
+            <li><strong>Maximum parallel migrations:</strong> number of manual workers, and separately the maximum number of automatic staging workers.</li>
+            <li><strong>Maximum parallel automated cutovers:</strong> limits the disruptive automatic GuestPrep shutdown/import/start path.</li>
+            <li>Automatic staging and cutover form a pipeline: a staged VM can enter cutover immediately while other VMs are still staging.</li>
+            <li>Concurrency settings are read when a migration run begins; changing them does not reshape workers already running.</li>
+        </ul>
+
+        <h4 class="h6 mt-4">What Run Queue will start</h4>
+        <ul>
+            <li>Manual items in <code>Queued</code>.</li>
+            <li>Automatic items in <code>AutomationPending</code>.</li>
+            <li>Automatic items already in <code>AutomationStaged</code> when intentionally waiting for cutover.</li>
+            <li><strong>Failed items are terminal and are not automatically restarted by Run Queue.</strong></li>
+        </ul>
+
+        <h4 class="h6 mt-4">Removing queue entries</h4>
+        <p>
+            Queue entries may be removed when they are still untouched/queued or when they are terminal: queued, failed, canceled or completed.
+            Active migration states cannot be removed from the Migration page.
+        </p>
+        <p class="small text-muted">
+            Removing a queue item removes the queue record only. Migration logs are retained and remain available in Migration Reports.
+        </p>
+
+        <p class="small text-muted">The queue uses short, readable status labels and shows one latest-update message. Repeated QGA probe attempts remain in the per-item Logs view and are not errors on their own.</p>
+        <h4 class="h6 mt-4">Common automatic statuses</h4>
+        <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+                <thead class="table-light"><tr><th>Status</th><th>Meaning</th></tr></thead>
+                <tbody>
+                    <tr><td><code>AutomationPending</code></td><td>Queued and waiting for Run Queue.</td></tr>
+                    <tr><td><code>Staging</code></td><td>Safety snapshot and GuestPrep file staging are in progress.</td></tr>
+                    <tr><td><code>Staged</code></td><td>Files are staged and the VM is waiting for an available cutover worker.</td></tr>
+                    <tr><td><code>Guest prep / Preparing guest</code></td><td>VirtIO, QGA, network mapping and first-boot preparation are being applied while VMware is still running.</td></tr>
+                    <tr><td><code>Cutover / Waiting for shutdown</code></td><td>Final GuestPrep is removing VMware components and waiting for VMware to power off.</td></tr>
+                    <tr><td><code>Preparing import / Importing into Proxmox</code></td><td>Reuses the existing pre-staging safety snapshot; no second snapshot is taken. Proxmox VM creation and disk import are running.</td></tr>
+                    <tr><td><code>Paused — waiting for shutdown</code></td><td>The configured VMware shutdown wait expired. Review the VMware console, then choose Continue or Cancel in the queue. No Proxmox import has started.</td></tr>
+                    <tr><td><code>Rechecking shutdown</code></td><td>Continue was chosen. BareProx rechecks power for another 15 minutes without repeating GuestPrep.</td></tr>
+                    <tr><td><code>Cancelled</code></td><td>Remaining BareProx migration steps stopped by the operator; an already-requested Windows shutdown may still complete.</td></tr>
+                    <tr><td><code>Starting / Verifying boot</code></td><td>Proxmox VM has been created and BareProx is waiting for QEMU Guest Agent.</td></tr>
+                    <tr><td><code>Verifying guest</code></td><td>BareProx is checking the post-migration Windows first-boot result.</td></tr>
+                    <tr><td><code>Done</code></td><td>Automatic guest verification passed, or the manual import preparation completed.</td></tr>
+                    <tr><td><code>* failed</code></td><td>Terminal failure. Inspect logs and both hypervisors before recovery or removal.</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="alert alert-warning mt-3 mb-0">
+            <strong>Need to reset the whole queue or hide Migration from the menu?</strong>
+            These controls have very different effects. Read
+            <a href="#admin-controls" class="alert-link">Clear queue and Disable Migration</a>
+            before using either one.
+        </div>
+    </div>
+</section>
+
+<section id="admin-controls" class="card mb-4">
+    <div class="card-body">
+        <h3 class="h5 card-title">8. Administrative controls: Clear queue and Disable Migration</h3>
+        <p>
+            <strong>Clear queue</strong> deletes stored migration queue entries while keeping the migration settings.
+            <strong>Disable Migration</strong> is a more comprehensive cleanup: it deletes the queue and saved
+            migration-specific settings while preserving the migration event logs.
+            Neither operation is a way to cancel an active migration.
+        </p>
+
+        <h4 class="h6 mt-3">A. Clear migration queue</h4>
+        <ol>
+            <li class="mb-2">
+                Open <a asp-controller="Migration" asp-action="Settings">Migration Settings</a> and scroll to
+                <strong>Clear migration queue</strong>.
+            </li>
+            <li class="mb-2">
+                Read the <strong>Runner active / Runner idle</strong> indicator. It checks both the manual and automated
+                queue runners. If activity is detected, investigate and normally wait for it to finish before clearing.
+                If the status cannot be read, verify activity in VMware, NetApp and Proxmox yourself.
+            </li>
+            <li class="mb-2">
+                Type <code>CLEAR</code> exactly and click <strong>Clear queue</strong>, then confirm the browser warning.
+                The operation deletes <em>every stored queue item</em>, including queued, running, stuck, failed,
+                canceled and completed items. It does not selectively delete only finished or failed entries.
+            </li>
+            <li class="mb-2">
+                After clearing, inspect <a asp-controller="MigrationReports" asp-action="Index">Migration Reports</a>
+                and check both hypervisors before queuing any of the same VMs again.
+            </li>
+        </ol>
+        <div class="alert alert-danger">
+            <strong>Clear queue does not cancel work already running.</strong>
+            Active GuestPrep, VMware shutdown, NetApp snapshot creation and Proxmox imports can continue after the
+            queue records are removed. An in-progress worker may also lose its queue record and fail to save later
+            status updates. Do not assume that an empty queue means the VMware or Proxmox operation has stopped.
+            <strong>Do not use Clear queue as an emergency Stop button.</strong>
+        </div>
+        <p>
+            <strong>What remains?</strong> Existing migration log entries are retained, so migration reports and
+            individual CSV log exports remain available. Reports for removed items are shown as
+            <em>Archived / queue cleared</em>. The stored queue state is not recoverable through the Clear command;
+            some details, such as VMID or final queue status, may no longer be available after removal.
+            NetApp snapshots and Proxmox VMs are not automatically deleted by clearing the queue.
+        </p>
+        <p class="small text-muted">
+            To remove just one item, use the normal removal action for an untouched/queued or terminal item in
+            the Migration queue instead. The normal per-item removal controls are locked during active processing.
+        </p>
+
+        <h4 class="h6 mt-4">B. Disable Migration in System Settings</h4>
+        <ol>
+            <li class="mb-2">
+                Check that no manual or automated migration runner is active and that outstanding VM operations
+                have been safely completed. BareProx <strong>refuses to disable Migration while a migration runner is active</strong>.
+            </li>
+            <li class="mb-2">
+                Open <a asp-controller="Settings" asp-action="Config">System Settings</a>, find
+                <strong>Enable Migration</strong>, turn off
+                <strong>Enable even more experimental features in this experimental application</strong>,
+                and click <strong>Save</strong>.
+            </li>
+            <li class="mb-2">
+                If no runner is active, BareProx performs a database cleanup in one transaction:
+                <ul>
+                    <li>Deletes <strong>all migration queue entries</strong>, regardless of status.</li>
+                    <li>
+                        Deletes saved <strong>Migration Settings</strong> (selected Proxmox cluster/host,
+                        migration datastore and migration concurrency settings).
+                    </li>
+                    <li>Deletes the saved <strong>migration vCenter connection</strong>, including its encrypted password.</li>
+                    <li>Sets the <strong>Migration</strong> feature toggle to disabled.</li>
+                    <li><strong>Does not delete migration queue logs.</strong></li>
+                </ul>
+            </li>
+            <li class="mb-2">
+                The Migration navigation submenu disappears. Re-enabling the feature restores the menu,
+                <strong>not</strong> the deleted queue or migration configuration. Configure Migration Settings
+                and vCenter again before starting a new migration.
+            </li>
+        </ol>
+        <div class="alert alert-warning">
+            <strong>Active migrations block disabling.</strong>
+            Both the manual queue runner and automated staging/cutover runner are checked before cleanup.
+            If either is active, the disable operation fails; the feature remains enabled and its queue/settings
+            are not removed. Wait for the runner to finish and verify the actual VMware, NetApp and Proxmox states
+            before trying again. The current settings controller does not display a dedicated friendly error for
+            this failure, so an error page may appear.
+        </div>
+        <p>
+            <strong>What is retained?</strong> Migration event logs remain stored. Existing NetApp snapshots,
+            Proxmox VMs, general Proxmox/NetApp inventory and system-wide SMTP settings are not deleted.
+        </p>
+        <div class="alert alert-secondary mb-0">
+            <strong>Feature visibility vs. endpoint access:</strong>
+            The disabled toggle hides the Migration menu, but migration controller endpoints are not
+            independently guarded by this feature flag. This is not an authorization boundary or a
+            global emergency-stop mechanism. The cleanup removes the saved migration selection and vCenter
+            credentials that normal migration operations need, but direct URLs remain reachable subject to
+            the application's usual authentication rules.
+        </div>
+    </div>
+</section>
+
+<section id="after" class="card mb-4">
+    <div class="card-body">
+        <h3 class="h5 card-title">9. After migration</h3>
+        <p>
+            Do these checks even after an automatic migration reports <code>Done</code>. Automatic verification confirms the
+            core guest state; it cannot prove that every application inside the VM works correctly.
+        </p>
+
+        <ol class="mb-0">
+            <li class="mb-2">
+                <strong>Check the Proxmox console.</strong>
+                Confirm a normal Windows/Linux boot and look for driver, disk or update problems.
+            </li>
+            <li class="mb-2">
+                <strong>Verify all disks.</strong>
+                Confirm disk count, boot disk, drive letters/mount points, write access and expected capacity.
+            </li>
+            <li class="mb-2">
+                <strong>Verify networking.</strong>
+                Confirm IP addresses, gateway, DNS, routes, VLAN, MTU and application listening addresses.
+                Windows may expose migrated NICs as new adapters even when MAC addresses are preserved.
+            </li>
+            <li class="mb-2">
+                <strong>Verify guest tools.</strong>
+                Automatic Windows migration verifies the QEMU Guest Agent service. For manual migrations, install and enable QEMU Guest Agent yourself if required.
+            </li>
+            <li class="mb-2">
+                <strong>Verify applications and services.</strong>
+                Check databases, file services, application services, scheduled tasks, monitoring, backup agents and anything else that depends on hardware or network identity.
+            </li>
+            <li class="mb-2">
+                <strong>Move disks to the final Proxmox datastore.</strong>
+                Once the VM is stable, use Proxmox storage migration/move-disk to move each disk away from the migration VMDK backing files and into the desired final format/storage.
+                <div class="small text-muted">Proxmox normally moves one disk at a time. For BareProx backups, avoid splitting a single VM's disks across multiple datastores unless you have intentionally designed for it.</div>
+            </li>
+            <li class="mb-2">
+                <strong>Verify boot order and final virtual hardware.</strong>
+                Remove temporary/manual migration media or helper disks only after the VM boots reliably without them.
+            </li>
+            <li>
+                <strong>Retire the VMware source only after acceptance.</strong>
+                Keep the original VM and migration snapshots until the application owner has accepted the migrated VM and your rollback window has expired.
+            </li>
+        </ol>
+    </div>
+</section>
+
+<section id="guest-logs" class="card mb-4">
+    <div class="card-body">
+        <h3 class="h5 card-title">Windows guest logs and diagnostic files (automatic migration)</h3>
+        <p>Automatic migration writes files inside the Windows guest as well as event logs in BareProx. The paths below are on the <strong>VM itself</strong>, both while it is on VMware and after first boot on Proxmox.</p>
+        <div class="table-responsive">
+            <table class="table table-sm align-middle">
+                <thead class="table-light"><tr><th>Location on Windows guest</th><th>Purpose</th></tr></thead>
+                <tbody>
+                    <tr><td><code>C:\ProgramData\BareProx\PostMigration\first-boot.log</code></td><td>Persistent first-boot activity log, including each cleanup/verification stage and final success or failure. Start here if guest verification is slow or fails.</td></tr>
+                    <tr><td><code>C:\ProgramData\BareProx\PostMigration\status.json</code></td><td>Machine-readable first-boot state. BareProx verifies that <code>Stage</code> is <code>complete</code> and <code>Success</code> is <code>true</code>.</td></tr>
+                    <tr><td><code>C:\ProgramData\BareProx\PostMigration\Archive\&lt;UTC timestamp&gt;\</code></td><td>On successful first-boot cleanup, archives JSON, LOG and PS1 files from the staging directory, plus a <code>manifest.json</code> that lists archived files. A new timestamped folder is used for each archive.</td></tr>
+                    <tr><td><code>C:\ProgramData\BareProx\Staging\</code></td><td>Temporary guest preparation payload and diagnostics before cleanup, including <code>autoprep-result.json</code>, <code>autoprep-*.json</code>, <code>network.json</code>, and (if produced) driver MSI installation logs. After a successful cleanup this directory is intentionally deleted.</td></tr>
+                    <tr><td><code>C:\ProgramData\BareProx\Logs\</code></td><td>Default location for certain GuestPrep VMware cleanup/uninstall diagnostics (for example, timestamped VMware Tools uninstall logs), when those operations write logs there.</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <h4 class="h6 mt-3">Find the files</h4>
+        <p class="mb-2">Open File Explorer inside Windows and paste <code>C:\ProgramData\BareProx\PostMigration</code> into the address bar. <code>ProgramData</code> is a hidden Windows directory, so pasting the path is easiest.</p>
+        <p class="mb-2">Alternatively, from PowerShell inside the VM:</p>
+        <pre class="bg-body-tertiary border rounded p-3"><code>Get-Content 'C:\ProgramData\BareProx\PostMigration\status.json' -Raw
+Get-Content 'C:\ProgramData\BareProx\PostMigration\first-boot.log' -Tail 100
+Get-ChildItem 'C:\ProgramData\BareProx\PostMigration\Archive' -Directory -ErrorAction SilentlyContinue</code></pre>
+        <p class="mb-2">If Windows is reachable only through Proxmox, <code>qm guest exec &lt;VMID&gt;</code> can run PowerShell through QEMU Guest Agent. Check that QGA responds first. Files inside the guest are distinct from the migration queue events and <a asp-controller="MigrationReports" asp-action="Index">Migration Reports</a> kept by BareProx.</p>
+        <div class="alert alert-info mb-0"><strong>After a successful migration:</strong> the staging folder may no longer exist. That is expected: the first-boot task archives its JSON/log/script files before removing the staging directory. <code>first-boot.log</code> and <code>status.json</code> remain under <code>PostMigration</code>. The final status timestamp may be later than early queue verification polls.</div>
+    </div>
+</section>
+
+<section id="reports" class="card mb-4">
+    <div class="card-body">
+        <h3 class="h5 card-title">10. Migration reports, logs and execution time</h3>
+        <p>
+            Open <a asp-controller="MigrationReports" asp-action="Index">Migration Reports</a> to review previous migrations,
+            including completed, failed and still-running jobs that have produced log entries. Reports are reconstructed from
+            persisted migration logs, not from the visible queue. Removing a queue item does <strong>not</strong> delete its report.
+        </p>
+        <h4 class="h6">Find and inspect a migration</h4>
+        <ol>
+            <li class="mb-1">Open <strong>Migration Reports</strong> from the migration area.</li>
+            <li class="mb-1">
+                The overview shows the server name (when recorded), migration ID, execution time, event count,
+                warnings, errors and the current queue status. If the queue record was removed, the report is marked
+                <strong>Archived / queue cleared</strong>.
+            </li>
+            <li class="mb-1">
+                Use the search field to filter the <em>current page</em> by server name, migration ID, VMID or queue status;
+                use the severity filter to find histories with errors or warnings. The overview displays 50 reports per page,
+                ordered by latest activity.
+            </li>
+            <li class="mb-1">
+                Select <strong>View report</strong> to see that migration's full event timeline, including steps, informational
+                messages, warnings and errors. The detailed timeline displays 100 entries per page.
+            </li>
+            <li>
+                Select <strong>Export complete log (CSV)</strong> from the detailed report to download all persisted entries
+                for that migration, including timestamps, server name, step, severity, message and diagnostic data.
+                CSV is useful for troubleshooting or archiving a technical audit trail.
+            </li>
+        </ol>
+        <h4 class="h6 mt-3">What does “Time taken” mean?</h4>
+        <p class="mb-2">
+            The duration is the <strong>actual recorded processing time for that VM</strong>, not the elapsed time since it
+            was first queued. For current automatic migrations it adds the active staging and cutover phases, excluding
+            the idle interval when a fully staged VM is waiting for an available cutover slot. Manual processing time also
+            excludes waiting in the queue.
+        </p>
+        <p class="small text-muted mb-2">
+            Historical migrations without the newer timing markers use the best available work-start event and can be less
+            precise. A report showing one or more error events is not necessarily a failed migration: check the last events
+            and final queue state before deciding whether the cutover succeeded.
+        </p>
+        <div class="alert alert-secondary mb-0">
+            <strong>Archived reports:</strong> Newly written logs preserve the source server name after queue cleanup.
+            Older archived entries may not retain the server name, Proxmox VMID or final status if that information existed
+            only in the removed queue entry. Keep relevant CSV exports for long-term operational records.
+        </div>
+    </div>
+</section>
+
+<section id="report-email" class="card mb-4">
+    <div class="card-body">
+        <h3 class="h5 card-title">11. Email migration reports</h3>
+        <p>
+            BareProx can email an <strong>HTML summary</strong> of migration histories either immediately or on a recurring
+            schedule. Each email lists matching servers, migration IDs, processing durations, event counts, warnings,
+            errors and available queue statuses. <strong>
+            Email reports are summaries, not attachments of the complete
+            per-event CSV logs.
+        </strong> Use the report detail page to export those separately.
+    </p>
+
+    <h4 class="h6">A. Configure SMTP once</h4>
+    <ol>
+        <li class="mb-1">
+            Open <a asp-controller="Settings" asp-action="Config">System Settings</a> and find
+            <strong>Email Notifications</strong>. Enable email notifications.
+        </li>
+        <li class="mb-1">
+            Enter the SMTP host, port, connection security, credentials if required, and sender address.
+            Save the email settings.
+        </li>
+        <li class="mb-1">
+            Use <strong>Send Test Email</strong> in System Settings to confirm the SMTP configuration works.
+        </li>
+        <li>
+            Return to <a asp-controller="MigrationReports" asp-action="Index">Migration Reports</a>.
+            When email is enabled and an SMTP host is saved, the <strong>Email…</strong> option becomes available.
+        </li>
+    </ol>
+    <p class="small text-muted">
+        Migration report recipients are set on the reporting page, independently from the default recipients used for
+        other BareProx notifications. Enter one email address for each immediate send or schedule.
+    </p>
+
+    <h4 class="h6">B. Send a report now</h4>
+    <ol>
+        <li class="mb-1">
+            Open <a asp-controller="MigrationReportEmail" asp-action="Index">Migration Reports → Email…</a>
+            and use <strong>Send report now</strong>.
+        </li>
+        <li class="mb-1">Enter the recipient email address.</li>
+        <li class="mb-1">
+            Choose <strong>All history</strong>, <strong>Last number of days</strong> or
+            <strong>Custom date range</strong> (inclusive From and To dates).
+        </li>
+        <li>Choose <strong>Send email</strong>. If SMTP fails, the page displays an error instead of reporting success.</li>
+    </ol>
+
+    <h4 class="h6">C. Schedule recurring email reports</h4>
+    <ol>
+        <li class="mb-1">
+            Under <strong>Create recurring email schedule</strong>, enter a recipient and choose
+            <strong>Daily</strong>, <strong>Weekly</strong> or <strong>Monthly</strong> delivery.
+        </li>
+        <li class="mb-1">
+            Select the time in BareProx's configured application time zone; for weekly/monthly schedules also select
+            the weekday or month day. A requested day 31 runs on the last day of shorter months.
+        </li>
+        <li class="mb-1">
+            Choose what to include:
+            <ul>
+                <li><strong>Previous scheduled period:</strong> approximately the preceding day, 7 days or month, measured back from the scheduled delivery time.</li>
+                <li><strong>Since last successful report:</strong> activity since the preceding successful send (or since schedule creation for the first send).</li>
+                <li><strong>Last number of days:</strong> a configurable rolling look-back period.</li>
+                <li><strong>All history:</strong> all migration histories with recorded activity.</li>
+            </ul>
+        </li>
+        <li>
+            Select <strong>Create schedule</strong>. Existing schedules appear below, with recipient, frequency,
+            next run, last successful send and status. You can <strong>Pause</strong>, <strong>Resume</strong> or
+            <strong>Remove</strong> them.
+        </li>
+    </ol>
+    <p class="mb-2">
+        Schedules are stored in <code>/config/MigrationReportEmailSchedules.json</code> and are retained across normal
+        BareProx restarts when the <code>/config</code> volume persists. Failed scheduled attempts are retried after a
+        minimum five-minute delay while BareProx is running; the successful-delivery checkpoint advances only after
+        the configured SMTP server accepts the message.
+    </p>
+    <p class="small text-muted mb-0">
+        Reports include migrations with <em>any log activity</em> within the selected reporting period, not exclusively
+        migrations that finished during the period. Duration is calculated from that migration's recorded execution
+        timeline. Scheduled reports run according to the configured app time zone, including daylight-saving changes.
+        They are periodic summaries; the current reporting feature does not automatically send an individual report
+        immediately whenever a VM migration finishes.
+    </p>
+</div>
+</section>
+
+<section id="troubleshooting" class="card mb-4">
+    <div class="card-body">
+        <h3 class="h5 card-title">12. Troubleshooting and recovery guidance</h3>
+
+        <div class="table-responsive">
+            <table class="table table-sm align-middle">
+                <thead class="table-light"><tr><th>Symptom</th><th>What to check</th></tr></thead>
+                <tbody>
+                    <tr>
+                        <td>Automatic migration is not offered</td>
+                        <td>Confirm Windows Server 2016/2019/2022/2025, 64-bit identification, source powered on, VMware Tools running, and snapshot state clear. Server 2012 R2 and older are manual-only.</td>
+                    </tr>
+                    <tr>
+                        <td>Guest credential verification fails</td>
+                        <td>Verify vCenter settings, VMware Tools/Guest Operations, Windows credentials and that the selected VM identity is correct.</td>
+                    </tr>
+                    <tr>
+                        <td>Staging fails</td>
+                        <td>The source should still be running because staging itself does not request shutdown. Review the queue log and vCenter/ESXi connectivity before taking further action.</td>
+                    </tr>
+                    <tr>
+                        <td>GuestPrep takes a long time</td>
+                        <td>Check the configurable GuestPrep and VMware shutdown timeouts in Migration Settings (defaults: 35 and 15 minutes). A VMware shutdown timeout pauses the VM for an operator decision.</td>
+                    </tr>
+                    <tr>
+                        <td>VMware remains on “Preparing Windows”</td>
+                        <td>BareProx waits for vCenter <code>POWERED_OFF</code> for the configured shutdown timeout, then pauses the item. Inspect Windows Update in the VMware console. Continue waits another configured interval without rerunning GuestPrep; Cancel stops the remaining BareProx workflow but does not undo the original shutdown request.</td>
+                    </tr>
+                    <tr>
+                        <td>Migration fails after VMware powered off</td>
+                        <td>Check the pre-staging safety snapshot, whether a Proxmox VM/config was created, and whether the destination VM is running. Do not blindly rerun the failed queue item.</td>
+                    </tr>
+                    <tr>
+                        <td>Proxmox VM starts but QGA is unavailable</td>
+                        <td>Automatic mode waits up to the configured QGA startup timeout (default 20 minutes) and tolerates Windows Update/reboots. Use the Proxmox console to inspect the guest before manual intervention.</td>
+                    </tr>
+                    <tr>
+                        <td>Guest verification fails or times out</td>
+                        <td>The VM is left running. Check <code>C:\ProgramData\BareProx\PostMigration\status.json</code> and <code>first-boot.log</code> (see <a href="#guest-logs">Windows guest logs</a>), Windows services and QEMU Guest Agent. No automatic rollback/retry is performed.</td>
+                    </tr>
+                    <tr>
+                        <td>The Migration menu disappeared</td>
+                        <td>Check System Settings &rarr; Enable Migration. Disabling deletes the migration queue, saved migration selection and migration vCenter credentials, but retains migration event logs. Re-enabling requires configuration again. Direct URLs are not independently feature-gated.</td>
+                    </tr>
+                    <tr>
+                        <td>The queue is empty but migration activity continues</td>
+                        <td>Check whether Clear migration queue was used; it deletes records without stopping running work. Disabling Migration also clears the queue, but is blocked while a migration runner is active. Inspect VMware, NetApp and Proxmox before starting again.</td>
+                    </tr>
+                    <tr>
+                        <td>Email report option is missing</td>
+                        <td>Open System Settings and enable email notifications. Save a valid SMTP host, then return to Migration Reports. Use Send Test Email before attempting a report.</td>
+                    </tr>
+                    <tr>
+                        <td>Scheduled email report was not received</td>
+                        <td>Check the schedule is active, the application time zone, the next-run and last-sent fields, and any “Retrying” status/error tooltip. Confirm SMTP delivery and spam filtering. The schedule worker runs only while BareProx is running.</td>
+                    </tr>
+                    <tr>
+                        <td>Manual Windows VM will not boot</td>
+                        <td>Check the selected disk bus, controller compatibility, disk order and Windows storage drivers. Manual migration supports SCSI, SATA, VirtIO and IDE.</td>
+                    </tr>
+                    <tr>
+                        <td>UEFI VM will not boot</td>
+                        <td>Confirm OVMF/UEFI configuration, <code>efidisk0</code> and boot order.</td>
+                    </tr>
+                    <tr>
+                        <td>“Could not open backing file”</td>
+                        <td>Verify that the VMDK descriptor points to the correct absolute <code>-flat.vmdk</code> path and that the selected Proxmox host can access it.</td>
+                    </tr>
+                    <tr>
+                        <td>VMID already in use</td>
+                        <td>Select a different VMID. Automatic migration also rechecks VMID immediately before GuestPrep and again before cutover.</td>
+                    </tr>
+                    <tr>
+                        <td>Network is missing/wrong after migration</td>
+                        <td>Check bridge/SDN, VLAN, VirtIO driver, MAC mapping, static IP configuration, DNS, routes and MTU.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="alert alert-secondary mb-0">
+            <strong>Recovery rule:</strong> before restarting, recreating or powering on anything after a failed cutover,
+            first establish which VM currently owns the production identity and storage state. Avoid having the VMware and Proxmox copies online simultaneously on the same network unless that is an intentional recovery test.
+        </div>
+    </div>
+</section>
+
+<section class="card mb-4">
+    <div class="card-body">
+        <h3 class="h5 card-title">Resources</h3>
+        <p class="mb-2">
+            <a href="https://pve.proxmox.com/wiki/Windows_VirtIO_Drivers" target="_blank" rel="noopener">Proxmox Windows VirtIO Drivers</a>
+        </p>
+        <p class="mb-2">
+            <a href="~/downloads/network_migration_tool.ps1" download="network_migration_tool.ps1">Network Migration Tool written by Patrik Westberg</a>
+        </p>
+        <p class="mb-0 small text-muted">
+            Community resource — not tested by BareProx:
+            <a href="https://github.com/JailBreak-PT/Scripts-Provirtualzone/blob/main/hypervisor_migration_scripts/Windows%20Migrations%20Scripts" target="_blank" rel="noopener">Windows Migration Scripts (GitHub)</a>
+        </p>
+    </div>
+</section>
+
+<div class="d-flex flex-wrap gap-2 mt-3">
     <a asp-action="Migrate" class="btn btn-primary">Go to Migrate</a>
-    <a asp-action="Settings" class="btn btn-outline-secondary">Open Settings</a>
+    <a asp-action="Settings" class="btn btn-outline-secondary">Open Migration Settings</a>
+    <a asp-controller="MigrationReports" asp-action="Index" class="btn btn-outline-secondary">Migration Reports</a>
+    <a asp-controller="MigrationReportEmail" asp-action="Index" class="btn btn-outline-secondary">Email Reports</a>
 </div>

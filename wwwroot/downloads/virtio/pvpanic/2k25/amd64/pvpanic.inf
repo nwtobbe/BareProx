@@ -1,0 +1,77 @@
+;/*++
+;
+;Copyright (c) 2015-2026 Red Hat Inc.
+;
+;
+;Module Name:
+;    pvpanic.inf
+;
+;Abstract:
+;
+;Installation Notes:
+;    Step by step driver installation wiki:
+;        https://github.com/virtio-win/kvm-guest-drivers-windows/wiki/Driver-installation
+;
+;--*/
+
+[Version]
+Signature       = "$WINDOWS NT$"
+Class           = System
+ClassGuid       = {4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider        = %VENDOR%
+DriverVer = 07/22/2026,100.103.104.30200
+CatalogFile     = pvpanic.cat
+PnpLockdown     = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+pvpanic.sys = 1,,
+
+; ---------------
+; Install Section
+; ---------------
+
+[Manufacturer]
+%VENDOR% = PVPanic,NTamd64.10.0...16299
+
+[PVPanic.NTamd64.10.0...16299]
+%PVPanic.DeviceDesc% = PVPanic_Device, ACPI\QEMU0001
+%PVPanic.DeviceDesc% = PVPanic_Device, PCI\VEN_1B36&DEV_0011&SUBSYS_11001AF4&REV_01
+
+[PVPanic_Device.NT]
+CopyFiles = PVPanic_CopyFiles
+
+[PVPanic_CopyFiles]
+pvpanic.sys
+
+; --------------------
+; Service Installation
+; --------------------
+
+[PVPanic_Device.NT.Services]
+AddService = PVPanic,0x00000002,PVPanic_Service_Install
+
+[PVPanic_Service_Install]
+DisplayName    = %PVPanic.Service%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 3               ; SERVICE_DEMAND_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %13%\pvpanic.sys
+LoadOrderGroup = Extended Base
+
+[PVPanic_Device.NT.Wdf]
+KmdfService = PVPanic, PVPanic_wdfsect
+
+[PVPanic_wdfsect]
+KmdfLibraryVersion = 1.15
+
+[Strings]
+VENDOR = "Red Hat, Inc."
+DiskName            = "QEMU PVPanic Installation Disk"
+PVPanic.DeviceDesc  = "QEMU PVPanic Device"
+PVPanic.Service     = "QEMU PVPanic Service"

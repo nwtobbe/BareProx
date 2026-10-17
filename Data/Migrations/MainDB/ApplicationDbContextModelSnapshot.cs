@@ -15,7 +15,7 @@ namespace BareProx.Migrations
         protected override void BuildModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
-            modelBuilder.HasAnnotation("ProductVersion", "9.0.10");
+            modelBuilder.HasAnnotation("ProductVersion", "10.0.13");
 
             modelBuilder.Entity("BareProx.Models.BackupRecord", b =>
                 {
@@ -441,6 +441,13 @@ namespace BareProx.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("EncryptedGuestPassword")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("GuestUsername")
+                        .HasMaxLength(512)
+                        .HasColumnType("TEXT");
+
                     b.Property<int?>("MemoryMiB")
                         .HasColumnType("INTEGER");
 
@@ -519,6 +526,10 @@ namespace BareProx.Migrations
                         .HasMaxLength(2000)
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("ServerName")
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("Step")
                         .IsRequired()
                         .HasMaxLength(64)
@@ -541,6 +552,21 @@ namespace BareProx.Migrations
                     b.Property<int>("ClusterId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int>("GuestAgentStartupTimeoutMinutes")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("GuestPrepTimeoutMinutes")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("GuestVerificationTimeoutMinutes")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("MaxParallelCutovers")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("MaxParallelMigrations")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int>("ProxmoxHostId")
                         .HasColumnType("INTEGER");
 
@@ -554,9 +580,40 @@ namespace BareProx.Migrations
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("TEXT");
 
+                    b.Property<int>("VmwareShutdownTimeoutMinutes")
+                        .HasColumnType("INTEGER");
+
                     b.HasKey("Id");
 
                     b.ToTable("MigrationSelections");
+                });
+
+            modelBuilder.Entity("BareProx.Models.MigrationVCenterSettings", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("AllowUntrustedCertificate")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("EncryptedPassword")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Server")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Username")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("MigrationVCenterSettings");
                 });
 
             modelBuilder.Entity("BareProx.Models.NetappController", b =>

@@ -1,0 +1,72 @@
+@model BareProx.Controllers.MigrationReportDetailViewModel
+@{
+    var r = Model.Report;
+    ViewData["Title"] = $"Migration report #{r.ItemId}";
+    string When(DateTime utc) => TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), Model.Zone).ToString("yyyy-MM-dd HH:mm:ss");
+    var duration = r.RecordedDuration;
+}
+<style>
+    .bp-detail-hero { background:linear-gradient(115deg,#143d72,#286bb5);color:white;border-radius:14px }
+    .bp-event {border-left:3px solid #b9c5d4;padding:.2rem 0 1.4rem 1.25rem;position:relative;margin-left:.35rem}
+    .bp-event::before {content:"";position:absolute;left:-8px;top:7px;width:13px;height:13px;background:#71839b;border:3px solid white;border-radius:50%;box-shadow:0 0 0 1px #d4dce7}
+    .bp-event.error {border-left-color:#dc3545}.bp-event.error::before{background:#dc3545}
+    .bp-event.warning{border-left-color:#f3aa27}.bp-event.warning::before{background:#f3aa27}
+    .bp-log-detail{background:var(--bs-tertiary-bg,#f7f9fc);white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;font-size:.8rem}
+</style>
+<div class="container mt-4 mb-5">
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+        <a asp-action="Index" class="text-decoration-none">← All migration reports</a>
+        <a asp-action="Csv" asp-route-id="@r.ItemId" class="btn btn-outline-primary btn-sm">Export complete log (CSV)</a>
+    </div>
+    <div class="bp-detail-hero p-4 shadow-sm mb-4">
+        <div class="text-uppercase small opacity-75 mb-1" style="letter-spacing:.12em">Migration execution report · #@r.ItemId</div>
+        <h1 class="h2 mb-2">@(string.IsNullOrWhiteSpace(r.Name) ? $"Migration #{r.ItemId}" : r.Name)</h1>
+        <div class="opacity-75">@if(r.VmId.HasValue) { <span>Proxmox VMID @r.VmId · </span> } @(r.Archived ? "Archived history (queue entry no longer exists)" : "Queue status: " + r.Status)</div>
+    </div>
+    <div class="row g-3 mb-4">
+        <div class="col-6 col-lg-3"><div class="card shadow-sm h-100"><div class="card-body"><div class="small text-muted">Recorded events</div><div class="h3 mb-0">@r.Entries</div></div></div></div>
+        <div class="col-6 col-lg-3"><div class="card shadow-sm h-100"><div class="card-body"><div class="small text-muted">Distinct steps</div><div class="h3 mb-0">@r.Steps</div></div></div></div>
+        <div class="col-6 col-lg-3"><div class="card shadow-sm h-100"><div class="card-body"><div class="small text-muted">Errors / warnings</div><div class="h3 mb-0"><span class="text-danger">@r.Errors</span> / <span class="text-warning">@r.Warnings</span></div></div></div></div>
+        <div class="col-6 col-lg-3"><div class="card shadow-sm h-100"><div class="card-body"><div class="small text-muted">Time taken</div><div class="h3 mb-0">@(duration.TotalHours >= 1 ? duration.ToString(@"d\.hh\:mm\:ss") : duration.ToString(@"hh\:mm\:ss"))</div><div class="small text-muted">Excludes queue and phase waiting</div></div></div></div>
+    </div>
+    <div class="alert alert-info small">Processing begins <strong>@When(r.ExecutionStartUtc)</strong>; last event <strong>@When(r.LastUtc)</strong> (@Model.Zone.Id). Time taken excludes idle queue waiting and, for new automated runs, waiting between staging and cutover. Errors and warnings are diagnostic signals, not a computed final outcome.</div>
+    <div class="card shadow-sm border-0">
+        <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center flex-wrap gap-2 py-3"><strong>Execution timeline</strong><input id="timelineFilter" type="search" class="form-control form-control-sm" placeholder="Search displayed events…" style="max-width:220px" aria-label="Search log entries" /></div>
+        <div class="card-body pt-4">
+            @foreach(var item in Model.Logs)
+            {
+                var level = (item.Level ?? "Info").ToLowerInvariant();
+                var style = level == "error" || level == "critical" ? "error" : level == "warning" ? "warning" : "";
+                <article class="bp-event @style" data-log-search="@(item.Step + " " + item.Level + " " + item.Message)">
+                    <div class="d-flex justify-content-between gap-3 align-items-start flex-wrap">
+                        <div><span class="fw-semibold">@(string.IsNullOrWhiteSpace(item.Step) ? "Event" : item.Step)</span><span class="badge ms-2 @(style=="error" ? "bg-danger" : style=="warning" ? "bg-warning text-dark" : "bg-secondary")">@item.Level</span></div>
+                        <time class="text-muted small">@When(item.Utc)</time>
+                    </div>
+                    <div class="mt-2" style="overflow-wrap:anywhere">@item.Message</div>
+                    @if(!string.IsNullOrWhiteSpace(item.DataJson))
+                    {
+                        <details class="mt-2"><summary class="text-primary small" style="cursor:pointer">Technical details</summary><pre class="bp-log-detail rounded p-3 mt-2 mb-0">@item.DataJson</pre></details>
+                    }
+                </article>
+            }
+        </div>
+        <div class="card-footer bg-transparent d-flex justify-content-between align-items-center gap-2 flex-wrap">
+            <small class="text-muted">Showing page @Model.Page of @Model.TotalPages · @Model.PageSize events/page · Chronological order</small>
+            <div class="btn-group btn-group-sm">
+                @if(Model.Page > 1) { <a class="btn btn-outline-secondary" asp-action="Detail" asp-route-id="@r.ItemId" asp-route-page="@(Model.Page-1)">← Earlier</a> }
+                @if(Model.Page < Model.TotalPages) { <a class="btn btn-outline-secondary" asp-action="Detail" asp-route-id="@r.ItemId" asp-route-page="@(Model.Page+1)">Later →</a> }
+            </div>
+        </div>
+    </div>
+</div>
+@section Scripts {
+<script>
+(() => {
+    const input = document.getElementById('timelineFilter');
+    input.addEventListener('input', () => {
+        const q = input.value.toLocaleLowerCase();
+        for(const entry of document.querySelectorAll('.bp-event')) entry.hidden = !String(entry.dataset.logSearch || '').toLocaleLowerCase().includes(q);
+    });
+})();
+</script>
+}

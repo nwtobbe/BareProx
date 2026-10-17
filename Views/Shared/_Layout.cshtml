@@ -1,6 +1,8 @@
 ﻿@using Microsoft.AspNetCore.Identity
+@using Microsoft.EntityFrameworkCore
 @inject SignInManager<IdentityUser> SignInManager
 @inject BareProx.Services.Features.IFeatureService Features
+@inject BareProx.Data.ApplicationDbContext MigrationReportDb
 
 
 @if (TempData["ErrorMessage"] is string errMsg)
@@ -20,6 +22,7 @@
     
 #endif
     var showMigration = await Features.IsEnabledAsync("ExperimentalExtra");
+    var showMigrationReports = showMigration && await MigrationReportDb.MigrationQueueLogs.AsNoTracking().AnyAsync();
 }
 <!DOCTYPE html>
 <html lang="en">
@@ -152,7 +155,7 @@
                                                            asp-controller="Migration"
                                                            asp-action="Migrate"
                                                            title="Migrate your VMs to the next level - It's time to move on, Bro.">
-                                                            Leave Me B
+                                                            Break Free
                                                         </a>
                                                     </li>
                                                     <li>
@@ -162,6 +165,14 @@
                                                             Settings
                                                         </a>
                                                     </li>
+
+                                                    @if (showMigrationReports)
+                                                    {
+                                                        <li>
+                                                            <a class="dropdown-item" asp-controller="MigrationReports" asp-action="Index">Reports</a>
+                                                        </li>
+                                                    }
+
                                                     <li>
                                                         <a class="dropdown-item"
                                                            asp-controller="Migration"
@@ -199,15 +210,15 @@
         </nav>
     </header>
 
-    <div class="@(ViewBag.FullWidth == true ? "container-fluid px-3" : "container")">
+    <div class="container">
         <main role="main" class="pb-3">
             @RenderBody()
         </main>
     </div>
 
     <footer class="border-top footer text-muted">
-        <div class="@(ViewBag.FullWidth == true ? "container-fluid px-3" : "container")">
-            &copy; 2025–2026 BareProx - <a asp-area="" asp-controller="Home" asp-action="Privacy">Privacy</a>
+        <div class="container">
+            &copy; 2025 - BareProx - <a asp-area="" asp-controller="Home" asp-action="Privacy">Privacy</a>
         </div>
     </footer>
 

@@ -18,6 +18,14 @@ RUN dotnet restore BareProx.csproj \
 # Copy source
 COPY . ./
 
+# Build Windows guest preparation executable
+RUN dotnet publish BareProx.GuestPrep/BareProx.GuestPrep.csproj \
+    -c Release \
+    -r win-x64 \
+    --self-contained true \
+    -p:PublishSingleFile=true \
+    -o /tmp/bareprox-guestprep
+
 # Publish self-contained with ReadyToRun
 RUN dotnet publish BareProx.csproj \
     -c Release \
@@ -27,6 +35,13 @@ RUN dotnet publish BareProx.csproj \
     -p:PublishTrimmed=false \
     -p:PublishReadyToRun=true \
     -o /app/publish
+
+# Include the Windows helper in BareProx downloads
+RUN mkdir -p /app/publish/wwwroot/downloads \
+    && cp /tmp/bareprox-guestprep/BareProx.GuestPrep.exe \
+          /app/publish/wwwroot/downloads/ \
+    && cp BareProx.GuestPrep/THIRD-PARTY-NOTICES.txt \
+          /app/publish/wwwroot/downloads/
 
 ### 2) Runtime stage
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0 AS runtime
